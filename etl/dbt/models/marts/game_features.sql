@@ -6,6 +6,9 @@
 -- one row per second with reviews). The latest row per game is its current state.
 -- game_reviews_ratio is Laplace-smoothed: (positive + {{ alpha }}) / (positive + negative + 2 * {{ alpha }}),
 -- 0.5 before the first review.
+-- Steam's review_score is deliberately not a feature: it is scraped once, so older reviews would
+-- see a score computed from later reviews (leakage). int_games__deduplicated still uses it for
+-- the name dedup.
 
 with lookup_maps as (
     select
@@ -24,8 +27,7 @@ games as (
         {{ encode_array('g.game_developers', 'm.developers') }} as game_developers,
         {{ encode_array('g.game_publishers', 'm.publishers') }} as game_publishers,
         {{ encode_array('g.game_genres', 'm.genres') }} as game_genres,
-        {{ encode_array('g.game_categories', 'm.categories') }} as game_categories,
-        g.game_review_score
+        {{ encode_array('g.game_categories', 'm.categories') }} as game_categories
     from {{ ref('int_games__deduplicated') }} as g
     inner join {{ ref('lkp_games') }} as l on l.game_id = g.game_id
     cross join lookup_maps as m
@@ -52,7 +54,6 @@ select
     (c.positive_reviews + cast({{ alpha }} as double))
         / (c.positive_reviews + c.negative_reviews + 2 * cast({{ alpha }} as double))
         as game_reviews_ratio,
-    g.game_review_score,
     c._batch_at
 from counts as c
 inner join games as g on g.game_id = c.game_id

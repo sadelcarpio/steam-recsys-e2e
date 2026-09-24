@@ -67,7 +67,6 @@ class _GameFeatures(BaseModel):
     game_categories: list[EncodedId]
     # Laplace-smoothed (pos + a) / (pos + neg + 2a); 0.5 before the first review.
     game_reviews_ratio: Annotated[float, Field(gt=0, lt=1)]
-    game_review_score: int | None
 
 
 class GameFeaturesRow(_GameFeatures, _Row):

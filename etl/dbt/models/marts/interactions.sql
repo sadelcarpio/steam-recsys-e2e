@@ -33,7 +33,6 @@ select
     g.game_genres,
     g.game_categories,
     g.game_reviews_ratio,
-    g.game_review_score,
     b._batch_at
 from batch as b
 left join users_asof as ua on ua.review_id = b.review_id

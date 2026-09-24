@@ -31,8 +31,6 @@ models:
           Laplace-smoothed share of positive reviews through `timestamp`:
           (pos + a) / (pos + neg + 2a), a = var reviews_ratio_prior; 0.5 without reviews.
         data_tests: [not_null]
-      - name: game_review_score
-        description: Steam review summary score (0-9) at scrape time.
 
   - name: user_features
     description: Time-versioned user features. One row per (user_id, second of a positive review).

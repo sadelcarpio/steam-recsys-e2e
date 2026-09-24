@@ -24,11 +24,16 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
 | Table | Grain | Columns |
 |---|---|---|
 | `lkp_*` | one value | `id` (`game_idx` for games), `name` (`game_id`), `_batch_at` |
-| `game_features` | (`game_id`, `timestamp`): a 1970-01-01 row (no reviews yet), then one row per second in which the game got reviews | `game_idx`, `game_name`, `game_is_free`, `game_developers` / `_publishers` / `_genres` / `_categories` (id arrays), `game_reviews_ratio` = Laplace-smoothed (pos + α) / (pos + neg + 2α), α = var `reviews_ratio_prior` (1), 0.5 without reviews, `game_review_score` |
+| `game_features` | (`game_id`, `timestamp`): a 1970-01-01 row (no reviews yet), then one row per second in which the game got reviews | `game_idx`, `game_name`, `game_is_free`, `game_developers` / `_publishers` / `_genres` / `_categories` (id arrays), `game_reviews_ratio` = Laplace-smoothed (pos + α) / (pos + neg + 2α), α = var `reviews_ratio_prior` (1), 0.5 without reviews |
 | `user_features` | (`user_id`, `timestamp`) of each positive review | `games_reviewed_positive`: last 5 positively reviewed `game_idx`, most recent first, right-padded with 0 |
 | `interactions` | `review_id` | `timestamp`, `user_id`, `game_id`, `is_positive` (label) + all user and game features **as of strictly before** the review |
 
 The latest `game_features` / `user_features` row per key is the current state (for inference).
+
+Steam's `review_score` (0-9 summary bucket) is **not** a feature: it is scraped once per game, so
+a review from years earlier would see a score computed from later reviews. `game_reviews_ratio`
+carries the same signal correctly as of each review. The score is only used as the name-dedup
+tie-break in `int_games__deduplicated`.
 Row contracts: `src/steam_etl/contracts.py`.
 
 **Reserved ids** in every vocabulary: `0` = padding (fills fixed-length lists, never a value),

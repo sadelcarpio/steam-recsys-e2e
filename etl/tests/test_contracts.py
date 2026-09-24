@@ -25,7 +25,6 @@ def interaction(**overrides):
         "game_genres": [4],
         "game_categories": [],
         "game_reviews_ratio": 0.5,
-        "game_review_score": 8,
     }
     return InteractionRow.model_validate(row | overrides)
 
@@ -44,6 +43,7 @@ def test_valid_row():
         {"game_reviews_ratio": 1.0},  # smoothed: never 0 or 1
         {"game_reviews_ratio": None},
         {"game_positive_reviews": 3},  # raw counts are not a feature
+        {"game_review_score": 8},  # scraped once: would leak future reviews
         {"unexpected": 1},
     ],
 )
