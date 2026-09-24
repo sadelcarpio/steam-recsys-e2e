@@ -139,3 +139,60 @@ def test_rerank_all_isolates_failures():
     assert failures == 1 and sorted(results) == [0, 2, 3]
     assert results[0].order == [1, 0] and results[0].explanations == {1: "why"}
     assert len(seen) == 4
+
+
+class FlakyBedrock(StubBedrock):
+    """Answers `malformed_tool_use` (no tool call) the first `failures` times."""
+
+    def __init__(self, failures: int):
+        super().__init__()
+        self.failures = failures
+
+    def converse(self, **kwargs):
+        if len(self.calls) < self.failures:
+            self.calls.append(kwargs)
+            return {
+                "output": {"message": {"content": [{"text": "{broken"}]}},
+                "stopReason": "malformed_tool_use",
+                "usage": {"inputTokens": 100, "outputTokens": 5},
+            }
+        return super().converse(**kwargs)
+
+
+def _reranker(client, retries=2):
+    return BedrockReranker(
+        "model-x",
+        explain_top_n=2,
+        max_tokens=500,
+        temperature=0.1,
+        region="us-east-1",
+        invalid_answer_retries=retries,
+        client=client,
+    )
+
+
+def test_unusable_answers_are_retried():
+    client = FlakyBedrock(failures=2)
+    reranker = _reranker(client)
+    assert reranker(REQUEST).ranking[0].candidate == 1
+    assert len(client.calls) == 3
+    assert reranker.input_tokens == 300  # every attempt is paid for
+
+
+def test_retries_are_bounded():
+    client = FlakyBedrock(failures=5)
+    with pytest.raises(RerankError, match="malformed_tool_use"):
+        _reranker(client, retries=1)(REQUEST)
+    assert len(client.calls) == 2
+
+
+def test_connection_pool_matches_concurrency(aws):
+    reranker = BedrockReranker(
+        "model-x",
+        explain_top_n=2,
+        max_tokens=500,
+        temperature=0.1,
+        region="us-east-1",
+        concurrency=32,
+    )
+    assert reranker.client.meta.config.max_pool_connections == 32

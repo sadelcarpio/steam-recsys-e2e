@@ -35,7 +35,9 @@ steam_marts (Iceberg, pyiceberg)
    candidates. The model must call a `submit_ranking` tool
    that returns every candidate once, best first, and explains the first `EXPLAIN_TOP_N` (5).
    Invalid answers are repaired: unknown or repeated numbers are dropped and missing
-   candidates are appended. A failed call keeps the retrieval order for that user.
+   candidates are appended. An answer with no usable tool call (e.g. stop reason
+   `malformed_tool_use`, about 0.3% of users with Nova 2 Lite) is retried up to twice. A user
+   that still fails keeps the retrieval order.
 4. **Output.** One item per user who has `user_features`. Only the users whose
    recommendations changed are written. The run first scans the table for each stored
    `content_hash` (reading only `user_id` and `content_hash`). An item is rewritten only when
@@ -159,7 +161,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
 | `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
-| `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 8 / 8 | Parallel Bedrock calls / DynamoDB scan segments and writers |
+| `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 32 / 8 | Parallel Bedrock calls (~1000 req/min, half the 2000 RPM quota) / DynamoDB scan segments and writers |
 | `USER_BATCH_SIZE` / `ITEM_BATCH_SIZE` / `NUM_THREADS` | 1024 / 4096 / 0 | Scoring |
 
 ## Development

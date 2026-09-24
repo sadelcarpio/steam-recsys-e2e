@@ -148,7 +148,11 @@ def parse_response(response: dict) -> LlmRanking:
 
 
 class BedrockReranker:
-    """Thread-safe `RankFn` over the Bedrock Converse API; counts tokens for cost logging."""
+    """Thread-safe `RankFn` over the Bedrock Converse API; counts tokens for cost logging.
+
+    Unusable answers (e.g. stop reason `malformed_tool_use`: the model emitted a tool call
+    Bedrock could not parse, ~0.3% of users with Nova 2 Lite) are retried up to
+    `invalid_answer_retries` times; throttling / network errors are retried by botocore."""
 
     def __init__(
         self,
@@ -158,22 +162,40 @@ class BedrockReranker:
         max_tokens: int,
         temperature: float,
         region: str,
+        concurrency: int = 10,
+        invalid_answer_retries: int = 2,
         client=None,
     ) -> None:
         self.model_id = model_id
+        self.invalid_answer_retries = invalid_answer_retries
         self.explain_top_n = explain_top_n
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.client = client or boto3.client(
             "bedrock-runtime",
             region_name=region,
-            config=Config(retries={"max_attempts": 10, "mode": "adaptive"}, read_timeout=120),
+            config=Config(
+                retries={"max_attempts": 10, "mode": "adaptive"},
+                read_timeout=120,
+                # one pooled connection per calling thread (botocore's default is 10)
+                max_pool_connections=max(concurrency, 10),
+            ),
         )
         self.input_tokens = 0
         self.output_tokens = 0
         self._lock = threading.Lock()
 
     def __call__(self, request: RerankRequest) -> LlmRanking:
+        for attempt in range(self.invalid_answer_retries + 1):
+            try:
+                return parse_response(self._converse(request))
+            except RerankError as err:
+                if attempt == self.invalid_answer_retries:
+                    raise
+                log.info("retrying an unusable answer (%s)", err)
+        raise AssertionError("unreachable")
+
+    def _converse(self, request: RerankRequest) -> dict:
         response = self.client.converse(
             modelId=self.model_id,
             system=[{"text": SYSTEM_PROMPT}],
@@ -190,7 +212,7 @@ class BedrockReranker:
         with self._lock:
             self.input_tokens += usage.get("inputTokens", 0)
             self.output_tokens += usage.get("outputTokens", 0)
-        return parse_response(response)
+        return response
 
 
 def rerank_all(

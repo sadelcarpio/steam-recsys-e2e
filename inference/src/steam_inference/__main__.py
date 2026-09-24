@@ -65,6 +65,7 @@ def main() -> None:
             max_tokens=settings.rerank_max_tokens,
             temperature=settings.rerank_temperature,
             region=settings.aws_region,
+            concurrency=settings.rerank_concurrency,
         )
     run_inference(
         settings,

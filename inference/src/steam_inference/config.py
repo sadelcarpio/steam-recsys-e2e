@@ -94,7 +94,9 @@ class InferenceSettings(BaseSettings):
     rerank_max_users: int = Field(1000, ge=0)
     # Recommendations that get an explanation (the top of the reranked list).
     explain_top_n: int = Field(5, ge=0)
-    rerank_concurrency: int = Field(8, ge=1)
+    # Parallel Bedrock calls (IO-bound threads). ~1.9 s per call: 32 threads ~ 1000 requests/min,
+    # half the Nova 2 Lite cross-region quota (2000 RPM, 8M tokens/min); throttling is retried.
+    rerank_concurrency: int = Field(32, ge=1, le=256)
     rerank_max_tokens: int = Field(2000, ge=100)
     rerank_temperature: float = Field(0.2, ge=0, le=1)
 
