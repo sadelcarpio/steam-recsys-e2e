@@ -68,3 +68,19 @@ def test_null_history_is_padded(marts):
     )
     users = load_inference_data(FakeSource(marts)).users
     assert users.history.shape[1] == 5
+
+
+def test_popular_counts_are_recent_positive_reviews_per_game():
+    day = 86_400 * 1_000_000
+    game_idx = np.array([2, 2, 3, 3, 4, 5])
+    micros = np.array([100, 99, 100, 100, 100, 50]) * day
+    positive = np.array([True, True, True, False, True, True])
+    counts = features.popular_counts(game_idx, micros, positive, window_days=10)
+    assert counts.tolist() == [0, 0, 2, 1, 1, 0]  # game 3's negative, game 5 too old
+
+
+def test_popular_counts_from_interactions(source):
+    counts = load_inference_data(source).popular_counts
+    assert counts[FIRST_GAME] == 3  # users 101, 103, 104
+    assert counts[4] == 1  # 101's review is negative
+    assert len(counts) == FIRST_GAME + N_GAMES - 2  # the last 2 games: nobody reviewed them

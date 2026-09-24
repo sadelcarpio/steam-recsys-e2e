@@ -10,7 +10,8 @@ Terraform for the whole project (AWS, `us-east-1`).
 | `data_ingestion.tf` | ECR `data-ingestion`, ECS cluster and task definitions `games-scraping` / `reviews-scraping`, Lambda `list-partition-game-ids`, SSM `/data-ingestion/*`, secret `data-ingestion/steam-api-key`, IAM.                                            |
 | `etl.tf`            | S3 `processed-steam-data-<acct>` (Iceberg lake + Athena results), Glue databases `steam_{raw,staging,intermediate,marts}`, raw external tables `steam_raw.games` / `reviews`, Athena workgroup `steam-recsys-etl`, ECR `etl`, ECS task definition `dbt`, SSM `/etl/*`, IAM. CI sandbox: bucket `etl-ci-<acct>` (2-day expiry), workgroup `steam-recsys-etl-ci`, role `steam-recsys-etl-ci` (PRs + main, only `ci_*` Glue databases). |
 | `training.tf`       | S3 `model-artifacts-<acct>` (versioned; models, evaluation reports, champion), ECR `training`, SageMaker execution role `steam-recsys-training` (reads the marts through Glue + S3, read/write on the artifacts bucket), SSM `/training/*` (`training_instance_type`, default `ml.m5.2xlarge`). |
-| `inference.tf`      | DynamoDB `game-explainable-recommendations` (PK `user_id`; only changed users are rewritten), ECR `inference`, SageMaker execution role `steam-recsys-inference` (marts read, `models/*` read, table scan + writes, `bedrock:InvokeModel` on `inference_bedrock_model_id` only), SSM `/inference/*`. The processing job itself is the `Infer` state (`inference_instance_type`, default `ml.t3.xlarge`). |
+| `inference.tf`      | DynamoDB `game-explainable-recommendations` (PK `user_id`; only changed users are rewritten, plus the `__popular__` fallback item) and `game-details` (PK `game_id` N, insert-only), ECR `inference`, SageMaker execution role `steam-recsys-inference` (marts read, `models/*` read, scan + writes on both tables, `bedrock:InvokeModel` on `inference_bedrock_model_id` only), SSM `/inference/*`. The processing job itself is the `Infer` state (`inference_instance_type`, default `ml.t3.xlarge`). |
+| `serving.tf`        | Lambda `recsys-serving` (zip, placeholder until the serving CD) behind a Lambda Function URL, auth `serving_auth_type` (`AWS_IAM` default or `NONE`, an infrastructure CD input; `NONE` adds the two public permissions), CORS `serving_cors_allow_origins`, role `steam-recsys-serving` (GetItem / BatchGetItem only), client role `steam-recsys-serving-client` (may invoke the URL under `AWS_IAM`), SSM `/serving/*`. |
 | `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks, then the `dbt` task, then `CheckChampion` → the SageMaker Processing job `Infer` or a skip) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                               |
 
 ## Deployment
@@ -35,9 +36,11 @@ Set `schedule_enabled = false` to pause the weekly schedule. Tunables are in `va
 
 - `infrastructure CI`: `fmt -check` and `validate` for both roots, on changes under `infrastructure/`.
 - `infrastructure CD` (manual): `plan`, or `plan` + `apply`, through OIDC. The deploy role only
-  trusts `refs/heads/main`.
+  trusts `refs/heads/main`. Input `serving_auth_type` (`AWS_IAM` / `NONE`) sets the serving
+  Function URL auth on every run.
 - `etl CI` assumes `steam-recsys-etl-ci`, which trusts pull requests and `main` of this repo but
   can only touch the CI bucket, the CI workgroup and `ci_*` Glue databases.
 - `inference CD` pushes the image and, with `run_now`, starts the `Infer` processing job once.
+- `serving CD` uploads the `recsys-serving` zip and smoke-tests it.
 - `training CD` / `training promote` use the deploy role to push the image and start SageMaker
   training jobs, which run as `steam-recsys-training` (passed by the deploy role).

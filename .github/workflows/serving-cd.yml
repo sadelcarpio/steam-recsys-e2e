@@ -1,0 +1,59 @@
+name: serving CD
+
+# Manual deploy of the `recsys-serving` Lambda code (zip). Infrastructure must be applied first
+# (it creates the function, its Function URL and the auth type). Smoke-tests the new code with a
+# direct invoke of /health and /popular (works whatever the URL auth type).
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: serving-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: serving
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen && uv run pytest -q
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy Lambda code
+        run: |
+          zip_path="$(scripts/build_lambda.sh)"
+          aws lambda update-function-code \
+            --function-name recsys-serving \
+            --zip-file "fileb://${zip_path}" --publish > /dev/null
+          aws lambda wait function-updated-v2 --function-name recsys-serving
+
+      - name: Smoke test
+        run: |
+          invoke() {
+            aws lambda invoke --function-name recsys-serving --cli-binary-format raw-in-base64-out \
+              --payload "{\"rawPath\": \"$1\", \"requestContext\": {\"http\": {\"method\": \"GET\"}}}" \
+              out.json > /dev/null
+            jq -r '.statusCode' out.json
+          }
+          [ "$(invoke /health)" = 200 ] || { cat out.json; exit 1; }
+          # 404 until the first inference run has written the popularity item
+          status="$(invoke '/popular')"
+          case "$status" in 200|404) ;; *) cat out.json; exit 1 ;; esac
+          url="$(aws lambda get-function-url-config --function-name recsys-serving)"
+          {
+            echo '### recsys-serving deployed'
+            echo "- URL: $(jq -r .FunctionUrl <<< "$url") (auth: $(jq -r .AuthType <<< "$url"))"
+            echo "- /popular: HTTP ${status}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,13 +1,15 @@
 name: inference CI
 
-# inference imports the training package (model, artifact contract, catalog code), so training
-# source changes run this too.
+# inference imports the training package (model, artifact contract, catalog code), and its
+# contract test reads the written items with the serving package, so changes to either run this.
 on:
   pull_request:
     paths:
       - "inference/**"
       - "training/src/**"
       - "training/pyproject.toml"
+      - "serving/src/**"
+      - "serving/pyproject.toml"
       - ".github/workflows/inference-*.yml"
   push:
     branches: [main]
@@ -15,6 +17,8 @@ on:
       - "inference/**"
       - "training/src/**"
       - "training/pyproject.toml"
+      - "serving/src/**"
+      - "serving/pyproject.toml"
       - ".github/workflows/inference-*.yml"
 
 permissions:

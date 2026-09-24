@@ -9,7 +9,7 @@ component, described below:
 | ETL            | @etl            | dbt based transformations with AWS Athena backend, running as an ECS Task as well, to perform feature engineering on the raw parquet scraped data, resulting in an Iceberg dataset for offline training and evaluation of retrieval and ranking models.                                                                                                                                                                                                              |
 | Training       | @training       | Responsible of taking the processed Iceberg tables from the ETL in order to train the recommender model (currently only retrieval since there is not enough user signal). Output artifacts are the User and Item tower.                                                                                                                                                                                                                                              |
 | Inference      | @inference      | Includes the Inference Pipeline which reads the necessary features from the Iceberg Tables, runs the two tower model and reranks the top N items with an LLM, including a natural text paragraph on why the recommendation was chosen                                                                                                                                                                                                                                |
-| Serving        | @serving        | Lightweight lambda app to serve the final recommender system. Fetch the recommendations for each user directly from DynamoDB's `game-explainable-recommendations` table                                                                                                                                                                                                                                                                                                                 |
+| Serving        | @serving        | Lightweight lambda app to serve the final recommender system. Fetch the recommendations for each user directly from DynamoDB's `game-explainable-recommendations` table (popularity fallback for unknown users), enriched with the `game-details` table, behind a Lambda Function URL (auth `AWS_IAM` or `NONE`)                                                                                                                                                                         |
 | Infrastructure | @infrastructure | Necessary AWS infrastructure (terraform), including AWS Lambda for serving, EventBridge to schedule the Step Function to handle the full ingestion to recs pipeline. Since doing batch retrieval recommendation recomputation triggers as new data arrives in batch.                                                                                                                                                                                                 |
 
 ## General Outlines
@@ -86,13 +86,16 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - S3 (Iceberg `user_features`, `game_features`, `interactions`) → features → SageMaker Inference Pipeline
 - S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → SageMaker Inference Pipeline
 - SageMaker Inference Pipeline ↔ Bedrock (LLM reranking + explanations for the most active reviewers)
-- SageMaker Inference Pipeline → top-K recs (changed users only) → DynamoDB `game-explainable-recommendations`
+- SageMaker Inference Pipeline → top-K recs (changed users only) + `__popular__` fallback → DynamoDB
+  `game-explainable-recommendations`
+- S3 (Iceberg `game_details`) → SageMaker Inference Pipeline → new games only → DynamoDB `game-details`
 
 ### Serving (online path)
 
-- User → user id → Lambda `recsys-serving` → reads DynamoDB `game-explainable-recommendations` →
-  recommendations → User
-- No LB in front of the Lambda; the diagram shows the Lambda called directly
+- User → user id → Lambda Function URL → Lambda `recsys-serving` → reads DynamoDB
+  `game-explainable-recommendations` (+ `game-details`) → recommendations → User
+- No LB in front of the Lambda; the diagram shows the Lambda called directly (Function URL, auth
+  `AWS_IAM` or `NONE`, chosen in the infrastructure CD)
 
 ## Not shown (deliberately)
 

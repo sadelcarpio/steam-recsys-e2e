@@ -1,5 +1,6 @@
 """Pydantic contracts of the inference output (the inference -> serving interface) and of the
-LLM reranking response.
+LLM reranking response. Serving reads both tables (serving/src/steam_serving/contracts.py):
+`tests/test_serving_contract.py` checks that it parses every item written here.
 
 DynamoDB table `game-explainable-recommendations`, one item per user. A run only (re)writes
 the users whose `content_hash` changed and deletes the users that are gone:
@@ -13,17 +14,30 @@ the users whose `content_hash` changed and deletes the users that are gone:
 
 `score` and `generated_at` are as of the last write: an unchanged list is not rewritten, even
 when its scores moved a little (weekly `reviews_ratio` updates shift every score).
+
+The reserved item `user_id = "__popular__"` (model_id "popularity", never reranked) holds the
+most reviewed-positive games of the recent reviews, the fallback for users without an item.
+Its `score` is the game's share of the top game's positive reviews, in (0, 1].
+
+DynamoDB table `game-details`, one item per catalog game, insert-only (details are static):
+    game_id N partition key (Steam appid), name S, short_description S?, header_image S?,
+    release_date S?, is_free BOOL?, price N?, developers / publishers / genres / categories L of S
 """
 
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+POPULAR_USER_ID = "__popular__"
+POPULARITY_MODEL_ID = "popularity"
 
 # Score = cosine similarity of the user and game embeddings (before any reranking).
 Score = Annotated[float, Field(ge=-1.0001, le=1.0001)]
@@ -83,6 +97,41 @@ class UserRecommendations(_Frozen):
         return item
 
 
+_TAG = re.compile(r"<[^>]+>")
+_SPACES = re.compile(r"\s+")
+
+
+def clean_text(value: str | None) -> str | None:
+    """Plain text from Steam's store text: tags dropped, HTML entities decoded, spaces collapsed."""
+    if value is None:
+        return None
+    text = _SPACES.sub(" ", html.unescape(_TAG.sub(" ", value))).strip()
+    return text or None
+
+
+class GameDetails(_Frozen):
+    """Human-readable details of a game (mart `game_details`), for serving / a frontend."""
+
+    game_id: int
+    name: str
+    short_description: str | None = None
+    header_image: str | None = None
+    release_date: str | None = None
+    is_free: bool | None = None
+    price: Annotated[float, Field(ge=0)] | None = None
+    developers: list[str] = Field(default_factory=list)
+    publishers: list[str] = Field(default_factory=list)
+    genres: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+
+    def to_item(self) -> dict[str, Any]:
+        """DynamoDB item (resource API types: Decimal numbers, no None values)."""
+        item: dict[str, Any] = self.model_dump(exclude_none=True)
+        if self.price is not None:
+            item["price"] = Decimal(f"{self.price:.2f}")
+        return item
+
+
 class RankedCandidate(BaseModel):
     """One entry of the LLM's ranking: a candidate number from the prompt (1-based)."""
 
@@ -111,5 +160,7 @@ class InferenceSummary(_Frozen):
     written: int = 0
     unchanged: int = 0
     deleted: int = 0
+    popular_games: int = 0
+    game_details_written: int = 0
     snapshots: dict[str, int | None] = Field(default_factory=dict)
     seconds: float = 0.0

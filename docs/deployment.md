@@ -125,6 +125,7 @@ Order matters only on the first deploy: the pipeline's ECS tasks run the `:lates
 | *etl CD* | image `etl` (ECS task `dbt`) |
 | *training CD* | image `training:<sha>` + a SageMaker training job for that commit (see step 9) |
 | *inference CD* | image `inference` (SageMaker Processing job `Infer`, the pipeline's last step; see step 10) |
+| *serving CD* | Lambda `recsys-serving` code (zip) + smoke test (see step 11) |
 
 Later deploys: re-run the component's CD workflow after merging; the next pipeline run picks up
 the new `:latest` image.
@@ -143,7 +144,8 @@ aws stepfunctions start-execution --state-machine-arn "$ARN" --input '{}'
 Flow: `ListPartitionGameIds → Scrape (games + reviews) → Transform (dbt) → CheckChampion →
 Infer` (`NoChampion`, a successful skip, until a model is promoted in step 9). The first run is
 the backfill and takes hours (Steam rate limits). Logs: CloudWatch `/ecs/data-ingestion`,
-`/ecs/etl`, `/aws/sagemaker/ProcessingJobs` (inference), `/aws/lambda/list-partition-game-ids`.
+`/ecs/etl`, `/aws/sagemaker/ProcessingJobs` (inference), `/aws/lambda/list-partition-game-ids`,
+`/aws/lambda/recsys-serving`.
 
 Check the marts in the Athena console (workgroup `steam-recsys-etl`):
 
@@ -261,8 +263,11 @@ candidate wins, it copies the model to `models/champion/` and the report to
 The pipeline's last step (`Infer`, a SageMaker Processing job on `ml.t3.xlarge`) runs every week once
 `models/champion/metadata.json` exists: it scores every user of `user_features` against every
 game, reranks the candidates of the 1000 most active users (>= 6 reviews) with Bedrock and
-writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`.
-Details and cost:
+writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`
+(plus the `__popular__` fallback item). It also loads the details of games missing from
+DynamoDB `game-details` (the first run writes about 50k items; later runs write only new games).
+The ETL must be deployed with the `game_details` mart first; without it the sync is skipped
+with a warning. Details and cost:
 `inference/README.md`.
 
 **Bedrock access (once).** The default model is Amazon Nova 2 Lite through the US cross-region
@@ -297,9 +302,45 @@ aws logs tail /aws/sagemaker/ProcessingJobs --log-stream-name-prefix <job name> 
 **Check** an item: `aws dynamodb get-item --table-name game-explainable-recommendations
 --key '{"user_id":{"S":"<steam id>"}}'`.
 
+## 11. Serving API
+
+`recsys-serving` is a Lambda behind a Lambda Function URL. It reads the tables of step 10, so it
+returns 404 until the first inference run. API and examples: `serving/README.md`.
+
+**Auth.** Actions → *infrastructure CD* → Run workflow → `serving_auth_type`:
+- `AWS_IAM` (default): callers sign requests with SigV4. Assume
+  `steam-recsys-serving-client` (output `serving_client_role_arn`) or grant
+  `lambda:InvokeFunctionUrl` + `lambda:InvokeFunction` on the function.
+- `NONE`: a public demo URL.
+
+The value is applied on **every** infrastructure CD run, so choose `NONE` again on each apply
+to keep the URL public. The outputs `serving_function_url` / `serving_auth_type` are in the
+job summary.
+
+**Deploy.** Actions → *serving CD* → Run workflow (on `main`). It runs the tests, uploads the
+zip, invokes `/health` and `/popular` directly (this works under either auth type) and prints
+the URL. Until then the function is a placeholder that answers 503.
+
+**Try it:**
+
+```bash
+URL=$(aws lambda get-function-url-config --function-name recsys-serving --query FunctionUrl --output text)
+curl "${URL}popular?limit=3"                                   # NONE
+curl "${URL}users/<steam id>/recommendations?details=false"    # unknown ids get the popular list
+# AWS_IAM: sign with the client role's credentials
+curl --aws-sigv4 "aws:amz:us-east-1:lambda" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -H "x-amz-security-token: $AWS_SESSION_TOKEN" "${URL}popular"
+```
+
+**Concurrency.** The account's Lambda limit is 10 concurrent executions by default, shared
+with `list-partition-game-ids`. A public URL under load can throttle the pipeline's first
+step. Before a public demo, request a higher `Concurrent executions` quota (Service Quotas →
+AWS Lambda), then set `serving_reserved_concurrency` (e.g. 5) to cap the function.
+
 ## Order for a fresh account (summary)
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →
 6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there) →
 9 SageMaker quota, train and promote → 10 inference (automatic from the next pipeline run, or
-*inference CD* with `run_now`).
+*inference CD* with `run_now`) → 11 serving (*serving CD*; its auth is an *infrastructure CD*
+input).

@@ -1,0 +1,38 @@
+name: serving CI
+
+on:
+  pull_request:
+    paths:
+      - "serving/**"
+      - ".github/workflows/serving-*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "serving/**"
+      - ".github/workflows/serving-*.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: serving
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: serving/uv.lock
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # Handler / routes / repository on moto DynamoDB, no AWS.
+      - run: uv run pytest -q
+      - name: Build the Lambda zip
+        run: |
+          zip_path="$(scripts/build_lambda.sh)"
+          ls -l "$zip_path"

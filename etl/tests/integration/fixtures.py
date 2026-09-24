@@ -87,8 +87,9 @@ RAW_SCHEMAS = {"games": GAMES_SCHEMA, "reviews": REVIEWS_SCHEMA}
 
 
 def _game(appid, name, *, scrape_date, type_="game", devs=(), pubs=(), genres=(), cats=(),
-          score=None, recs=None, is_free=False):  # fmt: skip
+          score=None, recs=None, is_free=False, details=None):  # fmt: skip
     return {
+        **(details or {}),
         "appid": appid,
         "name": name,
         "type": type_,
@@ -118,8 +119,11 @@ def _review(rec_id, user, appid, positive, dt, *, scrape_date, updated=None):
 
 _d1 = {"scrape_date": BATCH1_DATE}
 _d2 = {"scrape_date": BATCH2_DATE}
+_alpha_details = {"short_description": " Shoot &amp; loot. ", "header_image": "https://img/10.jpg",
+                  "release_date": "21 Aug, 2012", "price": 9.99}  # fmt: skip
 _alpha = {"devs": ["Valve", " Valve ", ""], "pubs": ["Valve"], "genres": ["Action"],
-          "cats": ["Single-player", "Multi-player"], "score": 8, "recs": 1000}  # fmt: skip
+          "cats": ["Single-player", "Multi-player"], "score": 8, "recs": 1000,
+          "details": _alpha_details}  # fmt: skip
 
 BATCH1_GAMES = [
     _game(10, "Alpha", **_alpha, **_d1),

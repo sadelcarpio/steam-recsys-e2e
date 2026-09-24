@@ -63,6 +63,7 @@ KEYS = {
     "lkp_categories": ("id",),
     "lkp_games": ("game_idx",),
     "game_features": ("game_id", "timestamp"),
+    "game_details": ("game_id",),
     "user_features": ("user_id", "timestamp"),
     "interactions": ("review_id",),
 }
@@ -217,7 +218,13 @@ def test_rerun_without_new_data_changes_nothing(runs):
 
 
 def test_incremental_matches_full_refresh(runs):
-    for table in ("int_game_review_counts", "game_features", "user_features", "interactions"):
+    for table in (
+        "int_game_review_counts",
+        "game_features",
+        "game_details",
+        "user_features",
+        "interactions",
+    ):
         assert without_batch(runs["full"][table]) == without_batch(runs["batch2"][table]), table
     for table in MART_CONTRACTS:
         if table.startswith("lkp_"):  # never rebuilt, ids stay as assigned
@@ -299,6 +306,23 @@ def test_game_features_smoothed_ratio_and_encoded_attributes(runs):
     assert (alpha["game_idx"], alpha["game_developers"], alpha["game_publishers"]) == (2, [4], [4])
     assert (alpha["game_genres"], alpha["game_categories"]) == ([2], [3, 2])
     assert len(runs["batch2"]["game_features"]) == 25
+
+
+def test_game_details_one_row_per_catalog_game(runs):
+    for run in ("batch1", "batch2"):
+        catalog = {r["game_id"] for r in runs[run]["int_games__deduplicated"]}
+        assert {r["game_id"] for r in runs[run]["game_details"]} == catalog
+    details = by(runs["batch2"]["game_details"], "game_id")
+    alpha = details[10]
+    assert (alpha["game_name"], alpha["game_short_description"]) == ("Alpha", "Shoot &amp; loot.")
+    assert (alpha["game_header_image"], alpha["game_release_date"]) == (
+        "https://img/10.jpg",
+        "21 Aug, 2012",
+    )
+    assert (alpha["game_price"], alpha["game_developers"]) == (pytest.approx(9.99), ["Valve"])
+    delta = details[50]
+    assert delta["game_short_description"] is None and delta["game_price"] is None
+    assert delta["game_developers"] == ["Valve", "New Studio"]
 
 
 def test_user_features_last_five_positive_most_recent_first(runs):

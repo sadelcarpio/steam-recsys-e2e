@@ -1,7 +1,8 @@
-"""Stage 4: write one item per user (`contracts.UserRecommendations`), only when it changed.
+"""Stage 4: write one item per user (`contracts.UserRecommendations`), only when it changed, and
+one item per new game (`contracts.GameDetails`, insert-only).
 
-`DynamoWriter`:
-  - `stored_hashes` scans the table in parallel segments, reading `user_id` + `content_hash`
+`DynamoWriter` (partition key `key`: `user_id` for recommendations, `game_id` for details):
+  - `stored_hashes` scans the table in parallel segments, reading the key + `content_hash`
     only (~0.5 read units per item, a few cents per full scan);
   - `write` puts the items with parallel batch writes (each worker thread owns its boto3
     resource; `batch_writer` resends unprocessed items and botocore retries throttling);
@@ -24,19 +25,21 @@ from typing import Protocol
 import boto3
 from botocore.config import Config
 
-from steam_inference.contracts import UserRecommendations
-
 log = logging.getLogger(__name__)
 CHUNK_ITEMS = 1000
 RETRIES = Config(retries={"max_attempts": 10, "mode": "adaptive"})
 
 
+class Item(Protocol):
+    def to_item(self) -> dict: ...
+
+
 class Writer(Protocol):
     def stored_hashes(self) -> dict[str, str]:
-        """user_id -> content_hash of every stored item ("" when an item has no hash)."""
+        """Key (as a string) -> content_hash of every stored item ("" when it has no hash)."""
         ...
 
-    def write(self, items: Iterable[UserRecommendations]) -> int:
+    def write(self, items: Iterable[Item]) -> int:
         """Write (overwrite) every item, return how many were written."""
         ...
 
@@ -46,8 +49,11 @@ class Writer(Protocol):
 
 
 class DynamoWriter:
-    def __init__(self, table: str, *, region: str, concurrency: int, session=None) -> None:
+    def __init__(
+        self, table: str, *, region: str, concurrency: int, key: str = "user_id", session=None
+    ) -> None:
         self.table = table
+        self.key = key
         self.region = region
         self.concurrency = concurrency
         self.session_factory = session or boto3.session.Session
@@ -70,11 +76,13 @@ class DynamoWriter:
             TableName=self.table,
             Segment=segment,
             TotalSegments=self.concurrency,
-            ProjectionExpression="user_id, content_hash",
+            ProjectionExpression="#key, content_hash",
+            ExpressionAttributeNames={"#key": self.key},
         )
         for page in pages:
             for item in page["Items"]:
-                hashes[item["user_id"]["S"]] = item.get("content_hash", {}).get("S", "")
+                (key,) = item[self.key].values()  # {"S": "..."} or {"N": "..."}
+                hashes[key] = item.get("content_hash", {}).get("S", "")
         return hashes
 
     def stored_hashes(self) -> dict[str, str]:
@@ -88,15 +96,15 @@ class DynamoWriter:
     # ---- write ----
 
     def _put_chunk(self, chunk: list[dict]) -> int:
-        with self._table().batch_writer(overwrite_by_pkeys=["user_id"]) as batch:
+        with self._table().batch_writer(overwrite_by_pkeys=[self.key]) as batch:
             for item in chunk:
                 batch.put_item(Item=item)
         return len(chunk)
 
     def _delete_chunk(self, chunk: list[str]) -> int:
-        with self._table().batch_writer(overwrite_by_pkeys=["user_id"]) as batch:
-            for user_id in chunk:
-                batch.delete_item(Key={"user_id": user_id})
+        with self._table().batch_writer(overwrite_by_pkeys=[self.key]) as batch:
+            for key in chunk:  # string keys (the recommendations table)
+                batch.delete_item(Key={self.key: key})
         return len(chunk)
 
     def _run(self, work, chunks: Iterable[list], verb: str) -> int:
@@ -114,7 +122,7 @@ class DynamoWriter:
         log.info("%s %d items in %s", verb, done_count, self.table)
         return done_count
 
-    def write(self, items: Iterable[UserRecommendations]) -> int:
+    def write(self, items: Iterable[Item]) -> int:
         return self._run(self._put_chunk, _chunks(item.to_item() for item in items), "wrote")
 
     def delete(self, user_ids: Iterable[str]) -> int:
@@ -128,7 +136,7 @@ class JsonlWriter:
     def stored_hashes(self) -> dict[str, str]:
         return {}
 
-    def write(self, items: Iterable[UserRecommendations]) -> int:
+    def write(self, items: Iterable[Item]) -> int:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         written = 0
         with self.path.open("w") as out:

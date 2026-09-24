@@ -61,6 +61,9 @@ class InferenceSettings(BaseSettings):
     glue_database: str = "steam_marts"
     aws_region: str = "us-east-1"
     recommendations_table: str = "game-explainable-recommendations"
+    # Details of every catalog game for serving (insert-only: only new games are written).
+    game_details_table: str = "game-details"
+    sync_game_details: bool = True
     # Local file: write the items as JSON lines there instead of DynamoDB (dry runs).
     output_path: str | None = None
 
@@ -72,6 +75,9 @@ class InferenceSettings(BaseSettings):
     num_threads: int = Field(0, ge=0)  # 0 = torch default
     # Only the N most active users (0 = everyone with user_features); for local runs.
     max_users: int = Field(0, ge=0)
+    # Popularity fallback (item "__popular__"): positive reviews in this many days before the
+    # newest review.
+    popular_window_days: int = Field(90, ge=1)
 
     # ---- LLM reranking (Bedrock Converse API) ----
     rerank_enabled: bool = True

@@ -66,3 +66,21 @@ output "inference_role_arn" {
   description = "SageMaker execution role of the inference processing job."
   value       = aws_iam_role.inference.arn
 }
+
+output "game_details_table" {
+  value = aws_dynamodb_table.game_details.name
+}
+
+output "serving_function_url" {
+  description = "Base URL of the serving API (recsys-serving Function URL)."
+  value       = aws_lambda_function_url.serving.function_url
+}
+
+output "serving_auth_type" {
+  value = aws_lambda_function_url.serving.authorization_type
+}
+
+output "serving_client_role_arn" {
+  description = "Role that may call the serving URL when its auth type is AWS_IAM."
+  value       = aws_iam_role.serving_client.arn
+}

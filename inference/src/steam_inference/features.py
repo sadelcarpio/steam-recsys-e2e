@@ -2,8 +2,10 @@
 
 `game_features` and `user_features` are the source of truth: the latest row per game / user is
 its current state. `interactions` only adds each user's reviewed games (excluded from the
-recommendations) and review counts (who gets reranked). Every read of one run is pinned to the
-snapshot current at its start, and marts are streamed in Arrow batches, reduced as they arrive.
+recommendations), review counts (who gets reranked) and the recent positive reviews per game
+(the popularity fallback served to users without recommendations). Every read of one run is
+pinned to the snapshot current at its start, and marts are streamed in Arrow batches, reduced
+as they arrive.
 
 The catalog covers every current game, including games newer than the model: ids beyond the
 model's vocabularies map to OOV inside the model, so a new game is scored from its content
@@ -115,13 +117,19 @@ class InferenceData:
     games: Games
     users: Users
     reviews: Reviews
+    # int64 per game_idx: positive reviews in the last `popular_window_days` of reviews
+    popular_counts: np.ndarray
     snapshots: dict[str, int | None]
 
 
-def load_inference_data(source: TableSource, *, max_users: int = 0) -> InferenceData:
+def load_inference_data(
+    source: TableSource, *, max_users: int = 0, popular_window_days: int = 90
+) -> InferenceData:
     snapshots = {table: source.snapshot_id(table) for table in TABLES}
     games = load_games(source, snapshots)
-    review_users, reviews = _load_reviews(source, snapshots["interactions"])
+    review_users, reviews, popular_counts = _load_reviews(
+        source, snapshots["interactions"], popular_window_days
+    )
     users = _latest_users(
         source.batches(
             "user_features",
@@ -143,7 +151,13 @@ def load_inference_data(source: TableSource, *, max_users: int = 0) -> Inference
         len(games),
         snapshots,
     )
-    return InferenceData(games=games, users=users, reviews=reviews, snapshots=snapshots)
+    return InferenceData(
+        games=games,
+        users=users,
+        reviews=reviews,
+        popular_counts=popular_counts,
+        snapshots=snapshots,
+    )
 
 
 def load_games(source: TableSource, snapshots: dict[str, int | None]) -> Games:
@@ -165,10 +179,12 @@ def load_games(source: TableSource, snapshots: dict[str, int | None]) -> Games:
     )
 
 
-def _load_reviews(source: TableSource, snapshot_id: int | None) -> tuple[np.ndarray, Reviews]:
-    """(sorted user id of every review, reviews) from `interactions`."""
-    users, games, timestamps = [], [], []
-    columns = ["user_id", "game_idx", "timestamp"]
+def _load_reviews(
+    source: TableSource, snapshot_id: int | None, popular_window_days: int
+) -> tuple[np.ndarray, Reviews, np.ndarray]:
+    """(sorted user id of every review, reviews, popular counts) from `interactions`."""
+    users, games, timestamps, positives = [], [], [], []
+    columns = ["user_id", "game_idx", "timestamp", "is_positive"]
     for batch in source.batches("interactions", columns, snapshot_id):
         user = _int64(pc.fill_null(batch["user_id"], -1))
         game = _int64(pc.fill_null(batch["game_idx"], -1))
@@ -176,12 +192,27 @@ def _load_reviews(source: TableSource, snapshot_id: int | None) -> tuple[np.ndar
         users.append(user[keep])
         games.append(game[keep])
         timestamps.append(_micros(batch["timestamp"])[keep])
+        positive = pc.fill_null(batch["is_positive"], False).to_numpy(zero_copy_only=False)
+        positives.append(np.asarray(positive, dtype=bool)[keep])
     if not users:
         empty = np.zeros(0, dtype=np.int64)
-        return empty, Reviews(empty)
+        return empty, Reviews(empty), empty
     user = np.concatenate(users)
-    order = np.lexsort((-np.concatenate(timestamps), user))
-    return user[order], Reviews(np.concatenate(games)[order])
+    game = np.concatenate(games)
+    ts = np.concatenate(timestamps)
+    popular = popular_counts(game, ts, np.concatenate(positives), popular_window_days)
+    order = np.lexsort((-ts, user))
+    return user[order], Reviews(game[order]), popular
+
+
+def popular_counts(
+    game_idx: np.ndarray, micros: np.ndarray, positive: np.ndarray, window_days: int
+) -> np.ndarray:
+    """Positive reviews per game_idx in the last `window_days` before the newest review."""
+    if not len(game_idx):
+        return np.zeros(0, dtype=np.int64)
+    recent = positive & (micros >= micros.max() - window_days * 86_400 * 1_000_000)
+    return np.bincount(game_idx[recent], minlength=int(game_idx.max()) + 1).astype(np.int64)
 
 
 def _latest_users(batches: Iterable[pa.RecordBatch]) -> Users:

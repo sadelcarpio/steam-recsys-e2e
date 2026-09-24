@@ -11,9 +11,15 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
   Manager `<component-kebab>/<name>`. Secret values are dummy placeholders with
   `ignore_changes`, and the real values are set out of band. Never put real secrets in code
   or tfvars.
-- Application code is deployed by the component CD workflows, not by Terraform. The Lambda
-  uses a placeholder zip plus `ignore_changes = [filename, source_code_hash]`, and ECS task
-  definitions use `:${var.scraping_image_tag}` (default `latest`).
+- Application code is deployed by the component CD workflows, not by Terraform. The Lambdas
+  (`list-partition-game-ids`, `recsys-serving`) use a placeholder zip plus
+  `ignore_changes = [filename, source_code_hash]`, and ECS task definitions use
+  `:${var.scraping_image_tag}` (default `latest`).
+- The deploy role has no `iam:CreatePolicy`: use inline role policies
+  (`aws_iam_role_policy`), not managed policies.
+- `var.serving_auth_type` comes from the infrastructure CD input (`TF_VAR_serving_auth_type`),
+  so a plan without it falls back to `AWS_IAM`. A public URL (`NONE`) needs both
+  `aws_lambda_permission`s (`InvokeFunctionUrl` + `InvokeFunction` via the function URL).
 - The state machine definition is HCL (`local.pipeline_definition` in `orchestration.tf`):
   `ListPartitionGameIds -> Scrape -> Transform -> CheckChampion -> HasChampion -> Infer |
   NoChampion`. `CheckChampion` lists `models/champion/metadata.json` (written last by a

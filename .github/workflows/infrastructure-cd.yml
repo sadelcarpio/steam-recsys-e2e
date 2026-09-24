@@ -9,6 +9,13 @@ on:
         type: choice
         options: [plan, apply]
         default: plan
+      serving_auth_type:
+        description: >-
+          Auth of the recsys-serving Function URL: AWS_IAM (SigV4-signed callers only) or NONE
+          (public demo). Every apply sets it, so pick NONE on each apply to keep it public.
+        type: choice
+        options: [AWS_IAM, NONE]
+        default: AWS_IAM
 
 permissions:
   id-token: write
@@ -25,6 +32,8 @@ defaults:
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    env:
+      TF_VAR_serving_auth_type: ${{ inputs.serving_auth_type }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -42,7 +51,7 @@ jobs:
         if: inputs.action == 'apply'
         run: |
           {
-            echo '### Terraform outputs'
+            echo "### Terraform outputs (serving auth: ${TF_VAR_serving_auth_type})"
             echo '```'
             terraform output
             echo '```'

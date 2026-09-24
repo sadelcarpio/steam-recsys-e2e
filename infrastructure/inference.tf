@@ -2,7 +2,8 @@
 # pipeline (skipped while s3://model-artifacts-<acct>/models/champion/ is empty). Scores every
 # user against every game with the champion two-tower model, reranks the top reviewers'
 # candidates with a Bedrock LLM and writes one DynamoDB item per user whose recommendations
-# changed. The image is shipped by the inference CD; the job itself is defined by the `Infer`
+# changed, plus the popularity fallback item and the details of new games (game-details).
+# The image is shipped by the inference CD; the job itself is defined by the `Infer`
 # state (orchestration.tf, `local.inference_job`).
 
 locals {
@@ -32,6 +33,19 @@ resource "aws_dynamodb_table" "recommendations" {
   }
 }
 
+# Details of every catalog game (mart game_details), read by serving. Insert-only: each run
+# writes only the games missing from the table (the first run loads the whole catalog).
+resource "aws_dynamodb_table" "game_details" {
+  name         = "game-details"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "game_id"
+
+  attribute {
+    name = "game_id"
+    type = "N"
+  }
+}
+
 # ---- Config (SSM Parameter Store) -----------------------------------------------------------
 
 resource "aws_ssm_parameter" "inference" {
@@ -39,6 +53,7 @@ resource "aws_ssm_parameter" "inference" {
     MODEL_ARTIFACTS_BUCKET = aws_s3_bucket.model_artifacts.bucket
     GLUE_DATABASE          = local.marts_database
     RECOMMENDATIONS_TABLE  = aws_dynamodb_table.recommendations.name
+    GAME_DETAILS_TABLE     = aws_dynamodb_table.game_details.name
     BEDROCK_MODEL_ID       = var.inference_bedrock_model_id
     RERANK_MAX_USERS       = tostring(var.inference_rerank_max_users)
   }
@@ -105,7 +120,7 @@ data "aws_iam_policy_document" "inference" {
   statement {
     sid       = "SyncRecommendations"
     actions   = ["dynamodb:Scan", "dynamodb:BatchWriteItem"]
-    resources = [aws_dynamodb_table.recommendations.arn]
+    resources = [aws_dynamodb_table.recommendations.arn, aws_dynamodb_table.game_details.arn]
   }
   statement {
     sid     = "InvokeRerankModel"

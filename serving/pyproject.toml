@@ -1,0 +1,35 @@
+[project]
+name = "steam-serving"
+version = "0.1.0"
+description = "Serving Lambda (recsys-serving): recommendations from DynamoDB, as a Function URL API"
+readme = "README.md"
+authors = [
+    { name = "sadelcarpio", email = "sadelcarpioa@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.43.101",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "moto[dynamodb,ssm]>=5.2.3",
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

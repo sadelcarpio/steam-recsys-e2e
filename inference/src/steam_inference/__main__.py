@@ -1,9 +1,11 @@
-"""ECS task entry point (last step of the Step Functions pipeline): `python -m steam_inference`.
+"""SageMaker Processing entry point (last step of the Step Functions pipeline):
+`python -m steam_inference`.
 Exits 0 without writing anything when the model (the champion by default) does not exist."""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import torch
 from steam_training.artifacts import ArtifactStore
@@ -22,15 +24,27 @@ def main() -> None:
     configure_logging(settings.log_level)
     if settings.num_threads:
         torch.set_num_threads(settings.num_threads)
-    writer: Writer = (
-        JsonlWriter(settings.output_path)
-        if settings.output_path
-        else DynamoWriter(
+    writer: Writer
+    details_writer: Writer | None
+    if settings.output_path:
+        writer = JsonlWriter(settings.output_path)
+        details_writer = JsonlWriter(
+            str(Path(settings.output_path).with_name("game-details.jsonl"))
+        )
+    else:
+        writer = DynamoWriter(
             settings.recommendations_table,
             region=settings.aws_region,
             concurrency=settings.write_concurrency,
         )
-    )
+        details_writer = DynamoWriter(
+            settings.game_details_table,
+            region=settings.aws_region,
+            concurrency=settings.write_concurrency,
+            key="game_id",
+        )
+    if not settings.sync_game_details:
+        details_writer = None
     reranker = None
     if settings.rerank_enabled and settings.rerank_max_users > 0:
         reranker = BedrockReranker(
@@ -46,6 +60,7 @@ def main() -> None:
         ArtifactStore(settings.model_artifacts_bucket),
         writer,
         reranker,
+        details_writer=details_writer,
     )
     if reranker is not None:
         log.info(

@@ -17,6 +17,7 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
                                            lkp_genres, lkp_categories  dense id vocabularies
                                            game_features, user_features  time-versioned features
                                            interactions                  training examples (ASOF join)
+                                           game_details                  human-readable details (serving)
 ```
 
 ## Marts
@@ -26,6 +27,7 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
 | `lkp_*` | one value | `id` (`game_idx` for games), `name` (`game_id`), `_batch_at` |
 | `game_features` | (`game_id`, `timestamp`): a 1970-01-01 row (no reviews yet), then one row per second in which the game got reviews | `game_idx`, `game_name`, `game_is_free`, `game_developers` / `_publishers` / `_genres` / `_categories` (id arrays), `game_reviews_ratio` = Laplace-smoothed (pos + α) / (pos + neg + 2α), α = var `reviews_ratio_prior` (1), 0.5 without reviews |
 | `user_features` | (`user_id`, `timestamp`) of each positive review | `games_reviewed_positive`: last 5 positively reviewed `game_idx`, most recent first, right-padded with 0 |
+| `game_details` | one current catalog game (the same rows as `int_games__deduplicated`) | `game_id`, `game_name_key`, `game_name`, `game_short_description`, `game_header_image` (URL), `game_release_date` (text as shown on Steam), `game_is_free`, `game_price`, `game_developers` / `_publishers` / `_genres` / `_categories` (**names**). Not a model feature: inference loads it into DynamoDB `game-details` for serving. |
 | `interactions` | `review_id` | `timestamp`, `user_id`, `game_id`, `is_positive` (label) + all user and game features **as of strictly before** the review |
 
 The latest `game_features` / `user_features` row per key is the current state (for inference).

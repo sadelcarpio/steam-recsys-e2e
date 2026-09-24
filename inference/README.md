@@ -10,12 +10,14 @@ S3 models/champion/  ─► two-tower model (steam_training)
 steam_marts (Iceberg, pyiceberg)
   user_features  latest row per user   ─► user tower ─┐
   game_features  latest row per game   ─► item tower ─┴► exact top K per user (reviewed games excluded)
-  interactions   reviewed games, review counts                      │
+  interactions   reviewed games, review counts, recent positives        │
                                                                     ▼
                            1000 most active users (>= 6 reviews) ─► Bedrock LLM rerank + explanations
                                                                     │
                                                                     ▼
-                              DynamoDB game-explainable-recommendations (one item per user, changed ones only)
+                              DynamoDB game-explainable-recommendations (one item per user, changed ones only,
+                                                                        + "__popular__" fallback item)
+  game_details   text, image URL (new games only) ─► DynamoDB game-details (read by serving)
 ```
 
 1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
@@ -41,6 +43,18 @@ steam_marts (Iceberg, pyiceberg)
    recommendations are deleted, but only on full runs (`MAX_USERS=0`). A new champion changes
    `model_id`, so it rewrites every user. The run logs `written` / `unchanged` / `deleted`.
    Users with only negative reviews have no `user_features` row and get no item.
+5. **Popularity fallback.** The reserved item `user_id = "__popular__"` holds the `TOP_K`
+   catalog games with the most positive reviews in the last `POPULAR_WINDOW_DAYS` (90) before
+   the newest review (`model_id` `popularity`, never reranked). Serving returns it to users
+   without an item. It goes through the same change check, and it is never deleted.
+6. **Game details.** The mart `game_details` (name, short description, header image URL,
+   release date, price, developer / publisher / genre / category names) is loaded into the
+   DynamoDB table `game-details`, one item per game. Details are static, so this is
+   insert-only: the run scans the stored `game_id`s and writes only the missing games. The
+   first run loads the catalog (about 50k items, about $0.06), and later runs write only new
+   games. Descriptions are cleaned to plain text (tags dropped, HTML entities decoded). The
+   sync is skipped with a warning while the mart does not exist, and it also runs only when a
+   model exists.
 
 ## Output contract (`src/steam_inference/contracts.py`)
 
@@ -59,6 +73,25 @@ steam_marts (Iceberg, pyiceberg)
   "content_hash": "9f2c0e5d7a1b4c8e0f3a6b9d2c5e8f1a"
 }
 ```
+
+```json
+{
+  "game_id": 63910,
+  "name": "King's Bounty: Crossworlds",
+  "short_description": "Crossworlds is a stand-alone add-on ...",
+  "header_image": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/63910/header.jpg",
+  "release_date": "24 Sep, 2010",
+  "is_free": false,
+  "price": 9.99,
+  "developers": ["Katauri Interactive"], "publishers": ["1C Entertainment"],
+  "genres": ["RPG", "Strategy"], "categories": ["Single-player"]
+}
+```
+
+The second item is a `game-details` item (`GameDetails`). Null fields are left out.
+Serving (`serving/src/steam_serving/contracts.py`) reads both tables.
+`tests/test_serving_contract.py` runs the pipeline and then parses and serves every written
+item with the serving package, so a contract change that breaks serving fails here.
 
 `recommendations` is ordered best first: the LLM order when `reranked`, the model order
 otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
@@ -100,7 +133,9 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `MODEL_ID` | `champion` | Or any `models/<id>/` (manual runs) |
 | `GLUE_DATABASE` | `steam_marts` | |
 | `RECOMMENDATIONS_TABLE` | `game-explainable-recommendations` | |
-| `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB |
+| `GAME_DETAILS_TABLE` / `SYNC_GAME_DETAILS` | `game-details` / true | Insert-only game details |
+| `POPULAR_WINDOW_DAYS` | 90 | Window of the popularity fallback |
+| `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user |
 | `MAX_USERS` | 0 (all) | Only the N most active users (local runs) |
 | `RERANK_ENABLED` | true | |
@@ -114,7 +149,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 
 ```bash
 cd inference
-uv sync                  # CPU torch; steam-training is an editable path dependency
+uv sync                  # CPU torch; steam-training (and, for tests, steam-serving) are editable path deps
 uv run pytest            # synthetic marts, moto S3 + DynamoDB, fake LLM: no AWS
 uv run ruff check . && uv run ruff format --check .
 ```
@@ -131,7 +166,8 @@ Build the image from the **repository root**: `docker build -f inference/Dockerf
 
 ## CI/CD
 
-- `inference CI` (PRs and main; `inference/**` and training sources): ruff, tests, image build.
+- `inference CI` (PRs and main; `inference/**`, training and serving sources): ruff, tests,
+  image build.
 - `inference CD` (manual): tests, then pushes `inference:<sha>` + `:latest` (the job runs
   `:latest`). With `run_now`, it also runs the job once and waits for it (runbook:
   `docs/deployment.md` step 10).

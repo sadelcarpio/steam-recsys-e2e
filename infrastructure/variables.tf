@@ -139,3 +139,27 @@ variable "inference_rerank_max_users" {
   type        = number
   default     = 1000
 }
+
+# ---- serving -------------------------------------------------------------------------------
+
+variable "serving_auth_type" {
+  description = "Auth of the recsys-serving Function URL: AWS_IAM (SigV4) or NONE (public demo). Set by the infrastructure CD input."
+  type        = string
+  default     = "AWS_IAM"
+  validation {
+    condition     = contains(["AWS_IAM", "NONE"], var.serving_auth_type)
+    error_message = "serving_auth_type must be AWS_IAM or NONE."
+  }
+}
+
+variable "serving_cors_allow_origins" {
+  description = "Origins allowed to call the Function URL from a browser (the frontend)."
+  type        = list(string)
+  default     = ["*"]
+}
+
+variable "serving_reserved_concurrency" {
+  description = "Reserved concurrency of recsys-serving (caps a public URL's cost); -1 = unreserved. Needs an account limit above 10."
+  type        = number
+  default     = -1
+}

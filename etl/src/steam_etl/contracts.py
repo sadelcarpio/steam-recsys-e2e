@@ -76,6 +76,23 @@ class GameFeaturesRow(_GameFeatures, _Row):
     timestamp: datetime
 
 
+class GameDetailsRow(_Row):
+    """game_details: human-readable details of a current catalog game (not a model feature)."""
+
+    game_id: int
+    game_name_key: str
+    game_name: str
+    game_short_description: str | None
+    game_header_image: str | None
+    game_release_date: str | None
+    game_is_free: bool | None
+    game_price: Annotated[float, Field(ge=0)] | None
+    game_developers: list[str]
+    game_publishers: list[str]
+    game_genres: list[str]
+    game_categories: list[str]
+
+
 class UserFeaturesRow(_Row):
     """user_features: state of a user through `timestamp`."""
 
@@ -103,6 +120,7 @@ MART_CONTRACTS: dict[str, type[_Row]] = {
     "lkp_categories": LookupRow,
     "lkp_games": GameLookupRow,
     "game_features": GameFeaturesRow,
+    "game_details": GameDetailsRow,
     "user_features": UserFeaturesRow,
     "interactions": InteractionRow,
 }

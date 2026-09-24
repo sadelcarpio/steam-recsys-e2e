@@ -43,8 +43,10 @@ dev = [
     "moto[dynamodb,s3,ssm]>=5.0",
     "pytest>=8.3",
     "ruff>=0.8",
+    "steam-serving",
 ]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 steam-training = { path = "../training", editable = true }
+steam-serving = { path = "../serving", editable = true }

@@ -10,6 +10,10 @@ select
     {{ clean_string_array('categories') }} as game_categories,
     cast(review_score as bigint) as game_review_score,
     cast(recommendations as bigint) as game_recommendations,
+    nullif(trim(short_description), '') as game_short_description,
+    nullif(trim(header_image), '') as game_header_image,
+    nullif(trim(release_date), '') as game_release_date,
+    price as game_price,
     scrape_date
 from {{ source('steam', 'games') }}
 where appid is not null

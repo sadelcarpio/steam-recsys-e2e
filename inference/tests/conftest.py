@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 import boto3
 import pyarrow as pa
 import pytest
 import torch
+from pyiceberg.exceptions import NoSuchTableError
 from steam_training.artifacts import ArtifactStore
 from steam_training.contracts import (
     ModelConfig,
@@ -24,6 +26,7 @@ from steam_inference.contracts import LlmRanking, RankedCandidate
 
 BUCKET = "model-artifacts-test"
 TABLE = "game-explainable-recommendations"
+DETAILS_TABLE = "game-details"
 FIRST_GAME = 2
 N_GAMES = 20  # game_idx 2..21
 MODEL_GAMES = FIRST_GAME + N_GAMES - 1  # the model predates the last game (idx 21 -> OOV)
@@ -90,6 +93,7 @@ def make_marts() -> dict[str, pa.Table]:
         ]
     )
     return {
+        "game_details": details_table(games),
         "lkp_games": pa.table({"game_idx": pa.array(list(games), pa.int64())}),
         "lkp_genres": names("Genre", 4),
         "lkp_developers": names("Studio", 3),
@@ -97,6 +101,43 @@ def make_marts() -> dict[str, pa.Table]:
         "user_features": pa.Table.from_pylist(user_features, schema=schema_uf),
         "interactions": pa.Table.from_pylist(interactions),
     }
+
+
+def details_table(games: Iterable[int]) -> pa.Table:
+    """Mart game_details (strings as scraped: HTML entities, blanks)."""
+    str_list = pa.list_(pa.string())
+    rows = [
+        {
+            "game_id": 1000 + g,
+            "game_name": f"Game {g}",
+            "game_short_description": f" Shoot &amp; <b>loot</b> {g}. " if g % 2 else None,
+            "game_header_image": f"https://cdn/{1000 + g}.jpg",
+            "game_release_date": "21 Aug, 2012",
+            "game_is_free": g % 3 == 0,
+            "game_price": 0.0 if g % 3 == 0 else 9.99,
+            "game_developers": [f"Studio {g % 3}"],
+            "game_publishers": [],
+            "game_genres": ["Action", "Indie"],
+            "game_categories": None,
+        }
+        for g in games
+    ]
+    schema = pa.schema(
+        [
+            ("game_id", pa.int64()),
+            ("game_name", pa.string()),
+            ("game_short_description", pa.string()),
+            ("game_header_image", pa.string()),
+            ("game_release_date", pa.string()),
+            ("game_is_free", pa.bool_()),
+            ("game_price", pa.float64()),
+            ("game_developers", str_list),
+            ("game_publishers", str_list),
+            ("game_genres", str_list),
+            ("game_categories", str_list),
+        ]
+    )
+    return pa.Table.from_pylist(rows, schema=schema)
 
 
 class FakeSource:
@@ -107,6 +148,8 @@ class FakeSource:
         self.batch_rows = batch_rows
 
     def snapshot_id(self, table: str) -> int | None:
+        if table not in self.tables:
+            raise NoSuchTableError(table)
         return 7
 
     def batches(self, table: str, columns: list[str], snapshot_id: int | None):
@@ -193,6 +236,12 @@ def aws(monkeypatch):
             TableName=TABLE,
             KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        boto3.client("dynamodb").create_table(
+            TableName=DETAILS_TABLE,
+            KeySchema=[{"AttributeName": "game_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "game_id", "AttributeType": "N"}],
             BillingMode="PAY_PER_REQUEST",
         )
         yield

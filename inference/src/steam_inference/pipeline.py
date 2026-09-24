@@ -1,5 +1,6 @@
 """Batch inference: champion model -> top K per user -> LLM rerank (top reviewers) -> DynamoDB
-(only the users whose recommendations changed are written)."""
+(only the users whose recommendations changed are written), plus the popularity fallback item
+and the details of new games (insert-only)."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ import logging
 import time
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
+from itertools import chain
 
 import numpy as np
 from steam_training.artifacts import ArtifactStore
@@ -14,7 +16,14 @@ from steam_training.contracts import ARCHITECTURE_VERSION, PADDING_ID
 from steam_training.data import TableSource
 
 from steam_inference.config import InferenceSettings
-from steam_inference.contracts import InferenceSummary, Recommendation, UserRecommendations
+from steam_inference.contracts import (
+    POPULAR_USER_ID,
+    POPULARITY_MODEL_ID,
+    InferenceSummary,
+    Recommendation,
+    UserRecommendations,
+)
+from steam_inference.details import sync_game_details
 from steam_inference.features import InferenceData, load_inference_data
 from steam_inference.rerank import RankFn, Reranked, RerankRequest, rerank_all
 from steam_inference.retrieval import Candidates, retrieve
@@ -30,6 +39,7 @@ def run_inference(
     writer: Writer,
     rank_fn: RankFn | None,
     *,
+    details_writer: Writer | None = None,
     now: datetime | None = None,
 ) -> InferenceSummary:
     started = time.monotonic()
@@ -47,7 +57,9 @@ def run_inference(
     model, metadata = store.load_model(settings.model_id)
     log.info("serving model %s (trained %s)", metadata.model_id, metadata.created_at)
 
-    data = load_inference_data(source, max_users=settings.max_users)
+    data = load_inference_data(
+        source, max_users=settings.max_users, popular_window_days=settings.popular_window_days
+    )
     candidates = retrieve(
         model,
         data.games,
@@ -73,15 +85,19 @@ def run_inference(
             concurrency=settings.rerank_concurrency,
         )
 
+    popular = popular_recommendations(data, k=settings.top_k, now=now)
     stored = writer.stored_hashes()
     changes = ChangedOnly(
-        user_recommendations(
-            data,
-            candidates,
-            reranked,
-            model_id=metadata.model_id,
-            rerank_model=settings.bedrock_model_id,
-            now=now,
+        chain(
+            user_recommendations(
+                data,
+                candidates,
+                reranked,
+                model_id=metadata.model_id,
+                rerank_model=settings.bedrock_model_id,
+                now=now,
+            ),
+            [popular] if popular else [],
         ),
         stored,
     )
@@ -92,6 +108,9 @@ def run_inference(
         log.info("partial run (MAX_USERS=%d): %d stored users kept", settings.max_users, len(gone))
     elif gone:
         deleted = writer.delete(sorted(gone))
+    details_written, details_snapshot = 0, None
+    if details_writer is not None:
+        details_written, details_snapshot = sync_game_details(source, details_writer)
     summary = InferenceSummary(
         model_id=metadata.model_id,
         skipped=False,
@@ -102,7 +121,9 @@ def run_inference(
         written=written,
         unchanged=changes.unchanged,
         deleted=deleted,
-        snapshots=data.snapshots,
+        popular_games=len(popular.recommendations) if popular else 0,
+        game_details_written=details_written,
+        snapshots={**data.snapshots, "game_details": details_snapshot},
         seconds=round(time.monotonic() - started, 1),
     )
     log.info("inference done: %s", summary.model_dump_json())
@@ -126,6 +147,39 @@ class ChangedOnly:
                 self.unchanged += 1
             else:
                 yield item
+
+
+def popular_recommendations(
+    data: InferenceData, *, k: int, now: datetime
+) -> UserRecommendations | None:
+    """The fallback item: the catalog games with the most recent positive reviews (ties: lowest
+    appid), scored by their share of the top game's count. None without recent reviews."""
+    games = data.games
+    game_idx = np.flatnonzero(games.catalog.row_of >= 0)
+    rows = games.catalog.row_of[game_idx]
+    counts = np.zeros(len(game_idx), dtype=np.int64)
+    inside = game_idx < len(data.popular_counts)
+    counts[inside] = data.popular_counts[game_idx[inside]]
+    order = np.lexsort((games.game_id[rows], -counts))
+    top = order[counts[order] > 0][:k]
+    if not len(top):
+        log.warning("no recent positive reviews: no popularity fallback item")
+        return None
+    best = float(counts[top[0]])
+    return UserRecommendations(
+        user_id=POPULAR_USER_ID,
+        recommendations=[
+            Recommendation(
+                game_id=int(games.game_id[rows[i]]),
+                name=str(games.name[rows[i]]),
+                score=round(float(counts[i]) / best, 4),
+            )
+            for i in top
+        ],
+        model_id=POPULARITY_MODEL_ID,
+        generated_at=now,
+        reranked=False,
+    )
 
 
 def select_rerank_users(

@@ -32,6 +32,31 @@ models:
           (pos + a) / (pos + neg + 2a), a = var reviews_ratio_prior; 0.5 without reviews.
         data_tests: [not_null]
 
+  - name: game_details
+    description: >
+      Human-readable details of every current catalog game (same rows as
+      int_games__deduplicated), from the scrape that made it its name's winner. Not a model
+      feature: read by inference, which loads it into the DynamoDB table game-details for serving.
+    columns:
+      - name: game_id
+        description: Steam appid.
+        data_tests: [unique, not_null]
+      - name: game_name_key
+        description: lower(game_name), the merge key (one current appid per name).
+        data_tests: [unique, not_null]
+      - name: game_name
+        data_tests: [not_null]
+      - name: game_short_description
+        description: Steam short_description as scraped (may contain HTML entities). May be null.
+      - name: game_header_image
+        description: Header image URL (Steam CDN). May be null.
+      - name: game_release_date
+        description: Release date text as shown by Steam (e.g. "21 Aug, 2012"). May be null.
+      - name: game_price
+        description: Final price in the store currency (0 for free games, null when unknown).
+      - name: game_developers
+        description: Names (not ids), cleaned. Same for publishers / genres / categories.
+
   - name: user_features
     description: Time-versioned user features. One row per (user_id, second of a positive review).
     data_tests:
