@@ -124,7 +124,7 @@ Order matters only on the first deploy: the pipeline's ECS tasks run the `:lates
 | *data-ingestion CD* (`target=all`) | image `data-ingestion` (scraping tasks) + Lambda `list-partition-game-ids` code |
 | *etl CD* | image `etl` (ECS task `dbt`) |
 | *training CD* | image `training:<sha>` + a SageMaker training job for that commit (see step 9) |
-| *inference CD* | image `inference` (ECS task `inference`, the pipeline's last step; see step 10) |
+| *inference CD* | image `inference` (SageMaker Processing job `Infer`, the pipeline's last step; see step 10) |
 
 Later deploys: re-run the component's CD workflow after merging; the next pipeline run picks up
 the new `:latest` image.
@@ -143,7 +143,7 @@ aws stepfunctions start-execution --state-machine-arn "$ARN" --input '{}'
 Flow: `ListPartitionGameIds → Scrape (games + reviews) → Transform (dbt) → CheckChampion →
 Infer` (`NoChampion`, a successful skip, until a model is promoted in step 9). The first run is
 the backfill and takes hours (Steam rate limits). Logs: CloudWatch `/ecs/data-ingestion`,
-`/ecs/etl`, `/ecs/inference`, `/aws/lambda/list-partition-game-ids`.
+`/ecs/etl`, `/aws/sagemaker/ProcessingJobs` (inference), `/aws/lambda/list-partition-game-ids`.
 
 Check the marts in the Athena console (workgroup `steam-recsys-etl`):
 
@@ -258,7 +258,7 @@ candidate wins, it copies the model to `models/champion/` and the report to
 
 ## 10. Recommendations (batch inference)
 
-The pipeline's last step (`Infer`, ECS task `inference`) runs every week once
+The pipeline's last step (`Infer`, a SageMaker Processing job on `ml.t3.xlarge`) runs every week once
 `models/champion/metadata.json` exists: it scores every user of `user_features` against every
 game, reranks the candidates of the 1000 most active users (>= 6 reviews) with Bedrock and
 writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`.
@@ -277,18 +277,21 @@ aws bedrock-runtime converse --model-id us.amazon.nova-2-lite-v1:0 \
 ```
 
 **Deploy / run now.** Actions → *inference CD* → Run workflow (on `main`). Tick `run_now` to
-run the task right away (e.g. after promoting a new champion) instead of waiting for the weekly
+run the job right away (e.g. after promoting a new champion) instead of waiting for the weekly
 pipeline; `env_overrides` passes container variables such as `RERANK_ENABLED=false` or
 `MODEL_ID=<sha>`. Do not run it while the pipeline's `Infer` step runs (both write the same
 items; harmless, but wasted Bedrock calls).
 
-Manual run from a workstation (same network settings as the `Infer` step):
+**Quota.** Processing jobs have a default quota on `ml.t3.*` (2 × `ml.t3.xlarge`), so no request
+is needed. Every `ml.m5` / `ml.c5` processing quota is 0. For a non-burstable instance, request
+e.g. `ml.m5.xlarge for processing job usage` and set `inference_instance_type`.
+
+Follow a run:
 
 ```bash
-TASK=$(aws ecs run-task --cluster steam-recsys --task-definition inference --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
-  --query 'tasks[0].taskArn' --output text)     # SUBNETS / SG as in step 8
-aws logs tail /ecs/inference --follow           # ends with "inference done: {...}"
+aws sagemaker list-processing-jobs --name-contains steam-recsys-infer --sort-by CreationTime \
+  --query 'ProcessingJobSummaries[:5].[ProcessingJobName,ProcessingJobStatus]' --output table
+aws logs tail /aws/sagemaker/ProcessingJobs --log-stream-name-prefix <job name> --follow
 ```
 
 **Check** an item: `aws dynamodb get-item --table-name game-explainable-recommendations

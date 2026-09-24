@@ -1,5 +1,5 @@
-# Image of the batch inference ECS task (last step of the Step Functions pipeline). It needs the
-# training package (path dependency), so build from the REPOSITORY ROOT:
+# Image of the batch inference SageMaker Processing job (`Infer`, last step of the Step Functions
+# pipeline). It needs the training package (path dependency), so build from the REPOSITORY ROOT:
 #   docker build -f inference/Dockerfile -t inference .
 # inference/Dockerfile.dockerignore limits the context to the two projects.
 FROM ghcr.io/astral-sh/uv:0.8 AS uv
@@ -18,7 +18,6 @@ RUN uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim
 COPY --from=build /opt/venv /opt/venv
-RUN useradd --create-home --uid 1000 app
-USER app
+# Runs as root: SageMaker writes /opt/ml (failure reason, config) with the container user.
 ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1
 CMD ["python", "-m", "steam_inference"]

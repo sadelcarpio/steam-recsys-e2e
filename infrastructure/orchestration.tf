@@ -1,6 +1,7 @@
 # Step Functions pipeline (EventBridge Scheduler -> state machine):
 # ListPartitionGameIds -> Scrape (parallel Distributed Maps) -> Transform (dbt)
-#   -> CheckChampion -> Infer (inference task), or NoChampion (skip) while no model is promoted.
+#   -> CheckChampion -> Infer (SageMaker Processing job), or NoChampion (skip) while no model is
+#   promoted.
 #
 # Input: {} (run_id defaults to the execution name) or {"run_id": "<id>"} to re-run a
 # previous run's partitions idempotently.
@@ -24,7 +25,31 @@ locals {
 
   champion_metadata_key = "models/champion/metadata.json"
 
-  # Same launch settings for the single-task ECS steps (Transform, Infer).
+  # CreateProcessingJob request of the Infer state (minus the name). The inference CD reads it
+  # back from the state machine definition for its `run_now` runs, so both stay identical.
+  inference_job = {
+    RoleArn = aws_iam_role.inference.arn
+    AppSpecification = {
+      ImageUri            = "${aws_ecr_repository.inference.repository_url}:${var.inference_image_tag}"
+      ContainerEntrypoint = ["python", "-m", "steam_inference"]
+    }
+    ProcessingResources = {
+      ClusterConfig = {
+        InstanceCount  = 1
+        InstanceType   = var.inference_instance_type
+        VolumeSizeInGB = 30
+      }
+    }
+    StoppingCondition = { MaxRuntimeInSeconds = var.inference_max_runtime_seconds }
+    Environment = {
+      USE_SSM            = "true"
+      AWS_REGION         = local.region
+      AWS_DEFAULT_REGION = local.region
+    }
+    Tags = [{ Key = "Project", Value = var.project }]
+  }
+
+  # Retries of the single-task ECS step (Transform).
   ecs_task_retry = [
     {
       ErrorEquals     = ["ECS.AmazonECSException", "ECS.AccessDeniedException"]
@@ -190,25 +215,28 @@ locals {
         Type    = "Succeed"
         Comment = "No promoted model yet: inference skipped"
       }
-      # Batch inference: top K per user, LLM rerank of the top reviewers, DynamoDB overwrite.
-      # Idempotent (items are overwritten), so a retry is safe.
+      # Batch inference (SageMaker Processing job): top K per user, LLM rerank of the top
+      # reviewers, DynamoDB writes of the changed users. Idempotent, so a retry is safe; the
+      # name is regenerated on each attempt (job names are unique).
       Infer = {
         Type     = "Task"
-        Resource = "arn:aws:states:::ecs:runTask.sync"
-        Parameters = {
-          LaunchType     = "FARGATE"
-          Cluster        = aws_ecs_cluster.main.arn
-          TaskDefinition = aws_ecs_task_definition.inference.arn_without_revision
-          NetworkConfiguration = {
-            AwsvpcConfiguration = {
-              Subnets        = aws_subnet.public[*].id
-              SecurityGroups = [aws_security_group.egress_only.id]
-              AssignPublicIp = "ENABLED" # no NAT: AWS API egress through the IGW
-            }
-          }
-          PropagateTags = "TASK_DEFINITION"
-        }
-        Retry      = local.ecs_task_retry
+        Resource = "arn:aws:states:::sagemaker:createProcessingJob.sync"
+        Parameters = merge(local.inference_job, {
+          "ProcessingJobName.$" = "States.Format('steam-recsys-infer-{}', States.UUID())"
+        })
+        Retry = [
+          {
+            ErrorEquals     = ["SageMaker.AmazonSageMakerException", "ThrottlingException"]
+            IntervalSeconds = 30
+            MaxAttempts     = 3
+            BackoffRate     = 2
+          },
+          {
+            ErrorEquals     = ["States.TaskFailed"]
+            IntervalSeconds = 60
+            MaxAttempts     = 1
+          },
+        ]
         ResultPath = null
         End        = true
       }
@@ -248,7 +276,6 @@ data "aws_iam_policy_document" "pipeline" {
     resources = concat(
       [for td in aws_ecs_task_definition.scraping : "${td.arn_without_revision}:*"],
       ["${aws_ecs_task_definition.dbt.arn_without_revision}:*"],
-      ["${aws_ecs_task_definition.inference.arn_without_revision}:*"],
     )
   }
   statement {
@@ -262,8 +289,27 @@ data "aws_iam_policy_document" "pipeline" {
     resources = [
       aws_iam_role.scraping_task.arn, aws_iam_role.scraping_execution.arn,
       aws_iam_role.etl_task.arn, aws_iam_role.etl_execution.arn,
-      aws_iam_role.inference_task.arn, aws_iam_role.inference_execution.arn,
     ]
+  }
+  statement {
+    sid       = "RunInferenceJob"
+    actions   = ["sagemaker:CreateProcessingJob", "sagemaker:DescribeProcessingJob", "sagemaker:StopProcessingJob", "sagemaker:AddTags"]
+    resources = ["arn:aws:sagemaker:${local.region}:${local.account_id}:processing-job/steam-recsys-infer-*"]
+  }
+  statement {
+    sid       = "PassInferenceRole"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.inference.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["sagemaker.amazonaws.com"]
+    }
+  }
+  statement {
+    sid       = "SageMakerSyncRule"
+    actions   = ["events:PutTargets", "events:PutRule", "events:DescribeRule"]
+    resources = ["arn:aws:events:${local.region}:${local.account_id}:rule/StepFunctionsGetEventsForSageMakerProcessingJobsRule"]
   }
   statement {
     sid       = "CheckChampion"

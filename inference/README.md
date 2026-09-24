@@ -1,7 +1,8 @@
 # Inference
 
-Weekly batch recommendations. It runs as the ECS Fargate task `inference`, the last step
-(`Infer`) of the `steam-recsys-pipeline` Step Function, after `Transform`. The step is skipped
+Weekly batch recommendations. It runs as a SageMaker Processing job (`steam-recsys-infer-*`,
+`ml.t3.xlarge` by default), the last step (`Infer`) of the `steam-recsys-pipeline` Step
+Function, after `Transform`. The step is skipped
 (`NoChampion`) while no model has been promoted.
 
 ```
@@ -77,7 +78,7 @@ costs about 1.8k input tokens and 0.4k output tokens:
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Most specific (cites review %, developers) | ~ 2.5x |
 
 At the default of 1000 users per weekly run, that is about 1.8M input and 0.4M output tokens.
-Check the current per-token prices on the Bedrock pricing page. The task logs the exact usage
+Check the current per-token prices on the Bedrock pricing page. The job logs the exact usage
 (`bedrock usage: ... tokens`). To change the model, set the Terraform variable
 `inference_bedrock_model_id`, which updates both the SSM parameter and the IAM permission.
 
@@ -131,6 +132,6 @@ Build the image from the **repository root**: `docker build -f inference/Dockerf
 ## CI/CD
 
 - `inference CI` (PRs and main; `inference/**` and training sources): ruff, tests, image build.
-- `inference CD` (manual): tests, then pushes `inference:<sha>` + `:latest` (the task runs
-  `:latest`). With `run_now`, it also runs the task once and waits for it (runbook:
+- `inference CD` (manual): tests, then pushes `inference:<sha>` + `:latest` (the job runs
+  `:latest`). With `run_now`, it also runs the job once and waits for it (runbook:
   `docs/deployment.md` step 10).

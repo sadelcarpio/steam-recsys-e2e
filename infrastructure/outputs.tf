@@ -62,11 +62,7 @@ output "recommendations_table" {
   value = aws_dynamodb_table.recommendations.name
 }
 
-output "public_subnet_ids" {
-  description = "Subnets for a manual `aws ecs run-task` (dbt / inference)."
-  value       = aws_subnet.public[*].id
-}
-
-output "egress_only_security_group_id" {
-  value = aws_security_group.egress_only.id
+output "inference_role_arn" {
+  description = "SageMaker execution role of the inference processing job."
+  value       = aws_iam_role.inference.arn
 }

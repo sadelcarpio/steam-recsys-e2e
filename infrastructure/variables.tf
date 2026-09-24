@@ -111,21 +111,21 @@ variable "training_instance_type" {
 # ---- inference -----------------------------------------------------------------------------
 
 variable "inference_image_tag" {
-  description = "Tag of the inference image run by the pipeline's last step (pushed by CD)."
+  description = "Tag of the inference image run by the pipeline's Infer job (pushed by CD)."
   type        = string
   default     = "latest"
 }
 
-variable "inference_cpu" {
-  description = "Fargate vCPU units of the inference task (scoring is CPU-bound matmuls)."
-  type        = number
-  default     = 4096
+variable "inference_instance_type" {
+  description = "SageMaker Processing instance of the inference job (ml.t3.xlarge: 4 vCPU / 16 GB, default quota 2)."
+  type        = string
+  default     = "ml.t3.xlarge"
 }
 
-variable "inference_memory" {
-  description = "Fargate memory (MiB) of the inference task."
+variable "inference_max_runtime_seconds" {
+  description = "The inference job is stopped (and the pipeline fails) after this long."
   type        = number
-  default     = 16384
+  default     = 14400
 }
 
 variable "inference_bedrock_model_id" {

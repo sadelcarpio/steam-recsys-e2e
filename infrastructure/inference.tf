@@ -1,7 +1,9 @@
-# inference component: ECS task `inference`, the last step of the Step Functions pipeline (skipped
-# while s3://model-artifacts-<acct>/models/champion/ is empty). Scores every user against every
-# game with the champion two-tower model, reranks the top reviewers' candidates with a Bedrock
-# LLM and writes one DynamoDB item per user whose recommendations changed. The image is shipped by the inference CD.
+# inference component: SageMaker Processing job, the last step (`Infer`) of the Step Functions
+# pipeline (skipped while s3://model-artifacts-<acct>/models/champion/ is empty). Scores every
+# user against every game with the champion two-tower model, reranks the top reviewers'
+# candidates with a Bedrock LLM and writes one DynamoDB item per user whose recommendations
+# changed. The image is shipped by the inference CD; the job itself is defined by the `Infer`
+# state (orchestration.tf, `local.inference_job`).
 
 locals {
   inference_ssm_prefix = "/inference"
@@ -67,29 +69,14 @@ resource "aws_ecr_lifecycle_policy" "inference" {
   })
 }
 
-# ---- ECS: inference ------------------------------------------------------------------------
+# ---- SageMaker execution role (processing job) --------------------------------------------
 
-resource "aws_cloudwatch_log_group" "inference" {
-  name              = "/ecs/inference"
-  retention_in_days = var.log_retention_days
+resource "aws_iam_role" "inference" {
+  name               = "${var.project}-inference"
+  assume_role_policy = data.aws_iam_policy_document.sagemaker_trust.json
 }
 
-resource "aws_iam_role" "inference_execution" {
-  name               = "${var.project}-inference-execution"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
-}
-
-resource "aws_iam_role_policy_attachment" "inference_execution" {
-  role       = aws_iam_role.inference_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
-
-resource "aws_iam_role" "inference_task" {
-  name               = "${var.project}-inference-task"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
-}
-
-data "aws_iam_policy_document" "inference_task" {
+data "aws_iam_policy_document" "inference" {
   # pyiceberg reads the marts through the Glue catalog, straight from S3 (no Athena).
   statement {
     sid     = "GlueReadMarts"
@@ -129,45 +116,40 @@ data "aws_iam_policy_document" "inference_task" {
     ]
   }
   statement {
+    sid       = "EcrAuth"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "EcrPull"
+    actions   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
+    resources = [aws_ecr_repository.inference.arn]
+  }
+  statement {
+    sid = "Logs"
+    actions = [
+      "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams",
+    ]
+    resources = ["arn:aws:logs:${local.region}:${local.account_id}:log-group:/aws/sagemaker/ProcessingJobs*"]
+  }
+  statement {
+    sid       = "Metrics"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+    condition {
+      test     = "StringLike"
+      variable = "cloudwatch:namespace"
+      values   = ["/aws/sagemaker/*"]
+    }
+  }
+  statement {
     sid       = "Config"
     actions   = ["ssm:GetParametersByPath"]
     resources = local.inference_ssm_arns
   }
 }
 
-resource "aws_iam_role_policy" "inference_task" {
-  role   = aws_iam_role.inference_task.id
-  policy = data.aws_iam_policy_document.inference_task.json
-}
-
-resource "aws_ecs_task_definition" "inference" {
-  family                   = "inference"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = var.inference_cpu
-  memory                   = var.inference_memory
-  execution_role_arn       = aws_iam_role.inference_execution.arn
-  task_role_arn            = aws_iam_role.inference_task.arn
-
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "X86_64"
-  }
-
-  container_definitions = jsonencode([{
-    name      = "inference"
-    image     = "${aws_ecr_repository.inference.repository_url}:${var.inference_image_tag}"
-    essential = true
-    command   = ["python", "-m", "steam_inference"]
-    # Override e.g. RERANK_ENABLED=false or MODEL_ID=<sha> on a manual run-task.
-    environment = [{ name = "USE_SSM", value = "true" }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        awslogs-group         = aws_cloudwatch_log_group.inference.name
-        awslogs-region        = local.region
-        awslogs-stream-prefix = "inference"
-      }
-    }
-  }])
+resource "aws_iam_role_policy" "inference" {
+  role   = aws_iam_role.inference.id
+  policy = data.aws_iam_policy_document.inference.json
 }

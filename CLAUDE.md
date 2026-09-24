@@ -56,9 +56,8 @@ variables or a CD workflow.
     - ECS Fargate `reviews-scraping` (×N tasks, one per partition; public subnet,
       assignPublicIp=ENABLED, so each task has a distinct egress IP to avoid per-IP throttling)
 3. ECS Fargate `dbt`: runs models through Athena
-4. ECS Fargate `inference` (only when `models/champion/` exists, else skipped): top-K recs per
-   user + LLM reranking. Runs on Fargate instead of SageMaker (no quota, same pattern as `dbt`;
-   the diagram still shows SageMaker)
+4. SageMaker Inference Pipeline: a SageMaker Processing job `steam-recsys-infer-*` (only when
+   `models/champion/` exists, else skipped): top-K recs per user + LLM reranking
 
 Order: EventBridge → 1 → 2 → 3 → 4
 
@@ -84,10 +83,10 @@ Order: EventBridge → 1 → 2 → 3 → 4
 
 ### Batch inference (4)
 
-- S3 (Iceberg `user_features`, `game_features`, `interactions`) → features → ECS task `inference`
-- S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → ECS task `inference`
-- ECS task `inference` ↔ Bedrock (LLM reranking + explanations for the most active reviewers)
-- ECS task `inference` → top-K recs → DynamoDB `game-explainable-recommendations`
+- S3 (Iceberg `user_features`, `game_features`, `interactions`) → features → SageMaker Inference Pipeline
+- S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → SageMaker Inference Pipeline
+- SageMaker Inference Pipeline ↔ Bedrock (LLM reranking + explanations for the most active reviewers)
+- SageMaker Inference Pipeline → top-K recs (changed users only) → DynamoDB `game-explainable-recommendations`
 
 ### Serving (online path)
 

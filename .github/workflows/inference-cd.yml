@@ -1,13 +1,14 @@
 name: inference CD
 
 # Manual: tests, then pushes `inference:<sha>` and `inference:latest` to ECR. The pipeline's
-# last step (`Infer`) runs `:latest`. Optionally runs the task once right away (e.g. after a
-# promotion) instead of waiting for the weekly pipeline. Infrastructure must be applied first.
+# last step (`Infer`, a SageMaker Processing job) runs `:latest`. Optionally runs that job once
+# right away (e.g. after a promotion) instead of waiting for the weekly pipeline. Infrastructure
+# must be applied first.
 on:
   workflow_dispatch:
     inputs:
       run_now:
-        description: "Run the inference task once after deploying"
+        description: "Run the inference job once after deploying"
         type: boolean
         default: false
       env_overrides:
@@ -15,7 +16,7 @@ on:
         type: string
         default: ""
       wait_minutes:
-        description: "run_now only: minutes to watch the task (the deploy role's credentials last 1 h)"
+        description: "run_now only: minutes to watch the job (the deploy role's credentials last 1 h)"
         type: number
         default: 45
 
@@ -61,8 +62,8 @@ jobs:
           docker push "$REPO:${GITHUB_SHA}"
           docker push "$REPO:latest"
 
-      # Same cluster / network as the pipeline's Infer state (read from the state machine).
-      - name: Run inference task
+      # Same job as the pipeline's Infer state (request read from the state machine definition).
+      - name: Run inference job
         if: inputs.run_now
         env:
           OVERRIDES: ${{ inputs.env_overrides }}
@@ -71,30 +72,31 @@ jobs:
           set -euo pipefail
           ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
           SFN="arn:aws:states:${AWS_REGION}:${ACCOUNT}:stateMachine:steam-recsys-pipeline"
-          INFER=$(aws stepfunctions describe-state-machine --state-machine-arn "$SFN" \
-            --query definition --output text | jq -c '.States.Infer.Parameters')
+          JOB="steam-recsys-infer-cd-$(date -u +%Y%m%d%H%M%S)"
           ENV_JSON=$(printf '%s\n' $OVERRIDES | jq -R 'select(length > 0) | split("=")
-            | {name: .[0], value: (.[1:] | join("="))}' | jq -sc .)
-          TASK=$(aws ecs run-task --launch-type FARGATE \
-            --cluster "$(jq -r .Cluster <<<"$INFER")" \
-            --task-definition inference \
-            --network-configuration "$(jq -c .NetworkConfiguration <<<"$INFER")" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"inference\",\"environment\":$ENV_JSON}]}" \
-            --query 'tasks[0].taskArn' --output text)
-          CLUSTER=$(jq -r .Cluster <<<"$INFER")
-          echo "started $TASK"
+            | {(.[0]): (.[1:] | join("="))}' | jq -sc 'add // {}')
+          aws stepfunctions describe-state-machine --state-machine-arn "$SFN" \
+            --query definition --output text \
+            | jq --arg name "$JOB" --argjson env "$ENV_JSON" '.States.Infer.Parameters
+                | del(."ProcessingJobName.$") | .ProcessingJobName = $name
+                | .Environment += $env' > job.json
+          aws sagemaker create-processing-job --cli-input-json file://job.json > /dev/null
+          echo "started $JOB"
           DEADLINE=$(( $(date +%s) + WAIT_MINUTES * 60 ))
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            STATUS=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
-              --query 'tasks[0].lastStatus' --output text)
-            if [ "$STATUS" = STOPPED ]; then
-              CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
-                --query 'tasks[0].containers[0].exitCode' --output text)
-              echo "### inference task stopped, exit code $CODE" >> "$GITHUB_STEP_SUMMARY"
-              echo "Logs: CloudWatch \`/ecs/inference\`, stream \`inference/inference/${TASK##*/}\`" >> "$GITHUB_STEP_SUMMARY"
-              [ "$CODE" = 0 ]
-              exit
-            fi
+            STATUS=$(aws sagemaker describe-processing-job --processing-job-name "$JOB" \
+              --query ProcessingJobStatus --output text)
+            case "$STATUS" in
+              Completed|Failed|Stopped)
+                REASON=$(aws sagemaker describe-processing-job --processing-job-name "$JOB" \
+                  --query 'FailureReason || ExitMessage || `""`' --output text)
+                echo "### inference job $JOB: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+                [ -n "$REASON" ] && echo "$REASON" >> "$GITHUB_STEP_SUMMARY"
+                echo "Logs: CloudWatch \`/aws/sagemaker/ProcessingJobs\`, stream prefix \`$JOB\`" >> "$GITHUB_STEP_SUMMARY"
+                [ "$STATUS" = Completed ]
+                exit
+                ;;
+            esac
             sleep 30
           done
-          echo "### inference task still running after ${WAIT_MINUTES} min: $TASK" >> "$GITHUB_STEP_SUMMARY"
+          echo "### inference job $JOB still running after ${WAIT_MINUTES} min" >> "$GITHUB_STEP_SUMMARY"

@@ -22,11 +22,12 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
     writes / deletes, a resource per thread), `JsonlWriter` (dry runs, no stored state)
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
     items whose `content_hash` matches the stored one), `select_rerank_users`
-  - `__main__.py`: ECS entry (`python -m steam_inference`)
+  - `__main__.py`: SageMaker Processing entry point (`python -m steam_inference`)
 - `tests/`: `conftest.py` builds synthetic marts, a random-init model saved as champion
   (moto S3 + DynamoDB) and a fake LLM. There are no AWS calls.
 - `Dockerfile`: build context = **repo root** (`docker build -f inference/Dockerfile .`); its
-  `Dockerfile.dockerignore` whitelists `training/` + `inference/` sources.
+  `Dockerfile.dockerignore` whitelists `training/` + `inference/` sources. Runs as root
+  (SageMaker convention).
 
 ## Invariants
 
@@ -53,5 +54,5 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
 `uv sync && uv run pytest && uv run ruff check . && uv run ruff format --check .`
 Add deps only with `uv add` (never edit the lock).
 
-Infra: `infrastructure/inference.tf` (+ the `CheckChampion` / `Infer` states in
-`orchestration.tf`). Workflows: `inference-ci.yml`, `inference-cd.yml`.
+Infra: `infrastructure/inference.tf` (table, ECR, SageMaker role) and `orchestration.tf`
+(`CheckChampion` / `Infer` states; the job request is `local.inference_job`, reused by the CD). Workflows: `inference-ci.yml`, `inference-cd.yml`.
