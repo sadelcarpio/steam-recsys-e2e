@@ -2,10 +2,13 @@
 
 Scenario, in isolated Glue databases `<ci_id>_{raw,staging,intermediate,marts}` and under
 `s3://$ETL_CI_BUCKET/<ci_id>/`:
-  1. batch 1 raw parquet -> dbt build            (snapshot `batch1`)
-  2. dbt build again, no new data                (snapshot `rerun`, must equal `batch1`)
-  3. batch 2 raw parquet -> dbt build            (snapshot `batch2`, incremental)
+  1. batch 1 raw parquet -> dbt run              (snapshot `batch1`)
+  2. dbt run again, no new data                  (snapshot `rerun`, must equal `batch1`)
+  3. batch 2 raw parquet -> dbt run              (snapshot `batch2`, incremental)
   4. dbt build --full-refresh                    (snapshot `full`, must equal `batch2`)
+Athena time is per query, not per row, so for speed the dbt data tests only run in step 4
+(steps 1-3 are checked by the assertions below and by `batch2 == full`), Iceberg maintenance is
+off, dbt uses 8 threads and snapshots query tables in parallel.
 Everything is dropped afterwards (set ETL_CI_KEEP=true to keep it for debugging).
 
 Needs AWS credentials (the CI OIDC role) and ETL_CI_BUCKET, ETL_CI_WORK_GROUP, AWS_REGION.
@@ -18,6 +21,7 @@ import io
 import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -98,6 +102,8 @@ class Lakehouse:
             iceberg_s3_data_dir=f"s3://{self.bucket}/{self.prefix}iceberg/",
             dbt_schema=self.ci_id,
             aws_region=self.region,
+            dbt_threads=8,
+            iceberg_maintenance=False,
         )
 
     def db(self, layer: str) -> str:
@@ -131,9 +137,9 @@ class Lakehouse:
 
     # ---- dbt / queries ------------------------------------------------------------------------
 
-    def build(self, full_refresh: bool = False) -> None:
+    def dbt(self, command: str, full_refresh: bool = False) -> None:
         settings = self.settings.model_copy(update={"full_refresh": full_refresh})
-        result = run_dbt(settings)
+        result = run_dbt(settings, command)
         assert result.success, "\n".join(result.failures)
 
     def query(self, sql: str) -> list[dict[str, Any]]:
@@ -141,13 +147,8 @@ class Lakehouse:
             cur.execute(sql)
             return list(cur.fetchall()) if cur.description else []
 
-    def fetch(self, layer: str, table: str) -> list[dict[str, Any]]:
+    def fetch(self, layer: str, table: str, columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """All rows; arrays as lists (via JSON), timestamps as varchar."""
-        columns = self.query(
-            "select column_name, data_type from information_schema.columns "
-            f"where table_schema = '{self.db(layer)}' and table_name = '{table}' "
-            "order by ordinal_position"
-        )
         select, arrays = [], []
         for col in columns:
             name, dtype = col["column_name"], col["data_type"]
@@ -165,7 +166,17 @@ class Lakehouse:
         return sorted(rows, key=lambda r: tuple(r[k] for k in KEYS[table]))
 
     def snapshot(self) -> Snapshot:
-        return {t: self.fetch(layer, t) for layer, tables in TABLES.items() for t in tables}
+        dbs = ", ".join(f"'{self.db(layer)}'" for layer in TABLES)
+        columns: dict[str, list[dict[str, Any]]] = {}
+        for col in self.query(
+            "select table_name, column_name, data_type from information_schema.columns "
+            f"where table_schema in ({dbs}) order by table_name, ordinal_position"
+        ):
+            columns.setdefault(col["table_name"], []).append(col)
+        jobs = [(layer, t) for layer, tables in TABLES.items() for t in tables]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            rows = pool.map(lambda job: self.fetch(*job, columns[job[1]]), jobs)
+        return {table: result for (_, table), result in zip(jobs, rows, strict=True)}
 
 
 @pytest.fixture(scope="module")
@@ -174,14 +185,14 @@ def runs() -> dict[str, Snapshot]:
     try:
         lh.create_raw_tables()
         lh.upload("batch1", fx.BATCH1_GAMES, fx.BATCH1_REVIEWS)
-        lh.build()
+        lh.dbt("run")
         snaps = {"batch1": lh.snapshot()}
-        lh.build()
+        lh.dbt("run")
         snaps["rerun"] = lh.snapshot()
         lh.upload("batch2", fx.BATCH2_GAMES, fx.BATCH2_REVIEWS)
-        lh.build()
+        lh.dbt("run")
         snaps["batch2"] = lh.snapshot()
-        lh.build(full_refresh=True)
+        lh.dbt("build", full_refresh=True)  # + all dbt data tests
         snaps["full"] = lh.snapshot()
         yield snaps
     finally:

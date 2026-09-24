@@ -72,6 +72,8 @@ class EtlSettings(BaseSettings):
     dbt_threads: int = Field(4, ge=1, le=32)
     # Rebuild everything except the append-only lookups (ids stay stable).
     full_refresh: bool = False
+    # OPTIMIZE + VACUUM each incremental Iceberg table after it is written.
+    iceberg_maintenance: bool = True
     reviews_lookback_days: int = Field(3, ge=0)
     games_lookback_days: int = Field(3, ge=0)
 

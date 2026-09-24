@@ -10,7 +10,7 @@ from steam_etl.config import EtlSettings
 
 
 def test_dbt_args_and_env(etl_env):
-    s = EtlSettings(full_refresh=True, reviews_lookback_days=1)
+    s = EtlSettings(full_refresh=True, iceberg_maintenance=False, reviews_lookback_days=1)
     args = runner.dbt_args(s)
     assert args[0] == "build"
     assert args[args.index("--project-dir") + 1] == str(s.dbt_project_dir)
@@ -18,6 +18,7 @@ def test_dbt_args_and_env(etl_env):
     assert json.loads(args[args.index("--vars") + 1]) == {
         "reviews_lookback_days": 1,
         "games_lookback_days": 3,
+        "iceberg_maintenance": False,
     }
     assert "--full-refresh" not in runner.dbt_args(s, "test")
     env = runner.dbt_env(s)

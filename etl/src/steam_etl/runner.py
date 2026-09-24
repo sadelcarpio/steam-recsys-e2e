@@ -38,6 +38,7 @@ def dbt_vars(settings: EtlSettings) -> dict[str, object]:
     return {
         "reviews_lookback_days": settings.reviews_lookback_days,
         "games_lookback_days": settings.games_lookback_days,
+        "iceberg_maintenance": settings.iceberg_maintenance,
     }
 
 

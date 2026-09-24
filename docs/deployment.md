@@ -141,10 +141,60 @@ select count(*) from steam_marts.interactions;
 select * from steam_marts.game_features order by timestamp desc limit 10;
 ```
 
-Full ETL rebuild (keeps the lookup ids): run the `dbt` task once with a `FULL_REFRESH=true`
-container override (ECS console → Run task, or `aws ecs run-task ... --overrides`).
+## 8. Run the ETL (dbt) on its own
+
+Transforms whatever is in `raw-steam-data-<acct>` without scraping: use it for the first
+backfill or after an ETL change. Every model is incremental and idempotent, so it is safe to
+repeat. A second run with no new raw data writes nothing, and the next pipeline `Transform` only
+picks up what arrived since.
+
+**Never run two dbt runs at the same time** (this task and the pipeline's `Transform` step, or two
+manual tasks). Both would read the same watermark and could process a batch twice. A scrape in
+progress is fine: its files are loaded now or by the next run (lookback + already-loaded keys are
+skipped).
+
+```bash
+SUBNETS=$(aws ec2 describe-subnets --filters "Name=tag:Name,Values=steam-recsys-public-*" \
+  --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
+SG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=steam-recsys-egress-only \
+  --query 'SecurityGroups[0].GroupId' --output text)
+ARN=$(cd infrastructure && terraform output -raw pipeline_state_machine_arn)
+
+# 1. Nothing may be listed here (no pipeline execution running)
+aws stepfunctions list-executions --state-machine-arn "$ARN" --status-filter RUNNING \
+  --query 'executions[].name'
+
+# 2. Start the dbt task (same network settings as the Transform step)
+TASK=$(aws ecs run-task --cluster steam-recsys --task-definition dbt --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}" \
+  --query 'tasks[0].taskArn' --output text)
+
+# 3. Follow it and get the result: 0 = all models and data tests passed
+aws logs tail /ecs/etl --follow            # Ctrl-C when dbt prints "Done."
+aws ecs wait tasks-stopped --cluster steam-recsys --tasks "$TASK"
+aws ecs describe-tasks --cluster steam-recsys --tasks "$TASK" \
+  --query 'tasks[0].containers[0].exitCode'
+```
+
+Exit code 1: the log names the failed model or data test. Tables are written atomically, so
+fix it and run again.
+
+**Full rebuild** (recomputes everything exactly and keeps the lookup ids): add a container
+override to step 2:
+
+```bash
+  --overrides '{"containerOverrides":[{"name":"dbt","environment":[{"name":"FULL_REFRESH","value":"true"}]}]}'
+```
+
+Check the result in the Athena console (workgroup `steam-recsys-etl`):
+
+```sql
+select count(*) from steam_marts.interactions;
+select count(*) from steam_intermediate.int_games__deduplicated;
+select * from steam_marts.user_features order by timestamp desc limit 10;
+```
 
 ## Order for a fresh account (summary)
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →
-6 component CDs → 7 run.
+6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there).

@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: vars.ETL_CI_ROLE_ARN != ''
+    timeout-minutes: 20 # ~5 min normally (4 dbt runs + snapshots on Athena)
     permissions:
       id-token: write
       contents: read
@@ -64,7 +65,8 @@ jobs:
         with:
           role-to-assume: ${{ vars.ETL_CI_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - run: uv run pytest tests/integration -m athena -v
+      # -s streams dbt's progress live (otherwise it only shows after the module fixture ends).
+      - run: uv run pytest tests/integration -m athena -v -s
 
   build:
     runs-on: ubuntu-latest

@@ -96,6 +96,7 @@ Pydantic settings (`steam_etl.config.EtlSettings`). Precedence: env vars > SSM `
 | `AWS_REGION` | `us-east-1` | |
 | `DBT_THREADS` | 4 | |
 | `FULL_REFRESH` | false | Rebuild everything except the lookups |
+| `ICEBERG_MAINTENANCE` | true | OPTIMIZE + VACUUM each incremental table after writing it (off in the integration test) |
 | `REVIEWS_LOOKBACK_DAYS` / `GAMES_LOOKBACK_DAYS` | 3 | Re-read scrape dates before the latest loaded |
 
 ## Development
@@ -113,7 +114,7 @@ It builds everything in throwaway `ci_*` Glue databases and deletes them afterwa
 
 ```bash
 AWS_REGION=us-east-1 ETL_CI_BUCKET=etl-ci-<acct> ETL_CI_WORK_GROUP=steam-recsys-etl-ci \
-  uv run pytest tests/integration -m athena -v      # ETL_CI_KEEP=true keeps the databases
+  uv run pytest tests/integration -m athena -v -s   # ~5 min; ETL_CI_KEEP=true keeps the databases
 ```
 
 Run dbt against prod from a workstation (your AWS profile):

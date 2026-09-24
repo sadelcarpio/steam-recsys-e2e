@@ -16,6 +16,8 @@ vars:
   user_history_length: 5
   # Laplace smoothing of game_reviews_ratio: (pos + a) / (pos + neg + 2a).
   reviews_ratio_prior: 1
+  # OPTIMIZE + VACUUM after each incremental model (the integration test turns it off for speed).
+  iceberg_maintenance: true
 
 # Glue databases: <target.schema>_raw (external tables over the raw parquet, owned by Terraform),
 # <target.schema>_staging / _intermediate / _marts (dbt default generate_schema_name).
@@ -34,8 +36,8 @@ models:
       +incremental_strategy: merge
       +post-hook: &iceberg_maintenance
         # Merges leave delete files and small data files behind.
-        - "optimize {{ this.schema }}.{{ this.identifier }} rewrite data using bin_pack"
-        - "vacuum {{ this.schema }}.{{ this.identifier }}"
+        - "{% if var('iceberg_maintenance') %}optimize {{ this.schema }}.{{ this.identifier }} rewrite data using bin_pack{% endif %}"
+        - "{% if var('iceberg_maintenance') %}vacuum {{ this.schema }}.{{ this.identifier }}{% endif %}"
     marts:
       +schema: marts
       +materialized: incremental
