@@ -17,4 +17,4 @@ models:
       - name: review_id
         data_tests: [not_null]
       - name: reviewed_at
-        description: timestamp_created as a UTC timestamp(6).
+        description: timestamp_created as a UTC timestamp.

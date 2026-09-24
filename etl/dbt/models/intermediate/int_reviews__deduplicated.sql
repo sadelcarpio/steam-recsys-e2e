@@ -33,8 +33,9 @@ select
     f.user_id,
     f.game_id,
     f.is_positive,
-    f.reviewed_at,
-    f.updated_at,
+    -- Iceberg on Athena stores microsecond timestamps only.
+    cast(f.reviewed_at as timestamp(6)) as reviewed_at,
+    cast(f.updated_at as timestamp(6)) as updated_at,
     f.scrape_date,
     {{ batch_timestamp() }} as _batch_at
 from first_seen as f

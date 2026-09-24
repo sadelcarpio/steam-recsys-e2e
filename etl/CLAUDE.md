@@ -33,7 +33,8 @@ Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
 - Features in `interactions` are strictly before the review (ASOF with events sorted before
   feature rows at equal timestamps).
 - Raw review counts stay in `int_game_review_counts`; marts expose only the Laplace-smoothed ratio.
-- Timestamps are `timestamp(6)` (Athena Iceberg). Changing a mart's columns means updating
+- Timestamps are `timestamp(6)` in Iceberg tables (Athena requirement), but plain `timestamp` in
+  views: Athena stores view columns as Hive types and rejects `timestamp(6)` there. Changing a mart's columns means updating
   `contracts.py` and the integration test (`on_schema_change: fail`).
 
 ## Commands
