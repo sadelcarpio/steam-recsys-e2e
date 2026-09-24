@@ -3,6 +3,11 @@
 How to stand up the AWS infrastructure and deploy every component, from an empty account to a
 running weekly pipeline. Region: `us-east-1`. `<acct>` is your AWS account id.
 
+Commands after step 3 only need the AWS CLI: resource names are fixed, so they are looked up
+directly instead of through `terraform output` (which needs the remote state initialized locally,
+`terraform init -backend-config="bucket=tf-state-<acct>"`). Use `--profile <name>` or
+`AWS_PROFILE` as usual.
+
 ## 0. Prerequisites
 
 - AWS CLI v2 logged in with **your own admin credentials** (only for steps 1 and, the first time,
@@ -81,11 +86,13 @@ Needed by the `athena-integration` job of *etl CI* (it is skipped while `ETL_CI_
 unset). Values are Terraform outputs of step 3. After setting them, run *etl CI* manually
 (Actions → *etl CI* → Run workflow, on `main`) or push to the PR:
 
+The names are fixed, so the AWS CLI can look them up (no Terraform state needed locally):
+
 ```bash
-cd infrastructure
-gh variable set ETL_CI_ROLE_ARN   --body "$(terraform output -raw etl_ci_role_arn)"
-gh variable set ETL_CI_BUCKET     --body "$(terraform output -raw etl_ci_bucket)"
-gh variable set ETL_CI_WORK_GROUP --body "$(terraform output -raw etl_ci_work_group)"
+ACCT=$(aws sts get-caller-identity --query Account --output text)
+gh variable set ETL_CI_ROLE_ARN   --body "$(aws iam get-role --role-name steam-recsys-etl-ci --query Role.Arn --output text)"
+gh variable set ETL_CI_BUCKET     --body "etl-ci-${ACCT}"
+gh variable set ETL_CI_WORK_GROUP --body "steam-recsys-etl-ci"
 ```
 
 (Or copy them from the *infrastructure CD* job summary into the Variables tab.)
@@ -126,7 +133,8 @@ The EventBridge schedule starts the pipeline every Thursday 17:00 America/Chicag
 (`schedule_enabled = false` pauses it). To run it now:
 
 ```bash
-ARN=$(cd infrastructure && terraform output -raw pipeline_state_machine_arn)
+ARN=$(aws stepfunctions list-state-machines \
+  --query "stateMachines[?name=='steam-recsys-pipeline'].stateMachineArn" --output text)
 aws stepfunctions start-execution --state-machine-arn "$ARN" --input '{}'
 ```
 
@@ -158,7 +166,8 @@ SUBNETS=$(aws ec2 describe-subnets --filters "Name=tag:Name,Values=steam-recsys-
   --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
 SG=$(aws ec2 describe-security-groups --filters Name=group-name,Values=steam-recsys-egress-only \
   --query 'SecurityGroups[0].GroupId' --output text)
-ARN=$(cd infrastructure && terraform output -raw pipeline_state_machine_arn)
+ARN=$(aws stepfunctions list-state-machines \
+  --query "stateMachines[?name=='steam-recsys-pipeline'].stateMachineArn" --output text)
 
 # 1. Nothing may be listed here (no pipeline execution running)
 aws stepfunctions list-executions --state-machine-arn "$ARN" --status-filter RUNNING \
