@@ -73,3 +73,29 @@ variable "schedule_enabled" {
   type    = bool
   default = true
 }
+
+# ---- etl -----------------------------------------------------------------------------------
+
+variable "etl_image_tag" {
+  description = "Tag of the etl image run by the dbt task (pushed by CD)."
+  type        = string
+  default     = "latest"
+}
+
+variable "etl_dbt_threads" {
+  description = "Concurrent Athena queries per dbt run."
+  type        = number
+  default     = 4
+}
+
+variable "github_repository" {
+  description = "owner/repo whose PR workflows may assume the etl CI role (same as bootstrap/)."
+  type        = string
+  default     = "sadelcarpio/steam-recsys-e2e"
+}
+
+variable "github_repository_immutable" {
+  description = "Same repo in GitHub's immutable OIDC subject form: owner@<owner_id>/repo@<repo_id>."
+  type        = string
+  default     = "sadelcarpio@70857703/steam-recsys-e2e@1384979753"
+}

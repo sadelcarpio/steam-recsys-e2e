@@ -1,0 +1,43 @@
+name: etl CD
+
+# Manual deploy of the dbt image (ECR `etl`, run by the `dbt` ECS task of the pipeline).
+# Infrastructure must be applied first.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: etl-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: etl
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen && uv run pytest -q
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push etl image
+        env:
+          REPO: ${{ steps.ecr.outputs.registry }}/etl
+        run: |
+          docker build -t "$REPO:${GITHUB_SHA}" -t "$REPO:latest" .
+          docker push "$REPO:${GITHUB_SHA}"
+          docker push "$REPO:latest"

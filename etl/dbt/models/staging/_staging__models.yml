@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: stg_steam__games
+    description: Typed game info. Still has duplicates by appid (retries) and by name.
+    columns:
+      - name: game_id
+        description: Steam appid.
+        data_tests: [not_null]
+      - name: game_developers
+        description: Trimmed, non-empty, distinct developer names (same for publishers / genres / categories).
+      - name: game_review_score
+        description: Steam review summary score (0-9) at scrape time.
+  - name: stg_steam__reviews
+    description: Typed reviews. Still has duplicate review_ids.
+    columns:
+      - name: review_id
+        data_tests: [not_null]
+      - name: reviewed_at
+        description: timestamp_created as a UTC timestamp(6).

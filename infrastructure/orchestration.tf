@@ -1,5 +1,6 @@
-# Step Functions pipeline (EventBridge Scheduler -> state machine). Later specs append the
-# dbt / inference steps after `Scrape`.
+# Step Functions pipeline (EventBridge Scheduler -> state machine):
+# ListPartitionGameIds -> Scrape (parallel Distributed Maps) -> Transform (dbt). Later specs
+# append the inference step after `Transform`.
 #
 # Input: {} (run_id defaults to the execution name) or {"run_id": "<id>"} to re-run a
 # previous run's partitions idempotently.
@@ -91,7 +92,7 @@ locals {
   }]
 
   pipeline_definition = {
-    Comment = "Steam RecSys batch pipeline: ingestion"
+    Comment = "Steam RecSys batch pipeline: ingestion -> transformation"
     StartAt = "ResolveRunId"
     States = {
       ResolveRunId = {
@@ -124,6 +125,40 @@ locals {
       Scrape = {
         Type       = "Parallel"
         Branches   = local.scrape_branches
+        ResultPath = null
+        Next       = "Transform"
+      }
+      # dbt build (staging -> intermediate -> marts + data tests). Every model is incremental
+      # and idempotent, so a retry never double-loads.
+      Transform = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::ecs:runTask.sync"
+        Parameters = {
+          LaunchType     = "FARGATE"
+          Cluster        = aws_ecs_cluster.main.arn
+          TaskDefinition = aws_ecs_task_definition.dbt.arn_without_revision
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              Subnets        = aws_subnet.public[*].id
+              SecurityGroups = [aws_security_group.egress_only.id]
+              AssignPublicIp = "ENABLED" # no NAT: AWS API egress through the IGW
+            }
+          }
+          PropagateTags = "TASK_DEFINITION"
+        }
+        Retry = [
+          {
+            ErrorEquals     = ["ECS.AmazonECSException", "ECS.AccessDeniedException"]
+            IntervalSeconds = 30
+            MaxAttempts     = 3
+            BackoffRate     = 2
+          },
+          {
+            ErrorEquals     = ["States.TaskFailed"]
+            IntervalSeconds = 60
+            MaxAttempts     = 1
+          },
+        ]
         ResultPath = null
         End        = true
       }
@@ -158,19 +193,25 @@ data "aws_iam_policy_document" "pipeline" {
     resources = [aws_lambda_function.list_partition_game_ids.arn, "${aws_lambda_function.list_partition_game_ids.arn}:*"]
   }
   statement {
-    sid       = "RunScrapingTasks"
-    actions   = ["ecs:RunTask"]
-    resources = [for td in aws_ecs_task_definition.scraping : "${td.arn_without_revision}:*"]
+    sid     = "RunEcsTasks"
+    actions = ["ecs:RunTask"]
+    resources = concat(
+      [for td in aws_ecs_task_definition.scraping : "${td.arn_without_revision}:*"],
+      ["${aws_ecs_task_definition.dbt.arn_without_revision}:*"],
+    )
   }
   statement {
-    sid       = "TrackScrapingTasks"
+    sid       = "TrackEcsTasks"
     actions   = ["ecs:StopTask", "ecs:DescribeTasks"]
     resources = ["arn:aws:ecs:${local.region}:${local.account_id}:task/${aws_ecs_cluster.main.name}/*"]
   }
   statement {
-    sid       = "PassTaskRoles"
-    actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.scraping_task.arn, aws_iam_role.scraping_execution.arn]
+    sid     = "PassTaskRoles"
+    actions = ["iam:PassRole"]
+    resources = [
+      aws_iam_role.scraping_task.arn, aws_iam_role.scraping_execution.arn,
+      aws_iam_role.etl_task.arn, aws_iam_role.etl_execution.arn,
+    ]
   }
   statement {
     sid       = "EcsSyncRule"

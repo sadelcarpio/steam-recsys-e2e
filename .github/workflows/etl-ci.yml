@@ -1,0 +1,74 @@
+name: etl CI
+
+on:
+  pull_request:
+    paths:
+      - "etl/**"
+      - ".github/workflows/etl-*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "etl/**"
+      - ".github/workflows/etl-*.yml"
+  # Manual run, e.g. after setting the ETL_CI_* variables. The Athena job only gets AWS
+  # credentials on `main` (or from a PR): the CI role trusts no other branch.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: etl
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: etl/uv.lock
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # Unit tests + `dbt parse`; the Athena test skips without ETL_CI_* env.
+      - run: uv run pytest -q
+
+  # Runs the dbt project end to end on real Athena in throwaway `ci_<run>_*` Glue databases,
+  # through the PR-scoped role `steam-recsys-etl-ci` (infrastructure/etl.tf). Skipped until the
+  # ETL_CI_* repository variables are set (docs/deployment.md, step 4).
+  athena-integration:
+    runs-on: ubuntu-latest
+    needs: test
+    if: vars.ETL_CI_ROLE_ARN != ''
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: etl-athena-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ETL_CI_BUCKET: ${{ vars.ETL_CI_BUCKET }}
+      ETL_CI_WORK_GROUP: ${{ vars.ETL_CI_WORK_GROUP }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: etl/uv.lock
+      - run: uv sync --frozen
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ETL_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: uv run pytest tests/integration -m athena -v
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build etl image
+        run: docker build -t etl:ci .

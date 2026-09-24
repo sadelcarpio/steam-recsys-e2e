@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: steam
+    description: Raw scraper output (parquet). Glue external tables owned by Terraform (infrastructure/etl.tf).
+    schema: "{{ target.schema }}_raw"
+    tables:
+      - name: games
+        description: One row per appdetails scrape (an appid can repeat across retries).
+      - name: reviews
+        description: One row per scraped review (rec_id can repeat across retries and runs).

@@ -1,0 +1,51 @@
+name: steam_recsys
+version: "1.0.0"
+config-version: 2
+profile: steam_recsys
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Late-landing raw files: re-read this many scrape days before the latest one loaded.
+  reviews_lookback_days: 3
+  games_lookback_days: 3
+  # Length of users.games_reviewed_positive (most recent first, right-padded with 0).
+  user_history_length: 5
+  # Laplace smoothing of game_reviews_ratio: (pos + a) / (pos + neg + 2a).
+  reviews_ratio_prior: 1
+
+# Glue databases: <target.schema>_raw (external tables over the raw parquet, owned by Terraform),
+# <target.schema>_staging / _intermediate / _marts (dbt default generate_schema_name).
+
+models:
+  steam_recsys:
+    +table_type: iceberg
+    +format: parquet
+    +on_schema_change: fail
+    staging:
+      +schema: staging
+      +materialized: view
+    intermediate:
+      +schema: intermediate
+      +materialized: incremental
+      +incremental_strategy: merge
+      +post-hook: &iceberg_maintenance
+        # Merges leave delete files and small data files behind.
+        - "optimize {{ this.schema }}.{{ this.identifier }} rewrite data using bin_pack"
+        - "vacuum {{ this.schema }}.{{ this.identifier }}"
+    marts:
+      +schema: marts
+      +materialized: incremental
+      +incremental_strategy: merge
+      +post-hook: *iceberg_maintenance
+      lookups:
+        # Append-only: ids must stay stable, so --full-refresh never rebuilds them.
+        +incremental_strategy: append
+        +full_refresh: false
+
+data_tests:
+  steam_recsys:
+    +severity: error

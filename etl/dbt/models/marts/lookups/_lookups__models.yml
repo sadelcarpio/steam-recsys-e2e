@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: lkp_developers
+    description: Developer name -> id. Append-only, never rebuilt by --full-refresh.
+    columns: &lookup_columns
+      - name: id
+        description: Dense id >= 2, in order of first appearance (0 = padding and 1 = OOV are reserved).
+        data_tests: [unique, not_null]
+      - name: name
+        data_tests: [unique, not_null]
+  - name: lkp_publishers
+    description: Publisher name -> id. Append-only.
+    columns: *lookup_columns
+  - name: lkp_genres
+    description: Genre name -> id. Append-only.
+    columns: *lookup_columns
+  - name: lkp_categories
+    description: Category name -> id. Append-only.
+    columns: *lookup_columns
+  - name: lkp_games
+    description: Steam appid -> dense game_idx (embedding row). Append-only.
+    columns:
+      - name: game_idx
+        data_tests: [unique, not_null]
+      - name: game_id
+        data_tests: [unique, not_null]

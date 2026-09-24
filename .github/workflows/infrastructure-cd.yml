@@ -38,3 +38,12 @@ jobs:
       - run: terraform plan -input=false -out=tfplan
       - if: inputs.action == 'apply'
         run: terraform apply -input=false tfplan
+      - name: Outputs (values for the GitHub repository variables, see docs/deployment.md)
+        if: inputs.action == 'apply'
+        run: |
+          {
+            echo '### Terraform outputs'
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

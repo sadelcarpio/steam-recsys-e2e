@@ -1,0 +1,15 @@
+# All values come from env vars, set by steam_etl.runner from EtlSettings (SSM /etl/* on AWS).
+steam_recsys:
+  target: athena
+  outputs:
+    athena:
+      type: athena
+      database: awsdatacatalog
+      region_name: "{{ env_var('AWS_REGION', 'us-east-1') }}"
+      schema: "{{ env_var('DBT_SCHEMA', 'steam') }}"
+      work_group: "{{ env_var('ATHENA_WORK_GROUP', 'primary') }}"
+      s3_staging_dir: "{{ env_var('ATHENA_S3_STAGING_DIR', 's3://unset/athena-results/') }}"
+      s3_data_dir: "{{ env_var('ICEBERG_S3_DATA_DIR', 's3://unset/iceberg/') }}"
+      s3_data_naming: schema_table_unique
+      threads: "{{ env_var('DBT_THREADS', '4') | int }}"
+      num_retries: 3

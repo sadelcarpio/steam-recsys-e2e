@@ -8,22 +8,13 @@ Terraform for the whole project (AWS, `us-east-1`).
 | `network.tf`        | VPC with 2 public subnets and an IGW, no NAT. Egress-only security group.                                                                                                                                                                       |
 | `storage.tf`        | S3 `raw-steam-data-<acct>`, `game-partitions-<acct>` (30-day expiry). DynamoDB `game-ids-state`, `reviews-state-cursor`.                                                                                                                        |
 | `data_ingestion.tf` | ECR `data-ingestion`, ECS cluster and task definitions `games-scraping` / `reviews-scraping`, Lambda `list-partition-game-ids`, SSM `/data-ingestion/*`, secret `data-ingestion/steam-api-key`, IAM.                                            |
-| `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                                                     |
+| `etl.tf`            | S3 `processed-steam-data-<acct>` (Iceberg lake + Athena results), Glue databases `steam_{raw,staging,intermediate,marts}`, raw external tables `steam_raw.games` / `reviews`, Athena workgroup `steam-recsys-etl`, ECR `etl`, ECS task definition `dbt`, SSM `/etl/*`, IAM. CI sandbox: bucket `etl-ci-<acct>` (2-day expiry), workgroup `steam-recsys-etl-ci`, role `steam-recsys-etl-ci` (PRs + main, only `ci_*` Glue databases). |
+| `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks, then the `dbt` task) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                               |
 
-## First-time setup
+## Deployment
 
-```bash
-# 1. Bootstrap with your own admin credentials
-cd infrastructure/bootstrap && terraform init && terraform apply
-# 2. In GitHub → Settings → Variables (Actions), set:
-#    AWS_ROLE_ARN    = <github_deploy_role_arn output>
-#    AWS_REGION      = us-east-1
-#    TF_STATE_BUCKET = <tf_state_bucket output>
-# 3. Run the "infrastructure CD" workflow with action=apply
-# 4. Run the "data-ingestion CD" workflow (pushes the image, deploys the Lambda code)
-# 5. Put the real Steam API key in place of the dummy one:
-aws secretsmanager put-secret-value --secret-id data-ingestion/steam-api-key --secret-string '<key>'
-```
+Step-by-step from an empty account (bootstrap, GitHub variables, apply, secrets, component
+deploys, first run): [`docs/deployment.md`](../docs/deployment.md).
 
 To apply from a workstation: `terraform init -backend-config="bucket=tf-state-<acct>" && terraform apply`.
 
@@ -43,3 +34,5 @@ Set `schedule_enabled = false` to pause the weekly schedule. Tunables are in `va
 - `infrastructure CI`: `fmt -check` and `validate` for both roots, on changes under `infrastructure/`.
 - `infrastructure CD` (manual): `plan`, or `plan` + `apply`, through OIDC. The deploy role only
   trusts `refs/heads/main`.
+- `etl CI` assumes `steam-recsys-etl-ci`, which trusts pull requests and `main` of this repo but
+  can only touch the CI bucket, the CI workgroup and `ci_*` Glue databases.

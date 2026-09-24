@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: int_games__deduplicated
+    description: >
+      One game per case-insensitive name (highest review score wins). Only `type = game`
+      (or unknown type) with a non-empty name.
+    columns:
+      - name: game_name_key
+        description: lower(game_name), the merge key.
+        data_tests: [unique, not_null]
+      - name: game_id
+        data_tests: [unique, not_null]
+  - name: int_reviews__deduplicated
+    description: One row per review_id (first-seen version). Includes reviews of games that are not kept.
+    columns:
+      - name: review_id
+        data_tests: [unique, not_null]
+  - name: int_game_review_counts
+    description: >
+      Cumulative positive / negative review counts per (game_id, timestamp): a 1970-01-01 row per
+      kept game, then one row per second with reviews. Feeds game_features (smoothed ratio).
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [game_id, timestamp]
+  - name: int_review_events
+    description: Reviews of kept games, stamped with the run that released them to the marts (`_batch_at`).
+    columns:
+      - name: review_id
+        data_tests: [unique, not_null]
+      - name: _batch_at
+        data_tests: [not_null]

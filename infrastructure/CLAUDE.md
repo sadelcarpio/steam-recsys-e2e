@@ -14,9 +14,13 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
 - Application code is deployed by the component CD workflows, not by Terraform. The Lambda
   uses a placeholder zip plus `ignore_changes = [filename, source_code_hash]`, and ECS task
   definitions use `:${var.scraping_image_tag}` (default `latest`).
-- The state machine definition is HCL (`local.pipeline_definition` in `orchestration.tf`).
-  Later specs add states after `Scrape` (change `Scrape.End` to `Next`) and grant the needed
-  permissions on `aws_iam_role.pipeline`.
+- The state machine definition is HCL (`local.pipeline_definition` in `orchestration.tf`):
+  `ListPartitionGameIds -> Scrape -> Transform`. Later specs add states after `Transform`
+  (change `Transform.End` to `Next`) and grant the needed permissions on `aws_iam_role.pipeline`.
+- Raw Glue tables (`local.raw_tables` in `etl.tf`) mirror the scraper parquet schema; keep them in
+  sync with `data_ingestion/src/steam_ingestion/schemas.py` and `etl/tests/integration/fixtures.py`.
+- PR-scoped CI roles (e.g. `steam-recsys-etl-ci`) live next to their component and only get
+  sandbox resources (`ci_*` Glue databases, CI bucket / workgroup), never prod data.
 - Backend: S3 with `use_lockfile`. The bucket is passed with `-backend-config`.
 
 ## Checks

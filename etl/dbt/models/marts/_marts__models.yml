@@ -1,0 +1,77 @@
+version: 2
+
+# Row contracts for consumers: etl/src/steam_etl/contracts.py
+models:
+  - name: game_features
+    description: >
+      Time-versioned game features. One row per (game_id, timestamp): a 1970-01-01 row with no
+      reviews, then one row per second with reviews, with the state through it.
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [game_id, timestamp]
+      - expression_is_true:
+          arguments:
+            expression: game_reviews_ratio > 0 and game_reviews_ratio < 1
+    columns:
+      - name: game_id
+        description: Steam appid.
+        data_tests: [not_null]
+      - name: game_idx
+        description: Dense id from lkp_games.
+        data_tests: [not_null]
+      - name: timestamp
+        data_tests: [not_null]
+      - name: game_name
+        data_tests: [not_null]
+      - name: game_developers
+        description: Ids from lkp_developers (same for publishers / genres / categories). May be empty.
+      - name: game_reviews_ratio
+        description: >
+          Laplace-smoothed share of positive reviews through `timestamp`:
+          (pos + a) / (pos + neg + 2a), a = var reviews_ratio_prior; 0.5 without reviews.
+        data_tests: [not_null]
+      - name: game_review_score
+        description: Steam review summary score (0-9) at scrape time.
+
+  - name: user_features
+    description: Time-versioned user features. One row per (user_id, second of a positive review).
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [user_id, timestamp]
+      - expression_is_true:
+          arguments:
+            expression: cardinality(games_reviewed_positive) = {{ var('user_history_length') }}
+      - expression_is_true:
+          arguments:
+            expression: games_reviewed_positive[1] >= 2
+    columns:
+      - name: user_id
+        description: Steam author id.
+        data_tests: [not_null]
+      - name: games_reviewed_positive
+        description: Last N positively reviewed game_idx, most recent first, right-padded with 0.
+
+  - name: interactions
+    description: One row per review of a kept game with user/game features ASOF strictly before it.
+    data_tests:
+      - expression_is_true:
+          arguments:
+            expression: cardinality(games_reviewed_positive) = {{ var('user_history_length') }}
+    columns:
+      - name: review_id
+        data_tests: [unique, not_null]
+      - name: is_positive
+        description: Label (review voted up).
+        data_tests: [not_null]
+      - name: game_idx
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('lkp_games')
+                field: game_idx
+      - name: game_name
+        description: Always set, every game has a 1970-01-01 game_features row.
+        data_tests: [not_null]
