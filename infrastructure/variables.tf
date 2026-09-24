@@ -99,3 +99,11 @@ variable "github_repository_immutable" {
   type        = string
   default     = "sadelcarpio@70857703/steam-recsys-e2e@1384979753"
 }
+
+# ---- training ------------------------------------------------------------------------------
+
+variable "training_instance_type" {
+  description = "SageMaker instance of the training / promote jobs (needs a training job quota)."
+  type        = string
+  default     = "ml.m5.2xlarge"
+}

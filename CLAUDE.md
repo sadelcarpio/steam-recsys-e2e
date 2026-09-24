@@ -77,12 +77,13 @@ Order: EventBridge → 1 → 2 → 3 → 4
 
 ### Training (outside the Step Functions workflow)
 
-- S3 (Iceberg) → training data → SageMaker Training Pipeline → S3 `user-item-tower` (model artifacts)
+- S3 (Iceberg, read with pyiceberg) → SageMaker training job (`training CD`) → S3 `model-artifacts-<account-id>/models/<sha>/`
+  (user + item tower); `training promote` evaluates it vs `models/champion/` and swaps it in when better
 
 ### Batch inference (4)
 
 - S3 (Iceberg) → features → SageMaker Inference Pipeline
-- S3 `user-item-tower` → model artifacts → SageMaker Inference Pipeline
+- S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → SageMaker Inference Pipeline
 - SageMaker Inference Pipeline ↔ Bedrock (LLM reranking of candidate items)
 - SageMaker Inference Pipeline → top-N recs → DynamoDB `recommendations`
 

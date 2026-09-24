@@ -1,0 +1,63 @@
+name: training promote
+
+# Manual: evaluates a trained model (default: this commit's) against the current champion on
+# the same validation rows (after both training cutoffs) in a SageMaker job running the model's
+# own image `training:<model_id>` (or `image_tag`, e.g. for a model trained locally). Writes evaluation/<model_id>/metrics.json; when the candidate
+# beats the champion (and the popularity baseline) on warm recall@PRIMARY_K, copies it to
+# models/champion/ and evaluation/champion/metrics.json.
+on:
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: "Commit sha of a model trained by *training CD* (empty = this commit)"
+        type: string
+        default: ""
+      image_tag:
+        description: "Image to evaluate with (empty = training:<model_id>; a pushed sha for a model trained locally)"
+        type: string
+        default: ""
+      env_overrides:
+        description: "Evaluation overrides, space-separated NAME=value (e.g. PRIMARY_K=100 MIN_IMPROVEMENT=0.005)"
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: training-promote
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: training
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      USE_SSM: "true"
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: training/uv.lock
+      - run: uv sync --frozen --extra cpu
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Evaluate and promote on SageMaker
+        env:
+          MODEL_ID: ${{ inputs.model_id || github.sha }}
+          OVERRIDES: ${{ inputs.env_overrides }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          uv run python -m steam_training.launch promote --model-id "$MODEL_ID" \
+            ${IMAGE_TAG:+--image-tag "$IMAGE_TAG"} --env "$OVERRIDES" --summary "$GITHUB_STEP_SUMMARY"

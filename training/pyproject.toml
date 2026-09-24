@@ -1,0 +1,66 @@
+[project]
+name = "steam-training"
+version = "0.1.0"
+description = "Two-tower retrieval training + evaluation on the ETL Iceberg marts (SageMaker training jobs)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.35",
+    "numpy>=2.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyiceberg[glue,pyarrow]>=0.10",
+]
+
+[project.optional-dependencies]
+cpu = [
+    "torch>=2.8",
+]
+cu128 = [
+    "torch>=2.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/steam_training"]
+
+# torch comes from one of two mutually exclusive extras: `cpu` (default image, CI; the CPU wheels
+# avoid ~3 GB of CUDA libraries) or `cu128` (GPU image). Always sync with one of them.
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "cu128" }]]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "cu128" },
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "moto[s3,sagemaker,ssm]>=5.0",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]

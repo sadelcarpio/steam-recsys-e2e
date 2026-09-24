@@ -40,3 +40,16 @@ output "etl_ci_work_group" {
   description = "Set as the ETL_CI_WORK_GROUP GitHub repository variable."
   value       = aws_athena_workgroup.etl_ci.name
 }
+
+output "model_artifacts_bucket" {
+  value = aws_s3_bucket.model_artifacts.bucket
+}
+
+output "training_ecr_repository_url" {
+  value = aws_ecr_repository.training.repository_url
+}
+
+output "training_role_arn" {
+  description = "SageMaker execution role of the training / promote jobs."
+  value       = aws_iam_role.training.arn
+}

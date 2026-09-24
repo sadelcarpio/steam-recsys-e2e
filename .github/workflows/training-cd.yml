@@ -1,0 +1,88 @@
+name: training CD
+
+# Manual: tests, pushes `training:<sha>` (+ `:latest`) to ECR and starts a SageMaker training
+# job for model id = this commit's sha. The job writes s3://model-artifacts-<acct>/models/<sha>/.
+# Promote it afterwards with the *training promote* workflow. Re-running for the same commit
+# resumes from the last epoch checkpoint (s3://.../checkpoints/<sha>/) when nothing changed.
+on:
+  workflow_dispatch:
+    inputs:
+      env_overrides:
+        description: "Hyperparameter overrides, space-separated NAME=value (e.g. EPOCHS=10 BATCH_SIZE=2048)"
+        type: string
+        default: ""
+      torch_variant:
+        description: "cpu, or cu128 for a GPU instance (image tag <sha>-cu128; needs a GPU quota)"
+        type: choice
+        options: [cpu, cu128]
+        default: cpu
+      instance_type:
+        description: "SageMaker instance (empty = SSM /training/INSTANCE_TYPE, e.g. ml.g4dn.xlarge for cu128)"
+        type: string
+        default: ""
+      wait_minutes:
+        description: "Minutes to watch the job (the deploy role's credentials last 1 h)"
+        type: number
+        default: 50
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: training-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: training
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      USE_SSM: "true"
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: training/uv.lock
+      - run: uv sync --frozen --extra cpu && uv run pytest -q
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # cpu: <sha> + latest (what promote and later runs use); cu128: <sha>-cu128
+      - name: Build and push training image
+        id: image
+        env:
+          REPO: ${{ steps.ecr.outputs.registry }}/training
+          VARIANT: ${{ inputs.torch_variant }}
+        run: |
+          if [ "$VARIANT" = cpu ]; then TAG="$GITHUB_SHA"; else TAG="$GITHUB_SHA-$VARIANT"; fi
+          docker build --build-arg TORCH_VARIANT="$VARIANT" -t "$REPO:$TAG" .
+          docker push "$REPO:$TAG"
+          if [ "$VARIANT" = cpu ]; then
+            docker tag "$REPO:$TAG" "$REPO:latest" && docker push "$REPO:latest"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Train on SageMaker
+        env:
+          OVERRIDES: ${{ inputs.env_overrides }}
+          WAIT_MINUTES: ${{ inputs.wait_minutes }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          INSTANCE: ${{ inputs.instance_type }}
+        run: |
+          uv run python -m steam_training.launch train --model-id "$GITHUB_SHA" \
+            --image-tag "$IMAGE_TAG" ${INSTANCE:+--instance-type "$INSTANCE"} \
+            --env "$OVERRIDES" --wait-minutes "$WAIT_MINUTES" --summary "$GITHUB_STEP_SUMMARY"

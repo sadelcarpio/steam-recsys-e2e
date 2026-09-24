@@ -9,6 +9,7 @@ Terraform for the whole project (AWS, `us-east-1`).
 | `storage.tf`        | S3 `raw-steam-data-<acct>`, `game-partitions-<acct>` (30-day expiry). DynamoDB `game-ids-state`, `reviews-state-cursor`.                                                                                                                        |
 | `data_ingestion.tf` | ECR `data-ingestion`, ECS cluster and task definitions `games-scraping` / `reviews-scraping`, Lambda `list-partition-game-ids`, SSM `/data-ingestion/*`, secret `data-ingestion/steam-api-key`, IAM.                                            |
 | `etl.tf`            | S3 `processed-steam-data-<acct>` (Iceberg lake + Athena results), Glue databases `steam_{raw,staging,intermediate,marts}`, raw external tables `steam_raw.games` / `reviews`, Athena workgroup `steam-recsys-etl`, ECR `etl`, ECS task definition `dbt`, SSM `/etl/*`, IAM. CI sandbox: bucket `etl-ci-<acct>` (2-day expiry), workgroup `steam-recsys-etl-ci`, role `steam-recsys-etl-ci` (PRs + main, only `ci_*` Glue databases). |
+| `training.tf`       | S3 `model-artifacts-<acct>` (versioned; models, evaluation reports, champion), ECR `training`, SageMaker execution role `steam-recsys-training` (reads the marts through Glue + S3, read/write on the artifacts bucket), SSM `/training/*` (`training_instance_type`, default `ml.m5.2xlarge`). |
 | `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks, then the `dbt` task) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                               |
 
 ## Deployment
@@ -36,3 +37,5 @@ Set `schedule_enabled = false` to pause the weekly schedule. Tunables are in `va
   trusts `refs/heads/main`.
 - `etl CI` assumes `steam-recsys-etl-ci`, which trusts pull requests and `main` of this repo but
   can only touch the CI bucket, the CI workgroup and `ci_*` Glue databases.
+- `training CD` / `training promote` use the deploy role to push the image and start SageMaker
+  training jobs, which run as `steam-recsys-training` (passed by the deploy role).

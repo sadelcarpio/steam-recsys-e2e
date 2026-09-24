@@ -123,6 +123,7 @@ Order matters only on the first deploy: the pipeline's ECS tasks run the `:lates
 |---|---|
 | *data-ingestion CD* (`target=all`) | image `data-ingestion` (scraping tasks) + Lambda `list-partition-game-ids` code |
 | *etl CD* | image `etl` (ECS task `dbt`) |
+| *training CD* | image `training:<sha>` + a SageMaker training job for that commit (see step 9) |
 
 Later deploys: re-run the component's CD workflow after merging; the next pipeline run picks up
 the new `:latest` image.
@@ -203,7 +204,58 @@ select count(*) from steam_intermediate.int_games__deduplicated;
 select * from steam_marts.user_features order by timestamp desc limit 10;
 ```
 
+## 9. Train and promote a model
+
+Training runs outside the weekly pipeline, on SageMaker training jobs, and needs the marts to
+be populated (step 7 or 8).
+
+**Quota (once).** New accounts have a SageMaker training quota of 0 for every instance type. Request
+one instance of the type in `training_instance_type` (default `ml.m5.2xlarge`, quota code
+`L-AD0A282D`; CPU quotas are usually approved within hours):
+
+```bash
+aws service-quotas request-service-quota-increase --service-code sagemaker \
+  --quota-code L-AD0A282D --desired-value 1
+aws service-quotas list-requested-service-quota-change-history --service-code sagemaker \
+  --query 'RequestedQuotas[].[QuotaName,Status,DesiredValue]' --output table
+```
+
+**Train.** Actions → *training CD* → Run workflow (on `main`). Optional `env_overrides`, e.g.
+`EPOCHS=10 BATCH_SIZE=2048`. The workflow pushes `training:<sha>` and starts
+`steam-recsys-train-<sha12>-<timestamp>`. It watches the job for up to 50 min (the deploy role's
+credentials last 1 h), and a longer job keeps running. The job summary shows recall@30/50/100
+for warm / cold / all validation rows next to the popularity baseline. Follow a job with:
+
+```bash
+aws sagemaker list-training-jobs --name-contains steam-recsys --sort-by CreationTime \
+  --query 'TrainingJobSummaries[:5].[TrainingJobName,TrainingJobStatus]' --output table
+aws logs tail /aws/sagemaker/TrainingJobs --log-stream-name-prefix <job name> --follow
+ACCT=$(aws sts get-caller-identity --query Account --output text)
+aws s3 cp s3://model-artifacts-${ACCT}/models/<sha>/metadata.json -
+```
+
+**Resume / extend.** A failed or stopped job leaves a per-epoch checkpoint. Re-running *training CD*
+on the same commit resumes after the last finished epoch, and `EPOCHS=<more>` extends a
+finished run.
+
+**No quota? Train locally.** `python -m steam_training train` runs the same pipeline on a
+workstation and uploads the model to the bucket (see `training/README.md`, *Development*). Then
+promote it with `model_id=local-…` and `image_tag=<a pushed commit sha>`.
+
+**GPU** (optional, once a GPU quota is granted, e.g. `ml.g4dn.xlarge`, quota code `L-3F53BF0F`):
+run *training CD* with `torch_variant=cu128` and `instance_type=ml.g4dn.xlarge`.
+
+**Promote.** Actions → *training promote* → Run workflow with `model_id` = the trained commit
+sha (empty = the commit the workflow runs on). It evaluates the candidate and the current
+champion on the same validation rows and writes `evaluation/<sha>/metrics.json`. When the
+candidate wins, it copies the model to `models/champion/` and the report to
+`evaluation/champion/metrics.json`. The first model only has to beat the popularity baseline.
+
+**Roll back** the champion: the bucket is versioned, so restore the previous object versions of
+`models/champion/*` and `evaluation/champion/metrics.json`, or promote an older sha again.
+
 ## Order for a fresh account (summary)
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →
-6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there).
+6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there) →
+9 SageMaker quota, train and promote.

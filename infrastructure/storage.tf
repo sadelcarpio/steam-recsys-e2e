@@ -13,6 +13,7 @@ locals {
     raw_steam_data  = aws_s3_bucket.raw_steam_data.id
     game_partitions = aws_s3_bucket.game_partitions.id
     processed_data  = aws_s3_bucket.processed_steam_data.id
+    model_artifacts = aws_s3_bucket.model_artifacts.id
   }
 }
 

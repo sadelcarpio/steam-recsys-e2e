@@ -1,0 +1,41 @@
+name: training CI
+
+on:
+  pull_request:
+    paths:
+      - "training/**"
+      - ".github/workflows/training-*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "training/**"
+      - ".github/workflows/training-*.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: training
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: training/uv.lock
+      - run: uv sync --frozen --extra cpu
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # Unit tests + a full train/promote run on synthetic marts (moto S3), no AWS.
+      - run: uv run pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build training image
+        run: docker build -t training:ci .
