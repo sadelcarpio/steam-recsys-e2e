@@ -221,3 +221,24 @@ __marimo__/
 
 # bkp diagrams
 docs/architecture/*.bkp
+
+# Build artifacts
+data_ingestion/build/
+
+# Terraform (keep .terraform.lock.hcl tracked)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+infrastructure/**/.build/

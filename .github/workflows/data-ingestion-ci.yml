@@ -1,0 +1,43 @@
+name: data-ingestion CI
+
+on:
+  pull_request:
+    paths:
+      - "data_ingestion/**"
+      - ".github/workflows/data-ingestion-*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "data_ingestion/**"
+      - ".github/workflows/data-ingestion-*.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: data_ingestion
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: data_ingestion/uv.lock
+      - run: uv sync --frozen --extra scraping
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build scraping image
+        run: docker build -f scraping.Dockerfile -t data-ingestion:ci .
+      - name: Build Lambda zip
+        run: scripts/build_lambda.sh

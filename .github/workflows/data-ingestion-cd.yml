@@ -1,0 +1,60 @@
+name: data-ingestion CD
+
+# Manual deploy of the scraping image (ECR `data-ingestion`) and the
+# `list-partition-game-ids` Lambda code. Infrastructure must be applied first.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to deploy
+        type: choice
+        options: [all, scraping-image, lambda]
+        default: all
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: data-ingestion-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: data_ingestion
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --extra scraping && uv run pytest -q
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        if: inputs.target != 'lambda'
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push scraping image
+        if: inputs.target != 'lambda'
+        env:
+          REPO: ${{ steps.ecr.outputs.registry }}/data-ingestion
+        run: |
+          docker build -f scraping.Dockerfile -t "$REPO:${GITHUB_SHA}" -t "$REPO:latest" .
+          docker push "$REPO:${GITHUB_SHA}"
+          docker push "$REPO:latest"
+
+      - name: Deploy Lambda code
+        if: inputs.target != 'scraping-image'
+        run: |
+          zip_path="$(scripts/build_lambda.sh)"
+          aws lambda update-function-code \
+            --function-name list-partition-game-ids \
+            --zip-file "fileb://${zip_path}" --publish > /dev/null
+          aws lambda wait function-updated-v2 --function-name list-partition-game-ids

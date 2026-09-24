@@ -1,0 +1,40 @@
+name: infrastructure CD
+
+# Manual plan/apply of infrastructure/ (bootstrap/ is applied locally, once).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: plan only, or plan + apply
+        type: choice
+        options: [plan, apply]
+        default: plan
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: infrastructure-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: infrastructure
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "^1.10.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+      - run: terraform plan -input=false -out=tfplan
+      - if: inputs.action == 'apply'
+        run: terraform apply -input=false tfplan
