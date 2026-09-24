@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 SUPPORTED_MANIFEST_FORMAT = 2
 SUPPORTED_USER_TOWER_FORMAT = 1
 EPS = 1e-12  # torch.nn.functional.normalize
+ROUND_DECIMALS = 4  # returned scores; ranking ties at this precision go to the lowest appid
 CATALOG_ARRAYS = (
     "item_embeddings",
     "item_game_id",
@@ -188,16 +189,28 @@ class OnlineModel:
         history[: len(used_rows)] = self._row_game_idx[used_rows]
         scores = self.item_embeddings @ tower.embed(history)
         scores[rows[known]] = -np.inf  # every liked game, not only the first history_length
-        k = min(k, int(np.isfinite(scores).sum()))
-        top = np.argpartition(-scores, k - 1)[:k] if k else np.zeros(0, dtype=np.int64)
-        top = top[np.lexsort((self.item_game_id[top], -scores[top]))]  # ties: lowest appid
+        top = self._top(scores, k)
         return OnlineResult(
             game_ids=self.item_game_id[top].tolist(),
             names=[self.name(int(row)) for row in top],
-            scores=[round(float(s), 4) for s in scores[top]],
+            scores=[round(float(s), ROUND_DECIMALS) for s in scores[top]],
             used_game_ids=self.item_game_id[used_rows].tolist(),
             ignored_game_ids=ignored,
         )
+
+    def _top(self, scores: np.ndarray, k: int) -> np.ndarray:
+        """Rows of the k best scores, ranked by the score as returned (ROUND_DECIMALS) and then
+        by lowest appid: identical games (e.g. OOV games with the same features) differ only by
+        float noise that depends on the CPU / BLAS, so ranking raw floats is not reproducible.
+        Rounds `scores` in place."""
+        np.round(scores, ROUND_DECIMALS, out=scores)
+        k = min(k, int(np.isfinite(scores).sum()))
+        if k == 0:
+            return np.zeros(0, dtype=np.int64)
+        kth = scores[np.argpartition(-scores, k - 1)[k - 1]]
+        candidates = np.flatnonzero(scores >= kth)  # k rows + any ties with the k-th
+        order = np.lexsort((self.item_game_id[candidates], -scores[candidates]))
+        return candidates[order[:k]]
 
 
 def _load_npz(payload: bytes, names: tuple[str, ...], what: str) -> dict[str, np.ndarray]:

@@ -36,7 +36,9 @@ Spec: `specs/5-recsys-serving.md`. Human docs: `README.md`.
   together. When the catalog changes, change `steam_inference.online` / `ONLINE_BUNDLE_FORMAT`
   and `SUPPORTED_MANIFEST_FORMAT`. Parity is tested in
   `inference/tests/test_online_parity.py`, since torch lives there.
-- Ties in online scores go to the lowest appid (deterministic); batch uses `torch.topk`.
+- Online ranking is by the score rounded to 4 decimals (as returned), then by lowest appid.
+  Raw float order is not reproducible: identical games differ by CPU / BLAS-dependent noise
+  (this flipped CI once). Batch uses `torch.topk`.
 - The source of truth for the item shape is `inference/src/steam_inference/contracts.py`.
   Stored models ignore unknown fields. When they change, run inference's
   `tests/test_serving_contract.py`, which imports this package.

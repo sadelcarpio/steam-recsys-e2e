@@ -161,3 +161,25 @@ def test_broken_first_load_raises(s3):
     s3.put_object(Bucket=BUNDLE_BUCKET, Key=f"{BUNDLE_PREFIX}/manifest.json", Body=b"{broken")
     with pytest.raises(ValueError):
         _loader().get()
+
+
+def test_ranking_ignores_float_noise_between_identical_games():
+    """Two copies of a game whose scores differ only in the last bits (different BLAS / batch
+    rounding) rank by lowest appid, whichever float came out larger."""
+    catalog_arrays = {
+        "item_embeddings": np.array([[1.0, 0.0], [0.6, 0.8], [0.6, 0.8], [0.0, 1.0]], np.float32),
+        "item_game_id": np.array([10, 30, 20, 40], dtype=np.int64),
+        "item_game_idx": np.array([2, 3, 4, 5], dtype=np.int64),
+        "item_name_utf8": np.frombuffer(b"abcd", dtype=np.uint8),
+        "item_name_offsets": np.array([0, 1, 2, 3, 4], dtype=np.int64),
+    }
+    manifest = BundleManifest.model_validate(make_manifest(b""))
+    model = OnlineModel(manifest, catalog_arrays, UserTower.from_bytes(make_user_tower()))
+    for noise in (1e-7, -1e-7):
+        scores = np.array([0.1, 0.9 + noise, 0.9, -np.inf], dtype=np.float32)
+        top = model._top(scores, 2)
+        assert model.item_game_id[top].tolist() == [20, 30]
+        assert scores[top].tolist() == pytest.approx([0.9, 0.9])
+    # a tie at the k-th place is broken the same way
+    scores = np.array([0.95, 0.9, 0.9 + 1e-7, 0.1], dtype=np.float32)
+    assert model.item_game_id[model._top(scores, 2)].tolist() == [10, 20]

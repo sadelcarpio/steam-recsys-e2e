@@ -152,7 +152,25 @@ Check the marts in the Athena console (workgroup `steam-recsys-etl`):
 ```sql
 select count(*) from steam_marts.interactions;
 select * from steam_marts.game_features order by timestamp desc limit 10;
+select count(*) from steam_marts.game_details;
 ```
+
+**Weekly runs (incremental, nothing to do by hand).** After the first run, each scheduled
+execution:
+- scrapes only new games and new reviews (the DynamoDB cursors);
+- runs dbt incrementally: only rows newer than each model's watermark, and new games get a
+  `game_details` row;
+- runs `Infer` with the current champion, which:
+  - rewrites only the users whose recommendations changed, plus `__popular__`;
+  - adds the new games to `game-details`;
+  - republishes the online catalog.
+
+The model itself is not retrained: training and promotion are manual (step 9), and the next
+`Infer` picks up a new champion automatically. Re-run a component's CD only after merging a
+change to it. An ETL change that adds a model or column needs no full refresh: a new
+incremental model builds itself completely on its first run (a changed column of an existing
+Iceberg table fails on purpose, `on_schema_change: fail`; then run step 8 with
+`FULL_REFRESH`).
 
 ## 8. Run the ETL (dbt) on its own
 
@@ -299,8 +317,18 @@ aws sagemaker list-processing-jobs --name-contains steam-recsys-infer --sort-by 
 aws logs tail /aws/sagemaker/ProcessingJobs --log-stream-name-prefix <job name> --follow
 ```
 
-**Check** an item: `aws dynamodb get-item --table-name game-explainable-recommendations
---key '{"user_id":{"S":"<steam id>"}}'`.
+**Check** the outputs:
+
+```bash
+aws dynamodb get-item --table-name game-explainable-recommendations --key '{"user_id":{"S":"<steam id>"}}'
+aws dynamodb get-item --table-name game-explainable-recommendations --key '{"user_id":{"S":"__popular__"}}'
+aws dynamodb scan --table-name game-details --select COUNT            # ~ the catalog size after the first run
+ACCT=$(aws sts get-caller-identity --query Account --output text)
+aws s3 cp s3://model-artifacts-${ACCT}/serving/online/manifest.json -  # online catalog (step 11)
+```
+
+The job's last log line (`inference done: {...}`) has the summary: users, written / unchanged /
+deleted, reranked, `game_details_written`, `online_bundle`.
 
 ## 11. Serving API
 
@@ -319,7 +347,8 @@ job summary.
 
 **Deploy.** Actions → *serving CD* → Run workflow (on `main`). It runs the tests, uploads the
 zip, invokes `/health`, `/popular` and `POST /recommendations` directly (this works under
-either auth type) and prints the URL.
+either auth type) and prints the URL. Until the first serving CD, the function is a placeholder
+that answers 503.
 
 **Online model.** `POST /recommendations` needs two things:
 - the champion's numpy user tower, which every model trained from now on gets automatically;
@@ -330,7 +359,10 @@ credentials), then run *inference CD* with `run_now` or wait for the weekly run:
 
 ```bash
 cd training && MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> uv run --extra cpu python -m steam_training export --model-id champion
-``` Until then the function is a placeholder that answers 503.
+```
+
+Until then, inference logs `no numpy user tower` and publishes no catalog, and the endpoint
+answers 503. Batch recommendations are not affected.
 
 **Try it:**
 
@@ -350,10 +382,38 @@ with `list-partition-game-ids`. A public URL under load can throttle the pipelin
 step. Before a public demo, request a higher `Concurrent executions` quota (Service Quotas →
 AWS Lambda), then set `serving_reserved_concurrency` (e.g. 5) to cap the function.
 
+## Updating an existing deployment
+
+Roll a release onto an account that already runs the pipeline in this order. Skip the steps of
+components the release does not touch.
+
+1. Merge to `main`. The CIs run on the changed paths.
+2. *infrastructure CD*: `plan`, review, then `apply`. Pick `serving_auth_type` on every run.
+3. *data-ingestion CD* / *etl CD*: new images, used by the next `Scrape` / `Transform`.
+4. Training changes only: *training CD* (new models); promote as in step 9.
+5. *inference CD*: new image for the next `Infer`. With `run_now`, it also runs it immediately.
+6. *serving CD*: new Lambda code.
+7. Data now instead of Thursday: step 8 (ETL alone), then *inference CD* with `run_now`. Or run
+   the whole pipeline (step 7).
+
+Never start step 8 or `run_now` while a pipeline execution is running (step 8 shows how to
+check).
+
+**Release with serving, game details and the online endpoint (spec 5):** steps 1, 2 (creates
+`game-details`, `recsys-serving` and its Function URL), 3 (*etl CD*: the `game_details` mart),
+5, 6. Then backfill the current champion's `user_tower.npz` (step 11, *Online model*), and run
+step 7 of this list. The first `Infer` afterwards:
+- writes about 50k `game-details` items;
+- writes `__popular__`;
+- publishes the online catalog.
+
+Verify with the checks of steps 10 and 11.
+
 ## Order for a fresh account (summary)
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →
 6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there) →
-9 SageMaker quota, train and promote → 10 inference (automatic from the next pipeline run, or
-*inference CD* with `run_now`) → 11 serving (*serving CD*; its auth is an *infrastructure CD*
-input).
+9 SageMaker quota, train and promote (new models include `user_tower.npz`, so no backfill) →
+10 inference (automatic from the next pipeline run, or *inference CD* with `run_now`) →
+11 serving (*serving CD*; its auth is an *infrastructure CD* input). After that, the weekly
+schedule runs everything incrementally (step 7).
