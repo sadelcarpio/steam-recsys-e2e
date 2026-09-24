@@ -3,9 +3,11 @@
 
 Batch 1 (scrape 2026-01-01) exercises: appid retry duplicates, name dedup (20 vs 21 "beta"),
 non-game types, missing names, messy arrays, duplicate review ids, reviews of dropped / not yet
-scraped games, invalid reviews, and a user with more than 5 positive reviews (900).
+scraped games, invalid reviews, a double-posted review (13: same user and game as 1, 10 s
+later, new review id), and a user with more than 5 positive reviews (900).
 Batch 2 (scrape 2026-01-08) adds game 50 (its review 7 was scraped in batch 1), a losing
-duplicate name (60 "ALPHA"), new vocabulary values, and a re-scraped, edited review 2.
+duplicate name (60 "ALPHA"), new vocabulary values, a re-scraped, edited review 2, and a
+second review of an already reviewed game in a later run (14: user 200, game 21).
 """
 
 from __future__ import annotations
@@ -154,6 +156,7 @@ BATCH1_GAMES = [
 BATCH1_REVIEWS = [
     _review(1, 100, 10, True, 1000, **_d1),
     _review(1, 100, 10, True, 1000, **_d1),  # re-emitted after a flush split
+    _review(13, 100, 10, True, 1010, **_d1),  # double post: new id, same user and game as 1
     _review(2, 100, 21, True, 2000, **_d1),
     _review(3, 200, 10, False, 1500, **_d1),
     _review(4, 100, 20, True, 2500, **_d1),  # game 20 loses the name dedup
@@ -182,6 +185,7 @@ BATCH2_REVIEWS = [
     _review(10, 500, 10, True, 6000, **_d2),
     _review(11, 600, 21, False, 6000, **_d2),
     _review(12, 100, 60, True, 5500, **_d2),  # dropped game
+    _review(14, 200, 21, False, 7000, **_d2),  # user 200 already reviewed game 21 (review 5)
     _review(2, 100, 21, False, 2000, updated=5800, **_d2),  # edited later: first seen wins
 ]
 

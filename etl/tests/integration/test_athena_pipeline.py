@@ -249,6 +249,7 @@ def test_reviews_deduplicated_first_seen_wins(runs):
     ids = [r["review_id"] for r in reviews]
     assert len(ids) == len(set(ids))
     assert 99 not in ids
+    assert {13, 14} <= set(ids)  # distinct review ids: kept here, deduplicated in the ledger
     assert by(reviews, "review_id")[2]["is_positive"] is True
 
 
@@ -257,6 +258,8 @@ def test_ledger_releases_reviews_once_their_game_is_kept(runs):
     assert batch1 == {1, 2, 3, 5, 6, *range(901, 908)}
     batch2 = {r["review_id"] for r in runs["batch2"]["int_review_events"]}
     assert batch2 == batch1 | {7, 8, 10, 11}  # 7 waited for game 50; 4 and 12 never
+    # one review per (user, game): 13 repeats 1 in the same batch, 14 repeats 5 across runs
+    assert not {13, 14} & batch2
 
 
 # ---- marts -----------------------------------------------------------------------------------

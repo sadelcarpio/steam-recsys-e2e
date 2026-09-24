@@ -39,7 +39,9 @@ Row contracts: `src/steam_etl/contracts.py`.
   per case-insensitive name, keeping the highest `review_score` (ties: more recommendations,
   lowest appid). Arrays are trimmed, blanks dropped, deduplicated.
 - Reviews: one per `review_id`, **first-seen version wins** (later edits are ignored). Reviews
-  without author, game, vote or creation time are dropped. Reviews of games that are not kept
+  without author, game, vote or creation time are dropped. Then **one review per (user, game), the
+  first**: repeats get a new `review_id` (double submissions seconds apart, delete + rewrite;
+  ~55 pairs in 2.2M reviews). Reviews of games that are not kept
   (lost the name dedup, not scraped yet) stay out of the marts until their game is kept.
 
 ## Incremental + idempotent

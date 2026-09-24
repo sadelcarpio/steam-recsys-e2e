@@ -25,7 +25,13 @@ models:
           arguments:
             columns: [game_id, timestamp]
   - name: int_review_events
-    description: Reviews of kept games, stamped with the run that released them to the marts (`_batch_at`).
+    description: >
+      Reviews of kept games, one per (user, game) (the first), stamped with the run that released
+      them to the marts (`_batch_at`).
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [user_id, game_id]
     columns:
       - name: review_id
         data_tests: [unique, not_null]
