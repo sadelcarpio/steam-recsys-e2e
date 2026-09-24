@@ -38,6 +38,14 @@ class ReviewPage:
     total_reviews: int | None
 
 
+def _retry_after(resp: requests.Response) -> float:
+    """`Retry-After` in seconds (0 when missing or not a delta-seconds value)."""
+    try:
+        return max(0.0, float(resp.headers.get("Retry-After", 0)))
+    except ValueError:
+        return 0.0
+
+
 class SteamClient:
     def __init__(
         self,
@@ -46,6 +54,7 @@ class SteamClient:
         request_interval: float = 1.5,
         max_retries: int = 5,
         max_backoff: float = 120.0,
+        throttle_cooldown: float = 60.0,
         timeout: float = 30.0,
         session: requests.Session | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -55,6 +64,7 @@ class SteamClient:
         self._interval = request_interval
         self._max_retries = max_retries
         self._max_backoff = max_backoff
+        self._throttle_cooldown = throttle_cooldown
         self._timeout = timeout
         self._session = session or requests.Session()
         self._sleep = sleep
@@ -75,6 +85,7 @@ class SteamClient:
         for attempt in range(self._max_retries + 1):
             self._pace()
             reason: str
+            retry_after = 0.0
             try:
                 resp = self._session.get(url, params=params, timeout=self._timeout)
             except requests.RequestException as exc:
@@ -82,6 +93,10 @@ class SteamClient:
             else:
                 if resp.status_code in RETRYABLE_STATUS:
                     reason = f"HTTP {resp.status_code}"
+                    if resp.status_code == 429:
+                        # Store throttling is a ~5 min window per IP: a short exponential
+                        # backoff gives up before it resets, so wait at least the cooldown.
+                        retry_after = max(self._throttle_cooldown, _retry_after(resp))
                 elif resp.status_code >= 400:
                     raise SteamApiError(f"{endpoint}: HTTP {resp.status_code}")
                 else:
@@ -94,7 +109,7 @@ class SteamClient:
                     reason = "empty body"
             if attempt == self._max_retries:
                 break
-            backoff = min(self._max_backoff, 2.0 * 2**attempt)
+            backoff = max(min(self._max_backoff, 2.0 * 2**attempt), retry_after)
             logger.warning("%s: %s, retry %d in %.0fs", endpoint, reason, attempt + 1, backoff)
             self._sleep(backoff)
         raise SteamApiError(f"{endpoint}: gave up after {self._max_retries + 1} attempts")

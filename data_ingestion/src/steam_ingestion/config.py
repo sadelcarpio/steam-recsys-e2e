@@ -74,6 +74,8 @@ class IngestionSettings(BaseSettings):
     request_interval_seconds: float = Field(1.5, ge=0)
     max_retries: int = Field(5, ge=0)
     max_backoff_seconds: float = Field(120.0, ge=0)
+    # Minimum wait after an HTTP 429, so retries outlast the throttle window.
+    throttle_cooldown_seconds: float = Field(60.0, ge=0)
 
     games_flush_every: int = Field(500, ge=1)
     reviews_flush_rows: int = Field(50_000, ge=1)

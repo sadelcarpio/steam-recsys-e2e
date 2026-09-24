@@ -37,6 +37,7 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `NUM_REVIEW_WORKERS` | 10 | |
 | `GAMES_PER_TASK` | 8000 | ~7 h per task at the store rate limit (2 requests per game) |
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
+| `THROTTLE_COOLDOWN_SECONDS` | 60 | Minimum wait after an HTTP 429 (or `Retry-After` if longer), so retries outlast the throttle window |
 | `MAX_REVIEWS_PER_GAME` | 2000 | Newest reviews per game per run; `0` = full history |
 | `MAX_GAME_ATTEMPTS` | 3 | |
 | `MAX_FAILURE_RATIO` | 0.2 | Task exits 1 above this share of failed games |

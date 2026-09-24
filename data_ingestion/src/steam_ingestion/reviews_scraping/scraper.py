@@ -146,6 +146,7 @@ def main() -> int:
         request_interval=settings.request_interval_seconds,
         max_retries=settings.max_retries,
         max_backoff=settings.max_backoff_seconds,
+        throttle_cooldown=settings.throttle_cooldown_seconds,
     )
     ok = scrape_partition(
         task.partition_key, settings, client, boto3.client("s3"), boto3.resource("dynamodb")

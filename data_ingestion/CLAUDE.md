@@ -11,7 +11,8 @@ Spec: `specs/1-scraping-implementation.md`. Human docs: `README.md`.
     `GameState`/`GameStatus`, `GameRecord`, `ReviewRecord`) and partition key regexes
   - `schemas.py`: polars schemas of the raw parquet (ETL contract). **Imports polars**, so
     never import it from Lambda code paths
-  - `steam_api.py`: `SteamClient` (pacing, retries on 403/429/5xx/null body, `SteamApiError`
+  - `steam_api.py`: `SteamClient` (pacing, retries on 403/429/5xx/null body; a 429
+    waits at least `throttle_cooldown` / `Retry-After`, `SteamApiError`
     never contains the URL because it carries the API key)
   - `state.py`: DynamoDB access. `game-ids-state` has one item per appid, and `appid=0` is the
     catalog cursor item. `reviews-state-cursor` holds `last_review_ts` and `total_reviews`

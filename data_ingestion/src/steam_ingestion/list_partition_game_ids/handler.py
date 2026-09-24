@@ -115,6 +115,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         request_interval=0,  # a handful of paginated GetAppList calls; no pacing needed
         max_retries=settings.max_retries,
         max_backoff=settings.max_backoff_seconds,
+        throttle_cooldown=settings.throttle_cooldown_seconds,
     )
     result = run(request.run_id, settings, client, boto3.client("s3"), boto3.resource("dynamodb"))
     return result.model_dump()

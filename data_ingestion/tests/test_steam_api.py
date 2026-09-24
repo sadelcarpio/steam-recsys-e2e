@@ -61,6 +61,35 @@ def test_retries_on_throttling_and_null_body(client: SteamClient) -> None:
     assert len(responses.calls) == 3
 
 
+def _sleep_recorder() -> tuple[list[float], SteamClient]:
+    sleeps: list[float] = []
+    client = SteamClient(
+        request_interval=0, max_retries=3, throttle_cooldown=60.0, sleep=sleeps.append
+    )
+    return sleeps, client
+
+
+@responses.activate
+def test_throttling_waits_at_least_the_cooldown() -> None:
+    sleeps, client = _sleep_recorder()
+    responses.get(APP_DETAILS_URL, status=429)
+    responses.get(APP_DETAILS_URL, status=503)
+    responses.get(APP_DETAILS_URL, json={"10": {"success": True, "data": {"name": "X"}}})
+    assert client.get_app_details(10) == {"name": "X"}
+    # 429 -> cooldown instead of 2s; 503 keeps the plain exponential backoff.
+    assert sleeps == [60.0, 4.0]
+
+
+@responses.activate
+def test_throttling_honors_longer_retry_after() -> None:
+    sleeps, client = _sleep_recorder()
+    responses.get(APP_DETAILS_URL, status=429, headers={"Retry-After": "90"})
+    responses.get(APP_DETAILS_URL, status=429, headers={"Retry-After": "soon"})
+    responses.get(APP_DETAILS_URL, json={"10": {"success": False}})
+    assert client.get_app_details(10) is None
+    assert sleeps == [90.0, 60.0]
+
+
 @responses.activate
 def test_unsuccessful_app_details_returns_none(client: SteamClient) -> None:
     responses.get(APP_DETAILS_URL, json={"10": {"success": False}})
