@@ -321,7 +321,7 @@ def load_training_data(
         known = (game >= 0) & (game < vocab.games)
         is_positive = _bool(batch["is_positive"]) & known
         is_val = _timestamps(batch["timestamp"]) >= cutoff_us
-        history = _pad_history(Ragged.from_arrow(batch["games_reviewed_positive"]))
+        history = pad_history(Ragged.from_arrow(batch["games_reviewed_positive"]))
         warm = history[:, 0] != PADDING_ID
         counts += np.bincount(game[is_positive & ~is_val], minlength=vocab.games)
 
@@ -392,16 +392,29 @@ def catalog_at(batches: Iterable[pa.RecordBatch], cutoff: datetime, num_games: i
     """Latest game_features row per game strictly before `cutoff` (what batch inference at
     `cutoff` would see), reduced while streaming. Every game has a 1970-01-01 row, so every known
     game is included."""
-    cutoff_us = np.datetime64(cutoff, "us")
+    return catalog_from_table(latest_game_rows(batches, num_games, cutoff), num_games)
+
+
+def latest_game_rows(
+    batches: Iterable[pa.RecordBatch], num_games: int, cutoff: datetime | None = None
+) -> pa.Table:
+    """Latest row per `game_idx` < `num_games` (strictly before `cutoff` when given), reduced
+    batch by batch. Keeps every selected column (inference also reads names / game ids)."""
+    cutoff_us = np.datetime64(cutoff, "us") if cutoff is not None else None
     latest: pa.Table | None = None
     for batch in batches:
-        keep = (_timestamps(batch["timestamp"]) < cutoff_us) & (
-            _int64(pc.fill_null(batch["game_idx"], num_games)) < num_games
-        )
+        keep = _int64(pc.fill_null(batch["game_idx"], num_games)) < num_games
+        if cutoff_us is not None:
+            keep &= _timestamps(batch["timestamp"]) < cutoff_us
         rows = pa.Table.from_batches([batch]).filter(pa.array(keep))
         latest = _latest_per_game(rows if latest is None else pa.concat_tables([latest, rows]))
     if latest is None or latest.num_rows == 0:
         raise ValueError(f"no game_features rows before {cutoff}")
+    return latest
+
+
+def catalog_from_table(latest: pa.Table, num_games: int) -> Catalog:
+    """Catalog over one row per game (`latest_game_rows`), in the table's row order."""
     items = ItemFeatures.from_arrow(latest)
     row_of = np.full(num_games, -1, dtype=np.int64)
     row_of[items.game_idx] = np.arange(len(items))
@@ -469,7 +482,7 @@ def _timestamps(column: pa.ChunkedArray | pa.Array) -> np.ndarray:
     return np.asarray(column.to_numpy(zero_copy_only=False), dtype="datetime64[us]")
 
 
-def _pad_history(history: Ragged) -> np.ndarray:
+def pad_history(history: Ragged) -> np.ndarray:
     """Fixed [rows, USER_HISTORY_LENGTH] matrix (the mart already pads, this guards nulls)."""
     rows = len(history)
     out = np.full((rows, USER_HISTORY_LENGTH), PADDING_ID, dtype=np.int64)

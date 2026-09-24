@@ -53,3 +53,20 @@ output "training_role_arn" {
   description = "SageMaker execution role of the training / promote jobs."
   value       = aws_iam_role.training.arn
 }
+
+output "inference_ecr_repository_url" {
+  value = aws_ecr_repository.inference.repository_url
+}
+
+output "recommendations_table" {
+  value = aws_dynamodb_table.recommendations.name
+}
+
+output "public_subnet_ids" {
+  description = "Subnets for a manual `aws ecs run-task` (dbt / inference)."
+  value       = aws_subnet.public[*].id
+}
+
+output "egress_only_security_group_id" {
+  value = aws_security_group.egress_only.id
+}

@@ -18,3 +18,11 @@ Inference Pipeline should:
   keyed by user id. overwritten on each run of the inference pipeline.
 
 ### Infrastructure:
+
+- DynamoDB table for storing the recommendations. PK: user_id, recommendations as a dict , only top 5 including an
+  explanation
+
+### Considerations:
+
+- Given LLM calling cost, prefer to perform the reranking on users with more than 5 reviews interactions (or by default
+  on 1000 top reviewers)

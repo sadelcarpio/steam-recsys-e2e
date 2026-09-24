@@ -1,0 +1,50 @@
+[project]
+name = "steam-inference"
+version = "0.1.0"
+description = "Batch inference: two-tower retrieval over all games + Bedrock LLM reranking -> DynamoDB"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.35",
+    "numpy>=2.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyiceberg[glue,pyarrow]>=0.10",
+    "steam-training",
+    "torch>=2.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/steam_inference"]
+
+# CPU torch wheels only (Fargate): avoids ~3 GB of CUDA libraries. The training package is a
+# path dependency, so the model, artifact contract and catalog code are shared, not copied.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "moto[dynamodb,s3,ssm]>=5.0",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+steam-training = { path = "../training", editable = true }

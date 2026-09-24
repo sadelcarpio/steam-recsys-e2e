@@ -1,6 +1,6 @@
 # Step Functions pipeline (EventBridge Scheduler -> state machine):
-# ListPartitionGameIds -> Scrape (parallel Distributed Maps) -> Transform (dbt). Later specs
-# append the inference step after `Transform`.
+# ListPartitionGameIds -> Scrape (parallel Distributed Maps) -> Transform (dbt)
+#   -> CheckChampion -> Infer (inference task), or NoChampion (skip) while no model is promoted.
 #
 # Input: {} (run_id defaults to the execution name) or {"run_id": "<id>"} to re-run a
 # previous run's partitions idempotently.
@@ -21,6 +21,23 @@ locals {
       max_concurrency = var.num_review_workers
     }
   }
+
+  champion_metadata_key = "models/champion/metadata.json"
+
+  # Same launch settings for the single-task ECS steps (Transform, Infer).
+  ecs_task_retry = [
+    {
+      ErrorEquals     = ["ECS.AmazonECSException", "ECS.AccessDeniedException"]
+      IntervalSeconds = 30
+      MaxAttempts     = 3
+      BackoffRate     = 2
+    },
+    {
+      ErrorEquals     = ["States.TaskFailed"]
+      IntervalSeconds = 60
+      MaxAttempts     = 1
+    },
+  ]
 
   # One Distributed Map per scraper over the partition files the Lambda wrote for this run;
   # each item (S3 object) becomes one Fargate task with its own public IP.
@@ -92,7 +109,7 @@ locals {
   }]
 
   pipeline_definition = {
-    Comment = "Steam RecSys batch pipeline: ingestion -> transformation"
+    Comment = "Steam RecSys batch pipeline: ingestion -> transformation -> recommendations"
     StartAt = "ResolveRunId"
     States = {
       ResolveRunId = {
@@ -146,19 +163,52 @@ locals {
           }
           PropagateTags = "TASK_DEFINITION"
         }
-        Retry = [
-          {
-            ErrorEquals     = ["ECS.AmazonECSException", "ECS.AccessDeniedException"]
-            IntervalSeconds = 30
-            MaxAttempts     = 3
-            BackoffRate     = 2
-          },
-          {
-            ErrorEquals     = ["States.TaskFailed"]
-            IntervalSeconds = 60
-            MaxAttempts     = 1
-          },
-        ]
+        Retry      = local.ecs_task_retry
+        ResultPath = null
+        Next       = "CheckChampion"
+      }
+      # Inference only runs once a model is promoted (training promote workflow, or a local
+      # promote): metadata.json is written last, so its presence marks a complete champion.
+      CheckChampion = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:s3:listObjectsV2"
+        Parameters = {
+          Bucket  = aws_s3_bucket.model_artifacts.bucket
+          Prefix  = local.champion_metadata_key
+          MaxKeys = 1
+        }
+        ResultSelector = { "count.$" = "$.KeyCount" }
+        ResultPath     = "$.champion"
+        Next           = "HasChampion"
+      }
+      HasChampion = {
+        Type    = "Choice"
+        Choices = [{ Variable = "$.champion.count", NumericGreaterThan = 0, Next = "Infer" }]
+        Default = "NoChampion"
+      }
+      NoChampion = {
+        Type    = "Succeed"
+        Comment = "No promoted model yet: inference skipped"
+      }
+      # Batch inference: top K per user, LLM rerank of the top reviewers, DynamoDB overwrite.
+      # Idempotent (items are overwritten), so a retry is safe.
+      Infer = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::ecs:runTask.sync"
+        Parameters = {
+          LaunchType     = "FARGATE"
+          Cluster        = aws_ecs_cluster.main.arn
+          TaskDefinition = aws_ecs_task_definition.inference.arn_without_revision
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              Subnets        = aws_subnet.public[*].id
+              SecurityGroups = [aws_security_group.egress_only.id]
+              AssignPublicIp = "ENABLED" # no NAT: AWS API egress through the IGW
+            }
+          }
+          PropagateTags = "TASK_DEFINITION"
+        }
+        Retry      = local.ecs_task_retry
         ResultPath = null
         End        = true
       }
@@ -198,6 +248,7 @@ data "aws_iam_policy_document" "pipeline" {
     resources = concat(
       [for td in aws_ecs_task_definition.scraping : "${td.arn_without_revision}:*"],
       ["${aws_ecs_task_definition.dbt.arn_without_revision}:*"],
+      ["${aws_ecs_task_definition.inference.arn_without_revision}:*"],
     )
   }
   statement {
@@ -211,7 +262,18 @@ data "aws_iam_policy_document" "pipeline" {
     resources = [
       aws_iam_role.scraping_task.arn, aws_iam_role.scraping_execution.arn,
       aws_iam_role.etl_task.arn, aws_iam_role.etl_execution.arn,
+      aws_iam_role.inference_task.arn, aws_iam_role.inference_execution.arn,
     ]
+  }
+  statement {
+    sid       = "CheckChampion"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.model_artifacts.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:prefix"
+      values   = [local.champion_metadata_key]
+    }
   }
   statement {
     sid       = "EcsSyncRule"

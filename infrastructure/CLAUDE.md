@@ -15,8 +15,10 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
   uses a placeholder zip plus `ignore_changes = [filename, source_code_hash]`, and ECS task
   definitions use `:${var.scraping_image_tag}` (default `latest`).
 - The state machine definition is HCL (`local.pipeline_definition` in `orchestration.tf`):
-  `ListPartitionGameIds -> Scrape -> Transform`. Later specs add states after `Transform`
-  (change `Transform.End` to `Next`) and grant the needed permissions on `aws_iam_role.pipeline`.
+  `ListPartitionGameIds -> Scrape -> Transform -> CheckChampion -> HasChampion -> Infer |
+  NoChampion`. `CheckChampion` lists `models/champion/metadata.json` (written last by a
+  promotion). New states need matching permissions on `aws_iam_role.pipeline` (RunTask on the
+  task definition, PassRole on its roles).
 - Raw Glue tables (`local.raw_tables` in `etl.tf`) mirror the scraper parquet schema; keep them in
   sync with `data_ingestion/src/steam_ingestion/schemas.py` and `etl/tests/integration/fixtures.py`.
 - PR-scoped CI roles (e.g. `steam-recsys-etl-ci`) live next to their component and only get

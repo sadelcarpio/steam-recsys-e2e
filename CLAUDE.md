@@ -9,7 +9,7 @@ component, described below:
 | ETL            | @etl            | dbt based transformations with AWS Athena backend, running as an ECS Task as well, to perform feature engineering on the raw parquet scraped data, resulting in an Iceberg dataset for offline training and evaluation of retrieval and ranking models.                                                                                                                                                                                                              |
 | Training       | @training       | Responsible of taking the processed Iceberg tables from the ETL in order to train the recommender model (currently only retrieval since there is not enough user signal). Output artifacts are the User and Item tower.                                                                                                                                                                                                                                              |
 | Inference      | @inference      | Includes the Inference Pipeline which reads the necessary features from the Iceberg Tables, runs the two tower model and reranks the top N items with an LLM, including a natural text paragraph on why the recommendation was chosen                                                                                                                                                                                                                                |
-| Serving        | @serving        | Lightweight lambda app to serve the final recommender system. Fetch the recommendations for each user directly from DynamoDB's recommendations table                                                                                                                                                                                                                                                                                                                 |
+| Serving        | @serving        | Lightweight lambda app to serve the final recommender system. Fetch the recommendations for each user directly from DynamoDB's `game-explainable-recommendations` table                                                                                                                                                                                                                                                                                                                 |
 | Infrastructure | @infrastructure | Necessary AWS infrastructure (terraform), including AWS Lambda for serving, EventBridge to schedule the Step Function to handle the full ingestion to recs pipeline. Since doing batch retrieval recommendation recomputation triggers as new data arrives in batch.                                                                                                                                                                                                 |
 
 ## General Outlines
@@ -56,7 +56,9 @@ variables or a CD workflow.
     - ECS Fargate `reviews-scraping` (×N tasks, one per partition; public subnet,
       assignPublicIp=ENABLED, so each task has a distinct egress IP to avoid per-IP throttling)
 3. ECS Fargate `dbt`: runs models through Athena
-4. SageMaker Inference Pipeline: generates top-N recs
+4. ECS Fargate `inference` (only when `models/champion/` exists, else skipped): top-K recs per
+   user + LLM reranking. Runs on Fargate instead of SageMaker (no quota, same pattern as `dbt`;
+   the diagram still shows SageMaker)
 
 Order: EventBridge → 1 → 2 → 3 → 4
 
@@ -82,14 +84,15 @@ Order: EventBridge → 1 → 2 → 3 → 4
 
 ### Batch inference (4)
 
-- S3 (Iceberg) → features → SageMaker Inference Pipeline
-- S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → SageMaker Inference Pipeline
-- SageMaker Inference Pipeline ↔ Bedrock (LLM reranking of candidate items)
-- SageMaker Inference Pipeline → top-N recs → DynamoDB `recommendations`
+- S3 (Iceberg `user_features`, `game_features`, `interactions`) → features → ECS task `inference`
+- S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → ECS task `inference`
+- ECS task `inference` ↔ Bedrock (LLM reranking + explanations for the most active reviewers)
+- ECS task `inference` → top-K recs → DynamoDB `game-explainable-recommendations`
 
 ### Serving (online path)
 
-- User → user id → Lambda `recsys-serving` → reads DynamoDB `recommendations` → recommendations → User
+- User → user id → Lambda `recsys-serving` → reads DynamoDB `game-explainable-recommendations` →
+  recommendations → User
 - No LB in front of the Lambda; the diagram shows the Lambda called directly
 
 ## Not shown (deliberately)

@@ -107,3 +107,35 @@ variable "training_instance_type" {
   type        = string
   default     = "ml.m5.2xlarge"
 }
+
+# ---- inference -----------------------------------------------------------------------------
+
+variable "inference_image_tag" {
+  description = "Tag of the inference image run by the pipeline's last step (pushed by CD)."
+  type        = string
+  default     = "latest"
+}
+
+variable "inference_cpu" {
+  description = "Fargate vCPU units of the inference task (scoring is CPU-bound matmuls)."
+  type        = number
+  default     = 4096
+}
+
+variable "inference_memory" {
+  description = "Fargate memory (MiB) of the inference task."
+  type        = number
+  default     = 16384
+}
+
+variable "inference_bedrock_model_id" {
+  description = "Bedrock model (or cross-region inference profile) that reranks the candidates."
+  type        = string
+  default     = "us.amazon.nova-2-lite-v1:0"
+}
+
+variable "inference_rerank_max_users" {
+  description = "Users reranked by the LLM per run (the most active ones); bounds the Bedrock cost."
+  type        = number
+  default     = 1000
+}

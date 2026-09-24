@@ -1,0 +1,126 @@
+# Inference
+
+Weekly batch recommendations. It runs as the ECS Fargate task `inference`, the last step
+(`Infer`) of the `steam-recsys-pipeline` Step Function, after `Transform`. The step is skipped
+(`NoChampion`) while no model has been promoted.
+
+```
+S3 models/champion/  ─► two-tower model (steam_training)
+steam_marts (Iceberg, pyiceberg)
+  user_features  latest row per user   ─► user tower ─┐
+  game_features  latest row per game   ─► item tower ─┴► exact top K per user (reviewed games excluded)
+  interactions   reviewed games, review counts                      │
+                                                                    ▼
+                           1000 most active users (>= 6 reviews) ─► Bedrock LLM rerank + explanations
+                                                                    │
+                                                                    ▼
+                              DynamoDB game-explainable-recommendations (one item per user, overwritten)
+```
+
+1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
+   current state. `interactions` supplies each user's reviewed games (excluded from the
+   recommendations) and review counts. All reads are
+   pinned to the snapshot current at the start of the run.
+2. **Retrieval.** Every game is embedded once. Users are scored against all games in chunks
+   (exact brute force, no ANN), and the top `TOP_K` (30) are kept. Games newer than the model
+   are ranked from their content features (their ids map to OOV).
+3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
+   and at most `RERANK_MAX_USERS` (1000), are sent to Bedrock (Converse API) with their last
+   `games_reviewed_positive` (the last 5 liked games, the user tower's input) and their K
+   candidates. The model must call a `submit_ranking` tool
+   that returns every candidate once, best first, and explains the first `EXPLAIN_TOP_N` (5).
+   Invalid answers are repaired: unknown or repeated numbers are dropped and missing
+   candidates are appended. A failed call keeps the retrieval order for that user.
+4. **Output.** One item per user who has `user_features`, written with parallel batch writes.
+   Each run overwrites the items. A TTL (`TTL_DAYS`, 21) removes users that stop appearing.
+   Users with only negative reviews have no `user_features` row and get no item.
+
+## Output contract (`src/steam_inference/contracts.py`)
+
+```json
+{
+  "user_id": "76561198027267313",
+  "recommendations": [
+    {"game_id": 63910, "name": "King's Bounty: Crossworlds", "score": 0.4127,
+     "explanation": "As a fan of strategy and RPGs like Dungeons 2, ..."},
+    {"game_id": 203350, "name": "King's Bounty: Warriors of the North", "score": 0.4343}
+  ],
+  "model_id": "local-test",
+  "generated_at": "2026-09-24T12:40:00+00:00",
+  "reranked": true,
+  "rerank_model": "us.amazon.nova-2-lite-v1:0",
+  "expires_at": 1792152000
+}
+```
+
+`recommendations` is ordered best first: the LLM order when `reranked`, the model order
+otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
+Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation`. `user_id` is a
+string because Steam ids exceed JavaScript's safe integers.
+
+## LLM choice and cost
+
+Bedrock has no free tier. Measured on the real marts with the same prompt, each reranked user
+costs about 1.8k input tokens and 0.4k output tokens:
+
+| Model (`BEDROCK_MODEL_ID`) | Quality of the explanations | Relative cost |
+|---|---|---|
+| `amazon.nova-lite-v1:0` | Misattributes games and calls candidates "liked" | lowest |
+| **`us.amazon.nova-2-lite-v1:0`** (default) | Grounded in the liked list, consistent | ~ 1x |
+| `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Most specific (cites review %, developers) | ~ 2.5x |
+
+At the default of 1000 users per weekly run, that is about 1.8M input and 0.4M output tokens.
+Check the current per-token prices on the Bedrock pricing page. The task logs the exact usage
+(`bedrock usage: ... tokens`). To change the model, set the Terraform variable
+`inference_bedrock_model_id`, which updates both the SSM parameter and the IAM permission.
+
+The DynamoDB writes cost more than the LLM: about 1.4M items of 1.5–3.5 KB per run
+(on-demand), and they grow with the user count.
+
+## Configuration
+
+Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env vars > SSM
+`/inference/<ENV_VAR>` (read only when `USE_SSM=true`, as in AWS).
+
+| Env var | Default | |
+|---|---|---|
+| `MODEL_ARTIFACTS_BUCKET` | – (required) | `model-artifacts-<acct>` |
+| `MODEL_ID` | `champion` | Or any `models/<id>/` (manual runs) |
+| `GLUE_DATABASE` | `steam_marts` | |
+| `RECOMMENDATIONS_TABLE` | `game-explainable-recommendations` | |
+| `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB |
+| `TOP_K` | 30 | Candidates kept and written per user |
+| `MAX_USERS` | 0 (all) | Only the N most active users (local runs) |
+| `RERANK_ENABLED` | true | |
+| `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
+| `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
+| `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
+| `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 8 / 8 | Parallel Bedrock calls / DynamoDB writers |
+| `TTL_DAYS` | 21 | 0 = no `expires_at` |
+| `USER_BATCH_SIZE` / `ITEM_BATCH_SIZE` / `NUM_THREADS` | 1024 / 4096 / 0 | Scoring |
+
+## Development
+
+```bash
+cd inference
+uv sync                  # CPU torch; steam-training is an editable path dependency
+uv run pytest            # synthetic marts, moto S3 + DynamoDB, fake LLM: no AWS
+uv run ruff check . && uv run ruff format --check .
+```
+
+Dry run on the real marts and champion, with your AWS profile. It writes a local file and makes
+a handful of Bedrock calls:
+
+```bash
+MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> OUTPUT_PATH=/tmp/recs.jsonl \
+  MAX_USERS=200 RERANK_MAX_USERS=5 uv run python -m steam_inference
+```
+
+Build the image from the **repository root**: `docker build -f inference/Dockerfile -t inference .`
+
+## CI/CD
+
+- `inference CI` (PRs and main; `inference/**` and training sources): ruff, tests, image build.
+- `inference CD` (manual): tests, then pushes `inference:<sha>` + `:latest` (the task runs
+  `:latest`). With `run_now`, it also runs the task once and waits for it (runbook:
+  `docs/deployment.md` step 10).

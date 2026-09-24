@@ -1,0 +1,10 @@
+# Build context is the repository root: send only what the image needs.
+*
+!training/pyproject.toml
+!training/README.md
+!training/src
+!inference/pyproject.toml
+!inference/uv.lock
+!inference/README.md
+!inference/src
+**/__pycache__

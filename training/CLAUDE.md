@@ -51,7 +51,11 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   `evaluation/champion/metrics.json` last for a promotion. The checkpoint is deleted after the
   model is saved.
 - Change `ARCHITECTURE_VERSION` when the state dict layout changes. Update `contracts.py`
-  (and the future inference component) whenever the artifact contract changes.
+  whenever the artifact contract changes.
+- `inference/` imports this package (path dependency): `TwoTowerModel`, `ArtifactStore`,
+  `IcebergSource`, `latest_game_rows` / `catalog_from_table`, `pad_history`,
+  `evaluation.embed_catalog`. Keep those APIs stable, or update inference in the same change
+  (its CI runs on `training/src/**`).
 - Promotion and training run the image of the model's commit (`training:<model_id>`) unless
   `--image-tag` overrides it (GPU image, locally trained models).
 

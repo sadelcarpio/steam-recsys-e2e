@@ -10,7 +10,8 @@ Terraform for the whole project (AWS, `us-east-1`).
 | `data_ingestion.tf` | ECR `data-ingestion`, ECS cluster and task definitions `games-scraping` / `reviews-scraping`, Lambda `list-partition-game-ids`, SSM `/data-ingestion/*`, secret `data-ingestion/steam-api-key`, IAM.                                            |
 | `etl.tf`            | S3 `processed-steam-data-<acct>` (Iceberg lake + Athena results), Glue databases `steam_{raw,staging,intermediate,marts}`, raw external tables `steam_raw.games` / `reviews`, Athena workgroup `steam-recsys-etl`, ECR `etl`, ECS task definition `dbt`, SSM `/etl/*`, IAM. CI sandbox: bucket `etl-ci-<acct>` (2-day expiry), workgroup `steam-recsys-etl-ci`, role `steam-recsys-etl-ci` (PRs + main, only `ci_*` Glue databases). |
 | `training.tf`       | S3 `model-artifacts-<acct>` (versioned; models, evaluation reports, champion), ECR `training`, SageMaker execution role `steam-recsys-training` (reads the marts through Glue + S3, read/write on the artifacts bucket), SSM `/training/*` (`training_instance_type`, default `ml.m5.2xlarge`). |
-| `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks, then the `dbt` task) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                               |
+| `inference.tf`      | DynamoDB `game-explainable-recommendations` (PK `user_id`, TTL `expires_at`), ECR `inference`, ECS task definition `inference` (Fargate, `inference_cpu` / `inference_memory`), SSM `/inference/*`, IAM (marts read, `models/*` read, table writes, `bedrock:InvokeModel` on `inference_bedrock_model_id` only). |
+| `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks, then the `dbt` task, then `CheckChampion` → the `inference` task or a skip) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                               |
 
 ## Deployment
 
@@ -37,5 +38,6 @@ Set `schedule_enabled = false` to pause the weekly schedule. Tunables are in `va
   trusts `refs/heads/main`.
 - `etl CI` assumes `steam-recsys-etl-ci`, which trusts pull requests and `main` of this repo but
   can only touch the CI bucket, the CI workgroup and `ci_*` Glue databases.
+- `inference CD` pushes the image and, with `run_now`, runs the `inference` task once.
 - `training CD` / `training promote` use the deploy role to push the image and start SageMaker
   training jobs, which run as `steam-recsys-training` (passed by the deploy role).

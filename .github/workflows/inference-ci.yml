@@ -1,0 +1,49 @@
+name: inference CI
+
+# inference imports the training package (model, artifact contract, catalog code), so training
+# source changes run this too.
+on:
+  pull_request:
+    paths:
+      - "inference/**"
+      - "training/src/**"
+      - "training/pyproject.toml"
+      - ".github/workflows/inference-*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "inference/**"
+      - "training/src/**"
+      - "training/pyproject.toml"
+      - ".github/workflows/inference-*.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: inference
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: inference/uv.lock
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # Unit tests + full runs on synthetic marts (moto S3 + DynamoDB, fake LLM), no AWS.
+      - run: uv run pytest -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Context = repository root (the image includes the training package).
+      - name: Build inference image
+        working-directory: .
+        run: docker build -f inference/Dockerfile -t inference:ci .

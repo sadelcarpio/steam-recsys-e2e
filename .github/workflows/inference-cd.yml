@@ -1,0 +1,100 @@
+name: inference CD
+
+# Manual: tests, then pushes `inference:<sha>` and `inference:latest` to ECR. The pipeline's
+# last step (`Infer`) runs `:latest`. Optionally runs the task once right away (e.g. after a
+# promotion) instead of waiting for the weekly pipeline. Infrastructure must be applied first.
+on:
+  workflow_dispatch:
+    inputs:
+      run_now:
+        description: "Run the inference task once after deploying"
+        type: boolean
+        default: false
+      env_overrides:
+        description: "run_now only: container overrides, space-separated NAME=value (e.g. RERANK_ENABLED=false)"
+        type: string
+        default: ""
+      wait_minutes:
+        description: "run_now only: minutes to watch the task (the deploy role's credentials last 1 h)"
+        type: number
+        default: 45
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: inference-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: inference
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: inference/uv.lock
+      - run: uv sync --frozen && uv run pytest -q
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push inference image
+        working-directory: .
+        env:
+          REPO: ${{ steps.ecr.outputs.registry }}/inference
+        run: |
+          docker build -f inference/Dockerfile -t "$REPO:${GITHUB_SHA}" -t "$REPO:latest" .
+          docker push "$REPO:${GITHUB_SHA}"
+          docker push "$REPO:latest"
+
+      # Same cluster / network as the pipeline's Infer state (read from the state machine).
+      - name: Run inference task
+        if: inputs.run_now
+        env:
+          OVERRIDES: ${{ inputs.env_overrides }}
+          WAIT_MINUTES: ${{ inputs.wait_minutes }}
+        run: |
+          set -euo pipefail
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          SFN="arn:aws:states:${AWS_REGION}:${ACCOUNT}:stateMachine:steam-recsys-pipeline"
+          INFER=$(aws stepfunctions describe-state-machine --state-machine-arn "$SFN" \
+            --query definition --output text | jq -c '.States.Infer.Parameters')
+          ENV_JSON=$(printf '%s\n' $OVERRIDES | jq -R 'select(length > 0) | split("=")
+            | {name: .[0], value: (.[1:] | join("="))}' | jq -sc .)
+          TASK=$(aws ecs run-task --launch-type FARGATE \
+            --cluster "$(jq -r .Cluster <<<"$INFER")" \
+            --task-definition inference \
+            --network-configuration "$(jq -c .NetworkConfiguration <<<"$INFER")" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"inference\",\"environment\":$ENV_JSON}]}" \
+            --query 'tasks[0].taskArn' --output text)
+          CLUSTER=$(jq -r .Cluster <<<"$INFER")
+          echo "started $TASK"
+          DEADLINE=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            STATUS=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
+              --query 'tasks[0].lastStatus' --output text)
+            if [ "$STATUS" = STOPPED ]; then
+              CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK" \
+                --query 'tasks[0].containers[0].exitCode' --output text)
+              echo "### inference task stopped, exit code $CODE" >> "$GITHUB_STEP_SUMMARY"
+              echo "Logs: CloudWatch \`/ecs/inference\`, stream \`inference/inference/${TASK##*/}\`" >> "$GITHUB_STEP_SUMMARY"
+              [ "$CODE" = 0 ]
+              exit
+            fi
+            sleep 30
+          done
+          echo "### inference task still running after ${WAIT_MINUTES} min: $TASK" >> "$GITHUB_STEP_SUMMARY"
