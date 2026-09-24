@@ -90,10 +90,9 @@ class InferenceSettings(BaseSettings):
     rerank_temperature: float = Field(0.2, ge=0, le=1)
 
     # ---- output ----
+    # Parallel DynamoDB scan segments / batch writers. Only changed items are written; stored
+    # users without recommendations are deleted (full runs only, i.e. MAX_USERS=0).
     write_concurrency: int = Field(8, ge=1)
-    # Items expire after this many days unless a later run overwrites them (users who stopped
-    # appearing do not keep stale recommendations forever). 0 = no TTL attribute.
-    ttl_days: int = Field(21, ge=0)
 
     log_level: str = "INFO"
 

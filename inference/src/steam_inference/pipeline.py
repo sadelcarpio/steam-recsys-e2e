@@ -1,11 +1,12 @@
-"""Batch inference: champion model -> top K per user -> LLM rerank (top reviewers) -> DynamoDB."""
+"""Batch inference: champion model -> top K per user -> LLM rerank (top reviewers) -> DynamoDB
+(only the users whose recommendations changed are written)."""
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterable, Iterator
+from datetime import UTC, datetime
 
 import numpy as np
 from steam_training.artifacts import ArtifactStore
@@ -72,7 +73,8 @@ def run_inference(
             concurrency=settings.rerank_concurrency,
         )
 
-    written = writer.write(
+    stored = writer.stored_hashes()
+    changes = ChangedOnly(
         user_recommendations(
             data,
             candidates,
@@ -80,9 +82,16 @@ def run_inference(
             model_id=metadata.model_id,
             rerank_model=settings.bedrock_model_id,
             now=now,
-            ttl_days=settings.ttl_days,
-        )
+        ),
+        stored,
     )
+    written = writer.write(changes)
+    deleted = 0
+    gone = stored.keys() - changes.seen
+    if gone and settings.max_users:
+        log.info("partial run (MAX_USERS=%d): %d stored users kept", settings.max_users, len(gone))
+    elif gone:
+        deleted = writer.delete(sorted(gone))
     summary = InferenceSummary(
         model_id=metadata.model_id,
         skipped=False,
@@ -91,11 +100,32 @@ def run_inference(
         reranked_users=len(reranked),
         rerank_failures=failures,
         written=written,
+        unchanged=changes.unchanged,
+        deleted=deleted,
         snapshots=data.snapshots,
         seconds=round(time.monotonic() - started, 1),
     )
     log.info("inference done: %s", summary.model_dump_json())
     return summary
+
+
+class ChangedOnly:
+    """Passes through the items whose content hash differs from the stored one, counting the
+    unchanged ones and remembering every user id seen (the others are gone)."""
+
+    def __init__(self, items: Iterable[UserRecommendations], stored: dict[str, str]) -> None:
+        self.items = items
+        self.stored = stored
+        self.seen: set[str] = set()
+        self.unchanged = 0
+
+    def __iter__(self) -> Iterator[UserRecommendations]:
+        for item in self.items:
+            self.seen.add(item.user_id)
+            if self.stored.get(item.user_id) == item.content_hash():
+                self.unchanged += 1
+            else:
+                yield item
 
 
 def select_rerank_users(
@@ -130,10 +160,8 @@ def user_recommendations(
     model_id: str,
     rerank_model: str,
     now: datetime,
-    ttl_days: int,
 ) -> Iterator[UserRecommendations]:
     games = data.games
-    expires_at = int((now + timedelta(days=ttl_days)).timestamp()) if ttl_days else None
     for user in range(len(data.users)):
         rows, scores = candidates.of(user)
         if len(rows) == 0:
@@ -156,5 +184,4 @@ def user_recommendations(
             generated_at=now,
             reranked=result is not None,
             rerank_model=rerank_model if result else None,
-            expires_at=expires_at,
         )

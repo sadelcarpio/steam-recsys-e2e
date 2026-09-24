@@ -18,9 +18,10 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `rerank.py`: stage 3. Prompt, Bedrock Converse with a forced `submit_ranking` tool,
     `parse_response`, `merge_ranking` (repairs the answer), `rerank_all` (threads, per-user
     failure isolation)
-  - `writer.py`: stage 4. `DynamoWriter` (threaded batch writes, a resource per thread),
-    `JsonlWriter` (dry runs)
-  - `pipeline.py`: `run_inference` (skip when the model is missing), `select_rerank_users`
+  - `writer.py`: stage 4. `DynamoWriter` (`stored_hashes` = parallel scan, threaded batch
+    writes / deletes, a resource per thread), `JsonlWriter` (dry runs, no stored state)
+  - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
+    items whose `content_hash` matches the stored one), `select_rerank_users`
   - `__main__.py`: ECS entry (`python -m steam_inference`)
 - `tests/`: `conftest.py` builds synthetic marts, a random-init model saved as champion
   (moto S3 + DynamoDB) and a fake LLM. There are no AWS calls.
@@ -32,13 +33,18 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
 - A missing model (no `models/<MODEL_ID>/metadata.json`) is a successful skip that writes
   nothing. An architecture mismatch fails loudly.
 - Never recommend a game the user already reviewed (positive or negative).
+- Only changed items are written: `UserRecommendations.content_hash` covers what the user
+  sees, but not the scores or the time. A new visible field must go into the hash, or changes
+  to it will never be written. Deletes of users that are gone happen only on full runs
+  (`MAX_USERS=0`). There is no TTL, because unchanged items are never rewritten.
 - Items are the Pydantic contract (`UserRecommendations`). Serving reads the same shape, so any
   change goes in `contracts.py` + README first. `user_id` is a string, and numbers are `Decimal`.
 - LLM output is untrusted: the final order is always a permutation of the retrieved candidates,
   and explanations are kept only for the top `EXPLAIN_TOP_N`. One user's failure never fails
   the run.
-- Memory: everything is streamed per batch. Kept arrays are users x K candidates plus every
-  review (game id + flag) and one score chunk (`USER_BATCH_SIZE` x games).
+- Memory: everything is streamed per batch. Kept state is users x K candidates, the game id of
+  every review, one score chunk (`USER_BATCH_SIZE` x games) and the stored hashes (a dict with
+  one entry per item, about 150 MB at 1.4M users).
 - The Bedrock model id lives in Terraform (`inference_bedrock_model_id`), because IAM grants
   exactly that model. Changing it only via env would get AccessDenied in AWS.
 

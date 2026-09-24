@@ -14,7 +14,7 @@ steam_marts (Iceberg, pyiceberg)
                            1000 most active users (>= 6 reviews) ─► Bedrock LLM rerank + explanations
                                                                     │
                                                                     ▼
-                              DynamoDB game-explainable-recommendations (one item per user, overwritten)
+                              DynamoDB game-explainable-recommendations (one item per user, changed ones only)
 ```
 
 1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
@@ -31,8 +31,14 @@ steam_marts (Iceberg, pyiceberg)
    that returns every candidate once, best first, and explains the first `EXPLAIN_TOP_N` (5).
    Invalid answers are repaired: unknown or repeated numbers are dropped and missing
    candidates are appended. A failed call keeps the retrieval order for that user.
-4. **Output.** One item per user who has `user_features`, written with parallel batch writes.
-   Each run overwrites the items. A TTL (`TTL_DAYS`, 21) removes users that stop appearing.
+4. **Output.** One item per user who has `user_features`. Only the users whose
+   recommendations changed are written. The run first scans the table for each stored
+   `content_hash` (reading only `user_id` and `content_hash`). An item is rewritten only when
+   the hash of its new content differs: the model, the rerank flag, and the ordered games with
+   their names and explanations. Scores are left out of the hash, because the weekly
+   `reviews_ratio` updates move every score a little. Stored users that no longer get
+   recommendations are deleted, but only on full runs (`MAX_USERS=0`). A new champion changes
+   `model_id`, so it rewrites every user. The run logs `written` / `unchanged` / `deleted`.
    Users with only negative reviews have no `user_features` row and get no item.
 
 ## Output contract (`src/steam_inference/contracts.py`)
@@ -49,14 +55,15 @@ steam_marts (Iceberg, pyiceberg)
   "generated_at": "2026-09-24T12:40:00+00:00",
   "reranked": true,
   "rerank_model": "us.amazon.nova-2-lite-v1:0",
-  "expires_at": 1792152000
+  "content_hash": "9f2c0e5d7a1b4c8e0f3a6b9d2c5e8f1a"
 }
 ```
 
 `recommendations` is ordered best first: the LLM order when `reranked`, the model order
 otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
-Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation`. `user_id` is a
-string because Steam ids exceed JavaScript's safe integers.
+Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation`. `score` and
+`generated_at` are as of the last write: an unchanged list keeps them. `user_id` is a string,
+because Steam ids exceed JavaScript's safe integers.
 
 ## LLM choice and cost
 
@@ -74,8 +81,12 @@ Check the current per-token prices on the Bedrock pricing page. The task logs th
 (`bedrock usage: ... tokens`). To change the model, set the Terraform variable
 `inference_bedrock_model_id`, which updates both the SSM parameter and the IAM permission.
 
-The DynamoDB writes cost more than the LLM: about 1.4M items of 1.5–3.5 KB per run
-(on-demand), and they grow with the user count.
+DynamoDB, on-demand, per run:
+- **Change check:** a scan of about 1.4M items of 1.7 KB on average costs about 0.7M read
+  units, roughly $0.10.
+- **Writes:** about 2 write units per changed item, at $0.625 per million. Rewriting every user
+  (the first run, or a new champion) costs about $1.80. On normal weeks only the changed users
+  are paid for.
 
 ## Configuration
 
@@ -95,8 +106,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
 | `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
-| `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 8 / 8 | Parallel Bedrock calls / DynamoDB writers |
-| `TTL_DAYS` | 21 | 0 = no `expires_at` |
+| `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 8 / 8 | Parallel Bedrock calls / DynamoDB scan segments and writers |
 | `USER_BATCH_SIZE` / `ITEM_BATCH_SIZE` / `NUM_THREADS` | 1024 / 4096 / 0 | Scoring |
 
 ## Development

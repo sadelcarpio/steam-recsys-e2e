@@ -261,7 +261,8 @@ candidate wins, it copies the model to `models/champion/` and the report to
 The pipeline's last step (`Infer`, ECS task `inference`) runs every week once
 `models/champion/metadata.json` exists: it scores every user of `user_features` against every
 game, reranks the candidates of the 1000 most active users (>= 6 reviews) with Bedrock and
-overwrites their items in DynamoDB `game-explainable-recommendations`. Details and cost:
+writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`.
+Details and cost:
 `inference/README.md`.
 
 **Bedrock access (once).** The default model is Amazon Nova 2 Lite through the US cross-region
@@ -278,7 +279,7 @@ aws bedrock-runtime converse --model-id us.amazon.nova-2-lite-v1:0 \
 **Deploy / run now.** Actions → *inference CD* → Run workflow (on `main`). Tick `run_now` to
 run the task right away (e.g. after promoting a new champion) instead of waiting for the weekly
 pipeline; `env_overrides` passes container variables such as `RERANK_ENABLED=false` or
-`MODEL_ID=<sha>`. Do not run it while the pipeline's `Infer` step runs (both overwrite the same
+`MODEL_ID=<sha>`. Do not run it while the pipeline's `Infer` step runs (both write the same
 items; harmless, but wasted Bedrock calls).
 
 Manual run from a workstation (same network settings as the `Infer` step):

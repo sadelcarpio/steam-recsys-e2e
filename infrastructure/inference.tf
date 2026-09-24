@@ -1,7 +1,7 @@
 # inference component: ECS task `inference`, the last step of the Step Functions pipeline (skipped
 # while s3://model-artifacts-<acct>/models/champion/ is empty). Scores every user against every
 # game with the champion two-tower model, reranks the top reviewers' candidates with a Bedrock
-# LLM and overwrites one DynamoDB item per user. The image is shipped by the inference CD.
+# LLM and writes one DynamoDB item per user whose recommendations changed. The image is shipped by the inference CD.
 
 locals {
   inference_ssm_prefix = "/inference"
@@ -16,8 +16,9 @@ locals {
 
 # ---- Output: recommendations table -----------------------------------------------------------
 
-# One item per user (contract: inference/src/steam_inference/contracts.py), overwritten each
-# run. No PITR: every item is regenerated weekly. The TTL clears users that stop appearing.
+# One item per user (contract: inference/src/steam_inference/contracts.py). Each run scans the
+# stored content hashes, writes only the changed users and deletes the users that are gone.
+# No PITR: every item can be regenerated from the marts and the champion.
 resource "aws_dynamodb_table" "recommendations" {
   name         = "game-explainable-recommendations"
   billing_mode = "PAY_PER_REQUEST"
@@ -26,11 +27,6 @@ resource "aws_dynamodb_table" "recommendations" {
   attribute {
     name = "user_id"
     type = "S"
-  }
-
-  ttl {
-    attribute_name = "expires_at"
-    enabled        = true
   }
 }
 
@@ -120,8 +116,8 @@ data "aws_iam_policy_document" "inference_task" {
     resources = ["${aws_s3_bucket.model_artifacts.arn}/models/*"]
   }
   statement {
-    sid       = "WriteRecommendations"
-    actions   = ["dynamodb:BatchWriteItem", "dynamodb:PutItem"]
+    sid       = "SyncRecommendations"
+    actions   = ["dynamodb:Scan", "dynamodb:BatchWriteItem"]
     resources = [aws_dynamodb_table.recommendations.arn]
   }
   statement {
