@@ -91,11 +91,15 @@ data "aws_iam_policy_document" "github_trust" {
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
-    # Deploys only from main (workflow_dispatch on main).
+    # Deploys only from main (workflow_dispatch on main). GitHub may send either the legacy
+    # `repo:owner/repo` subject or the immutable `repo:owner@<id>/repo@<id>` one; accept both.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
+      values = [
+        "repo:${var.github_repository}:ref:refs/heads/main",
+        "repo:${var.github_repository_immutable}:ref:refs/heads/main",
+      ]
     }
   }
 }

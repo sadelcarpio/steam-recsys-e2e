@@ -34,7 +34,7 @@ variable "num_review_workers" {
 }
 
 variable "games_per_task" {
-  description = "Max new appids per games-scraping task (~200 req / 5 min per IP => ~3.5 h)."
+  description = "Max new appids per games-scraping task (2 req/game at ~200 req / 5 min per IP => ~7 h)."
   type        = number
   default     = 8000
 }

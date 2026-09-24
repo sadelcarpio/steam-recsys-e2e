@@ -2,13 +2,13 @@
 
 Terraform for the whole project (AWS, `us-east-1`).
 
-| Path | Contents |
-|---|---|
-| `bootstrap/` | Terraform state bucket `tf-state-<acct>`, deploy role `steam-recsys-github-deploy`. Reuses the account's existing GitHub OIDC provider (set `create_github_oidc_provider = true` in an account without one). Local state, applied once by hand. |
-| `network.tf` | VPC with 2 public subnets and an IGW, no NAT. Egress-only security group. |
-| `storage.tf` | S3 `raw-steam-data-<acct>`, `game-partitions-<acct>` (30-day expiry). DynamoDB `game-ids-state`, `reviews-state-cursor`. |
-| `data_ingestion.tf` | ECR `data-ingestion`, ECS cluster and task definitions `games-scraping` / `reviews-scraping`, Lambda `list-partition-game-ids`, SSM `/data-ingestion/*`, secret `data-ingestion/steam-api-key`, IAM. |
-| `orchestration.tf` | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks) and the EventBridge schedule (Thursdays 17:00 America/Chicago). |
+| Path                | Contents                                                                                                                                                                                                                                        |
+|---------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `bootstrap/`        | Terraform state bucket `tf-state-<acct>`, deploy role `steam-recsys-github-deploy`. Reuses the account's existing GitHub OIDC provider (set `create_github_oidc_provider = true` in an account without one). Local state, applied once by hand. |
+| `network.tf`        | VPC with 2 public subnets and an IGW, no NAT. Egress-only security group.                                                                                                                                                                       |
+| `storage.tf`        | S3 `raw-steam-data-<acct>`, `game-partitions-<acct>` (30-day expiry). DynamoDB `game-ids-state`, `reviews-state-cursor`.                                                                                                                        |
+| `data_ingestion.tf` | ECR `data-ingestion`, ECS cluster and task definitions `games-scraping` / `reviews-scraping`, Lambda `list-partition-game-ids`, SSM `/data-ingestion/*`, secret `data-ingestion/steam-api-key`, IAM.                                            |
+| `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                                                     |
 
 ## First-time setup
 

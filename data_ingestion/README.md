@@ -35,7 +35,7 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `STEAM_API_KEY_SECRET_ID` | `data-ingestion/steam-api-key` | Secrets Manager (plain string or `{"api_key": ...}`) |
 | `STEAM_API_KEY` | unset | Local fallback, skips Secrets Manager |
 | `NUM_REVIEW_WORKERS` | 10 | |
-| `GAMES_PER_TASK` | 8000 | ~3.5 h per task at the store rate limit |
+| `GAMES_PER_TASK` | 8000 | ~7 h per task at the store rate limit (2 requests per game) |
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
 | `MAX_REVIEWS_PER_GAME` | 2000 | Newest reviews per game per run; `0` = full history |
 | `MAX_GAME_ATTEMPTS` | 3 | |
