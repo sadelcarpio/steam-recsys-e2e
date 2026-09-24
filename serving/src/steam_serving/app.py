@@ -4,19 +4,24 @@
     GET /users/{user_id}/recommendations     the user's list, else the popularity fallback
     GET /popular                             the popularity list
     GET /games/{game_id}                     details of one game
-Query parameters of the lists: `limit` (1..MAX_LIMIT, default DEFAULT_LIMIT) and `details`
+    POST /recommendations                    online: for the liked games in the body
+                                             {"liked_game_ids": [...], "limit": 10, "details": true}
+Query parameters of the GET lists: `limit` (1..MAX_LIMIT, default DEFAULT_LIMIT) and `details`
 (true / false: attach each game's details). CORS preflights are answered by the Function URL.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from steam_serving.config import ServingSettings
 from steam_serving.contracts import (
@@ -24,10 +29,12 @@ from steam_serving.contracts import (
     USER_ID_PATTERN,
     ErrorResponse,
     GameDetails,
+    OnlineRequest,
     RecommendationOut,
     RecommendationsResponse,
     StoredRecommendations,
 )
+from steam_serving.online import OnlineModel
 from steam_serving.repository import Repository
 
 log = logging.getLogger(__name__)
@@ -46,9 +53,15 @@ class HttpError(Exception):
 
 
 class App:
-    def __init__(self, settings: ServingSettings, repository: Repository) -> None:
+    def __init__(
+        self,
+        settings: ServingSettings,
+        repository: Repository,
+        online: Callable[[], OnlineModel | None] | None = None,
+    ) -> None:
         self.settings = settings
         self.repository = repository
+        self.online = online  # the current online model (None: endpoint disabled)
 
     def handle(self, event: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
@@ -56,9 +69,12 @@ class App:
         method = http.get("method", "GET").upper()
         path = event.get("rawPath") or http.get("path") or "/"
         try:
-            if method != "GET":
-                raise HttpError(405, "method not allowed", "only GET is supported")
-            body, cache = self._route(path, event.get("queryStringParameters") or {})
+            if method == "POST" and path.rstrip("/") == "/recommendations":
+                body, cache = self.online_recommendations(_json_body(event)), False
+            elif method != "GET":
+                raise HttpError(405, "method not allowed", "GET, or POST /recommendations")
+            else:
+                body, cache = self._route(path, event.get("queryStringParameters") or {})
             status = 200
         except HttpError as err:
             status, body, cache = err.status, err.body, False
@@ -104,6 +120,63 @@ class App:
         limit, details = self._list_options(query)
         return self._recommendations("popular", None, self._popular(), limit, details)
 
+    def online_recommendations(self, payload: Any) -> RecommendationsResponse:
+        try:
+            request = OnlineRequest.model_validate(payload)
+        except ValidationError as err:
+            detail = "; ".join(
+                f"{'.'.join(map(str, e['loc'])) or 'body'}: {e['msg']}" for e in err.errors()
+            )
+            raise HttpError(400, "invalid body", detail) from None
+        if len(request.liked_game_ids) > self.settings.max_liked_games:
+            raise HttpError(
+                400, "invalid body", f"at most {self.settings.max_liked_games} liked_game_ids"
+            )
+        limit, details = self._options(request.limit, request.details)
+
+        model = self.online() if self.online else None
+        if model is None:
+            raise HttpError(503, "online model not available", "no bundle published yet")
+        result = model.recommend(request.liked_game_ids, limit)
+        if not result.game_ids:  # no liked game is in the catalog: popular, minus the liked ones
+            liked = set(request.liked_game_ids)
+            popular = self._popular()
+            kept = [r for r in popular.recommendations if r.game_id not in liked]
+            response = self._recommendations(
+                "popular",
+                None,
+                popular.model_copy(update={"recommendations": kept}),
+                limit,
+                details,
+            )
+        else:
+            games = self.repository.games(result.game_ids) if details else {}
+            response = RecommendationsResponse(
+                source="online",
+                user_id=None,
+                model_id=model.manifest.model_id,
+                generated_at=model.manifest.generated_at,
+                reranked=False,
+                recommendations=[
+                    RecommendationOut(
+                        rank=rank,
+                        game_id=game_id,
+                        name=name,
+                        score=score,
+                        details=games.get(game_id),
+                    )
+                    for rank, (game_id, name, score) in enumerate(
+                        zip(result.game_ids, result.names, result.scores, strict=True), start=1
+                    )
+                ],
+            )
+        return response.model_copy(
+            update={
+                "used_game_ids": result.used_game_ids,
+                "ignored_game_ids": result.ignored_game_ids,
+            }
+        )
+
     def game(self, game_id: str) -> GameDetails:
         if not game_id.isdigit() or len(game_id) > 10:
             raise HttpError(400, "invalid game_id", "a Steam appid")
@@ -121,21 +194,24 @@ class App:
         return stored
 
     def _list_options(self, query: dict[str, str]) -> tuple[int, bool]:
-        raw_limit = query.get("limit")
-        limit = self.settings.default_limit
-        if raw_limit is not None:
-            if not raw_limit.isdigit() or not 1 <= int(raw_limit) <= self.settings.max_limit:
-                raise HttpError(
-                    400, "invalid limit", f"an integer from 1 to {self.settings.max_limit}"
-                )
-            limit = int(raw_limit)
-        details = self.settings.include_details
-        raw_details = query.get("details")
-        if raw_details is not None:
-            if raw_details.lower() not in _TRUE | _FALSE:
-                raise HttpError(400, "invalid details", "true or false")
-            details = raw_details.lower() in _TRUE
-        return limit, details
+        """(limit, details) from the query string of the GET lists."""
+        raw_limit, raw_details = query.get("limit"), query.get("details")
+        if raw_limit is not None and not raw_limit.isdigit():
+            raise HttpError(400, "invalid limit", f"an integer from 1 to {self.settings.max_limit}")
+        if raw_details is not None and raw_details.lower() not in _TRUE | _FALSE:
+            raise HttpError(400, "invalid details", "true or false")
+        return self._options(
+            int(raw_limit) if raw_limit is not None else None,
+            raw_details.lower() in _TRUE if raw_details is not None else None,
+        )
+
+    def _options(self, limit: int | None, details: bool | None) -> tuple[int, bool]:
+        """Requested (limit, details), defaults filled in, limit checked."""
+        if limit is None:
+            limit = self.settings.default_limit
+        elif not 1 <= limit <= self.settings.max_limit:
+            raise HttpError(400, "invalid limit", f"an integer from 1 to {self.settings.max_limit}")
+        return limit, self.settings.include_details if details is None else details
 
     def _recommendations(
         self,
@@ -177,6 +253,16 @@ class App:
             },
             "body": body.model_dump_json(exclude_none=True),
         }
+
+
+def _json_body(event: dict[str, Any]) -> Any:
+    raw = event.get("body") or ""
+    try:
+        if event.get("isBase64Encoded"):
+            raw = base64.b64decode(raw).decode()
+        return json.loads(raw)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        raise HttpError(400, "invalid body", "a JSON object") from None
 
 
 class _Health(BaseModel):

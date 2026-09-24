@@ -22,6 +22,12 @@ Its `score` is the game's share of the top game's positive reviews, in (0, 1].
 DynamoDB table `game-details`, one item per catalog game, insert-only (details are static):
     game_id N partition key (Steam appid), name S, short_description S?, header_image S?,
     release_date S?, is_free BOOL?, price N?, developers / publishers / genres / categories L of S
+
+Online bundle (`online.py`), for serving's POST /recommendations: the catalog side
+s3://<model-artifacts>/serving/online/catalog.npz (the arrays below, rewritten every run) and
+manifest.json (`OnlineBundleManifest`), pinned to that catalog's S3 version and naming the
+model's numpy user tower, models/<model_id>/user_tower.npz (written by training, see
+training/src/steam_training/export.py).
 """
 
 from __future__ import annotations
@@ -132,6 +138,33 @@ class GameDetails(_Frozen):
         return item
 
 
+# Arrays of the online catalog (numpy .npz): the current catalog scored by the model's item
+# tower. Keep in sync with serving/src/steam_serving/online.py.
+ONLINE_BUNDLE_FORMAT = 2
+ONLINE_BUNDLE_ARRAYS = (
+    "item_embeddings",  # float32 [rows, output_dim], L2-normalized item tower output
+    "item_game_id",  # int64 [rows] Steam appid of each catalog row
+    "item_game_idx",  # int64 [rows] dense id (lkp_games) of each catalog row
+    "item_name_utf8",  # uint8 [bytes] every row's name, UTF-8, concatenated
+    "item_name_offsets",  # int64 [rows + 1] row i's name is item_name_utf8[o[i]:o[i + 1]]
+)
+
+
+class OnlineBundleManifest(_Frozen):
+    """serving/online/manifest.json: the catalog (pinned to its S3 version, so a reader never
+    mixes a new manifest with an older catalog) and the user tower of the same model
+    (models/<model_id>/ is immutable, so its key needs no version)."""
+
+    format_version: int = ONLINE_BUNDLE_FORMAT
+    model_id: str
+    generated_at: datetime
+    catalog_key: str
+    catalog_version_id: str | None = None  # None: unversioned storage (local dry runs)
+    catalog_sha256: str
+    catalog_games: int = Field(ge=1)
+    user_tower_key: str  # models/<model_id>/user_tower.npz, same bucket
+
+
 class RankedCandidate(BaseModel):
     """One entry of the LLM's ranking: a candidate number from the prompt (1-based)."""
 
@@ -162,5 +195,6 @@ class InferenceSummary(_Frozen):
     deleted: int = 0
     popular_games: int = 0
     game_details_written: int = 0
+    online_bundle: str | None = None
     snapshots: dict[str, int | None] = Field(default_factory=dict)
     seconds: float = 0.0

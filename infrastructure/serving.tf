@@ -1,5 +1,7 @@
 # serving component: Lambda `recsys-serving` behind a Lambda Function URL (no API Gateway / LB).
-# Reads the recommendations table (+ game-details) written by the inference pipeline. The auth
+# Reads the recommendations table (+ game-details) written by the inference pipeline, and runs
+# the user tower in numpy for POST /recommendations: the model's models/<id>/user_tower.npz
+# (training) over the current catalog embeddings in serving/online/ (inference). The auth
 # type is `var.serving_auth_type` (infrastructure CD input): AWS_IAM (SigV4, callers need
 # lambda:InvokeFunctionUrl + lambda:InvokeFunction, e.g. via the steam-recsys-serving-client
 # role) or NONE (public demo). The code is shipped by the serving CD (zip).
@@ -17,8 +19,10 @@ locals {
 
 resource "aws_ssm_parameter" "serving" {
   for_each = {
-    RECOMMENDATIONS_TABLE = aws_dynamodb_table.recommendations.name
-    GAME_DETAILS_TABLE    = aws_dynamodb_table.game_details.name
+    RECOMMENDATIONS_TABLE  = aws_dynamodb_table.recommendations.name
+    GAME_DETAILS_TABLE     = aws_dynamodb_table.game_details.name
+    MODEL_ARTIFACTS_BUCKET = aws_s3_bucket.model_artifacts.bucket
+    ONLINE_BUNDLE_PREFIX   = local.online_bundle_prefix
   }
   name  = "${local.serving_ssm_prefix}/${each.key}"
   type  = "String"
@@ -47,6 +51,17 @@ data "aws_iam_policy_document" "serving" {
     sid       = "ReadGameDetails"
     actions   = ["dynamodb:GetItem", "dynamodb:BatchGetItem"]
     resources = [aws_dynamodb_table.game_details.arn]
+  }
+  # Online model: the catalog + manifest (inference) and each model's numpy user tower (training).
+  statement {
+    sid       = "ReadOnlineCatalog"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${aws_s3_bucket.model_artifacts.arn}/${local.online_bundle_prefix}/*"]
+  }
+  statement {
+    sid       = "ReadUserTowers"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.model_artifacts.arn}/models/*/user_tower.npz"]
   }
   statement {
     sid       = "Config"
@@ -83,8 +98,9 @@ resource "aws_lambda_function" "serving" {
   handler          = "steam_serving.handler.handler"
   filename         = data.archive_file.serving_placeholder.output_path
   source_code_hash = data.archive_file.serving_placeholder.output_base64sha256
-  memory_size      = 512
-  timeout          = 10
+  # 1 GB: the online bundle (~28 MB) stays in memory, and CPU scales with memory (numpy).
+  memory_size = 1024
+  timeout     = 15
   # -1 = unreserved. The default account limit (10 concurrent executions) leaves no room to
   # reserve any: request more first (docs/deployment.md, step 11).
   reserved_concurrent_executions = var.serving_reserved_concurrency
@@ -106,7 +122,7 @@ resource "aws_lambda_function_url" "serving" {
 
   cors {
     allow_origins = var.serving_cors_allow_origins
-    allow_methods = ["GET"]
+    allow_methods = ["GET", "POST"]
     allow_headers = ["authorization", "content-type", "x-amz-date", "x-amz-security-token", "x-amz-content-sha256"]
     max_age       = 3600
   }

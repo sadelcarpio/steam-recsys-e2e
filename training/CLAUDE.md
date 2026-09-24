@@ -21,8 +21,12 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   - `evaluation.py`: stage 4. Pure-torch scoring loops on `device` (`CatalogIndex`, recall@K,
     popularity baseline, `mine_hard_negatives`)
   - `pipeline.py`: `run_training`, `run_promotion`, `decide`
-  - `artifacts.py`: `ArtifactStore` (S3 save / load / promote), `S3Checkpoints`
-  - `__main__.py`: SageMaker entry (`python -m steam_training {train,promote}`)
+  - `artifacts.py`: `ArtifactStore` (S3 save / load / promote, `save_user_tower_numpy`),
+    `S3Checkpoints`
+  - `export.py`: the numpy user tower (`user_tower.npz`, `USER_TOWER_ARRAYS`), which the
+    serving Lambda runs without torch
+  - `__main__.py`: SageMaker entry (`python -m steam_training {train,promote}`), plus
+    `export --model-id` (local backfill of `user_tower.npz`)
   - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
   (streams small batches). Unit tests, train → promote end to end with moto S3, and a bitwise
@@ -52,6 +56,11 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   model is saved.
 - Change `ARCHITECTURE_VERSION` when the state dict layout changes. Update `contracts.py`
   whenever the artifact contract changes.
+- `user_tower.npz` mirrors `UserTower.forward` for serving's numpy port
+  (`serving/src/steam_serving/online.py`). A change to the user tower must update `export.py`
+  (bump `USER_TOWER_NUMPY_FORMAT`) and the numpy port together. Parity with torch is tested in
+  `inference/tests/test_online_parity.py`. Promotion of a model without the file deletes the
+  champion's copy, so a stale user tower is never paired with a new model.
 - `inference/` imports this package (path dependency): `TwoTowerModel`, `ArtifactStore`,
   `IcebergSource`, `latest_game_rows` / `catalog_from_table`, `pad_history`,
   `evaluation.embed_catalog`. Keep those APIs stable, or update inference in the same change

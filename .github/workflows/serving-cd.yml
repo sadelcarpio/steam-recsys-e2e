@@ -1,8 +1,9 @@
 name: serving CD
 
 # Manual deploy of the `recsys-serving` Lambda code (zip). Infrastructure must be applied first
-# (it creates the function, its Function URL and the auth type). Smoke-tests the new code with a
-# direct invoke of /health and /popular (works whatever the URL auth type).
+# (it creates the function, its Function URL and the auth type). Smoke-tests the new code with
+# direct invokes of /health, /popular and POST /recommendations (works whatever the URL auth
+# type).
 on:
   workflow_dispatch:
 
@@ -41,19 +42,24 @@ jobs:
 
       - name: Smoke test
         run: |
-          invoke() {
+          invoke() {  # path [method] [json body]
+            jq -n --arg path "$1" --arg method "${2:-GET}" --arg body "${3:-}" \
+              '{rawPath: $path, requestContext: {http: {method: $method}}, body: $body}' > event.json
             aws lambda invoke --function-name recsys-serving --cli-binary-format raw-in-base64-out \
-              --payload "{\"rawPath\": \"$1\", \"requestContext\": {\"http\": {\"method\": \"GET\"}}}" \
-              out.json > /dev/null
+              --payload fileb://event.json out.json > /dev/null
             jq -r '.statusCode' out.json
           }
           [ "$(invoke /health)" = 200 ] || { cat out.json; exit 1; }
           # 404 until the first inference run has written the popularity item
-          status="$(invoke '/popular')"
+          status="$(invoke /popular)"
           case "$status" in 200|404) ;; *) cat out.json; exit 1 ;; esac
+          # 503 until the first inference run has published the online catalog (Portal 2)
+          online="$(invoke /recommendations POST '{"liked_game_ids": [620], "limit": 3}')"
+          case "$online" in 200|503) ;; *) cat out.json; exit 1 ;; esac
           url="$(aws lambda get-function-url-config --function-name recsys-serving)"
           {
             echo '### recsys-serving deployed'
             echo "- URL: $(jq -r .FunctionUrl <<< "$url") (auth: $(jq -r .AuthType <<< "$url"))"
             echo "- /popular: HTTP ${status}"
+            echo "- POST /recommendations: HTTP ${online}"
           } >> "$GITHUB_STEP_SUMMARY"

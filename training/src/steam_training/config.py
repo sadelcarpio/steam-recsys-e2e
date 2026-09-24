@@ -183,6 +183,13 @@ class LaunchSettings(_SsmSettings):
     aws_region: str = "us-east-1"
 
 
+class ExportSettings(_SsmSettings):
+    """Settings of `python -m steam_training export` (numpy user tower of a saved model)."""
+
+    model_artifacts_bucket: str = Field(pattern=BUCKET_PATTERN)
+    log_level: str = "INFO"
+
+
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=level.upper(),

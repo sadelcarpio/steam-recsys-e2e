@@ -114,3 +114,118 @@ def settings() -> ServingSettings:
 @pytest.fixture
 def app(tables, settings) -> App:
     return App(settings, DynamoRepository(RECS_TABLE, DETAILS_TABLE, region="us-east-1"))
+
+
+# ---- online bundle -----------------------------------------------------------------------------
+
+BUNDLE_BUCKET = "model-artifacts-test"
+BUNDLE_PREFIX = "serving/online"
+# catalog rows: game_id 10..39 (game_idx 2..31); vocab 30 => game_idx 30, 31 are OOV
+ONLINE_GAMES = list(range(10, 40))
+
+
+USER_TOWER_KEY = "models/abc123/user_tower.npz"
+
+
+def _npz(arrays: dict) -> bytes:
+    import io
+
+    import numpy as np
+
+    buffer = io.BytesIO()
+    np.savez(buffer, **arrays)
+    return buffer.getvalue()
+
+
+def make_user_tower(seed: int = 0, model_id: str = "abc123") -> bytes:
+    """models/<model_id>/user_tower.npz as training exports it (steam_training.export)."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    vocab, emb, hidden, out = 30, 6, 8, 4
+    seen = np.ones(vocab, dtype=bool)
+    seen[5] = False  # game_idx 5 (game 13) had no training interactions
+    return _npz(
+        {
+            "format_version": np.int64(1),
+            "model_id": np.str_(model_id),
+            "history_length": np.int64(5),
+            "padding_id": np.int64(0),
+            "oov_id": np.int64(1),
+            "game_table": rng.normal(size=(vocab, emb)).astype(np.float32),
+            "seen_games": seen,
+            "w1": rng.normal(size=(hidden, emb + 1)).astype(np.float32),
+            "b1": rng.normal(size=hidden).astype(np.float32),
+            "w2": rng.normal(size=(out, hidden)).astype(np.float32),
+            "b2": rng.normal(size=out).astype(np.float32),
+        }
+    )
+
+
+def make_catalog(seed: int = 0) -> bytes:
+    """serving/online/catalog.npz as inference writes it (steam_inference.online)."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed + 100)
+    rows, out = len(ONLINE_GAMES), 4
+    items = rng.normal(size=(rows, out)).astype(np.float32)
+    names = [f"Game {g} é".encode() for g in ONLINE_GAMES]
+    offsets = np.zeros(rows + 1, dtype=np.int64)
+    np.cumsum([len(n) for n in names], out=offsets[1:])
+    return _npz(
+        {
+            "item_embeddings": items / np.linalg.norm(items, axis=1, keepdims=True),
+            "item_game_id": np.array(ONLINE_GAMES, dtype=np.int64),
+            "item_game_idx": np.arange(2, rows + 2, dtype=np.int64),
+            "item_name_utf8": np.frombuffer(b"".join(names), dtype=np.uint8),
+            "item_name_offsets": offsets,
+        }
+    )
+
+
+def make_manifest(catalog: bytes, model_id: str = "abc123", **changes) -> dict:
+    import hashlib
+
+    return {
+        "format_version": 2,
+        "model_id": model_id,
+        "generated_at": GENERATED_AT,
+        "catalog_key": f"{BUNDLE_PREFIX}/catalog.npz",
+        "catalog_version_id": None,
+        "catalog_sha256": hashlib.sha256(catalog).hexdigest(),
+        "catalog_games": len(ONLINE_GAMES),
+        "user_tower_key": f"models/{model_id}/user_tower.npz",
+        **changes,
+    }
+
+
+def publish_bundle(s3, seed: int = 0, model_id: str = "abc123") -> dict:
+    """The model's user tower (training) + a catalog and manifest (inference), on the
+    versioned moto bucket."""
+    s3.put_object(
+        Bucket=BUNDLE_BUCKET,
+        Key=f"models/{model_id}/user_tower.npz",
+        Body=make_user_tower(seed, model_id),
+    )
+    catalog = make_catalog(seed)
+    put = s3.put_object(Bucket=BUNDLE_BUCKET, Key=f"{BUNDLE_PREFIX}/catalog.npz", Body=catalog)
+    manifest = make_manifest(catalog, model_id, catalog_version_id=put["VersionId"])
+    s3.put_object(
+        Bucket=BUNDLE_BUCKET, Key=f"{BUNDLE_PREFIX}/manifest.json", Body=json.dumps(manifest)
+    )
+    return manifest
+
+
+@pytest.fixture
+def online_model():
+    from steam_serving.online import BundleManifest, OnlineModel, UserTower
+
+    catalog = make_catalog()
+    manifest = BundleManifest.model_validate(make_manifest(catalog))
+    return OnlineModel.from_bytes(manifest, catalog, UserTower.from_bytes(make_user_tower()))
+
+
+@pytest.fixture
+def online_app(tables, settings, online_model) -> App:
+    repo = DynamoRepository(RECS_TABLE, DETAILS_TABLE, region="us-east-1")
+    return App(settings, repo, lambda: online_model)

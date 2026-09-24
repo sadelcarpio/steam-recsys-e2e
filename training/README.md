@@ -92,6 +92,8 @@ in the training split).
 ```
 s3://model-artifacts-<acct>/
   models/<sha>/user_tower.pt, item_tower.pt   torch state dicts (steam_training.artifacts.load_model)
+  models/<sha>/user_tower.npz                 the user tower as numpy arrays (steam_training.export),
+                                              run without torch by the serving Lambda (online recs)
   models/<sha>/metadata.json                  config, vocab sizes, split, Iceberg snapshot ids, metrics
   evaluation/<sha>/metrics.json               promotion report (candidate vs champion)
   models/champion/…                           the promoted model (bucket versioned: old champions recoverable)
@@ -100,6 +102,17 @@ s3://model-artifacts-<acct>/
 
 `<sha>` is the commit of the training code (the CD workflow's `GITHUB_SHA`). Training the same
 commit again overwrites its model.
+
+`user_tower.npz` holds the frozen game table, `seen_games`, the two MLP layers, and the model
+id and id constants, so the serving Lambda can embed a list of liked games with numpy alone. It
+is saved with every model and copied on promotion. The item side is not exported here: the
+item embeddings depend on the current game features, so the inference pipeline recomputes them
+every run. A model saved before the export existed gets it with a one-off command (it writes
+`models/<model id>/` and, for `champion`, `models/champion/`):
+
+```bash
+MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> uv run python -m steam_training export --model-id champion
+```
 
 Promotion (`python -m steam_training promote`) evaluates the candidate and the champion on the
 same rows: positive interactions after **both** models' training cutoffs, so neither model has

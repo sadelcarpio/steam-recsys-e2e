@@ -1289,6 +1289,7 @@ version = "0.1.0"
 source = { editable = "../serving" }
 dependencies = [
     { name = "boto3" },
+    { name = "numpy" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
@@ -1296,13 +1297,14 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.43.101" },
+    { name = "numpy", specifier = ">=2.5.3" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "moto", extras = ["dynamodb", "ssm"], specifier = ">=5.2.3" },
+    { name = "moto", extras = ["dynamodb", "s3", "ssm"], specifier = ">=5.2.3" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.16.8" },
 ]

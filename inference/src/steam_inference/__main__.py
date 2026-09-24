@@ -12,6 +12,7 @@ from steam_training.artifacts import ArtifactStore
 from steam_training.data import IcebergSource
 
 from steam_inference.config import InferenceSettings, configure_logging
+from steam_inference.online import BundleStore, LocalBundleStore, S3BundleStore
 from steam_inference.pipeline import run_inference
 from steam_inference.rerank import BedrockReranker
 from steam_inference.writer import DynamoWriter, JsonlWriter, Writer
@@ -45,6 +46,17 @@ def main() -> None:
         )
     if not settings.sync_game_details:
         details_writer = None
+    bundle_store: BundleStore | None = None
+    if settings.online_bundle_enabled:
+        bundle_store = (
+            LocalBundleStore(str(Path(settings.output_path).with_name("online")))
+            if settings.output_path
+            else S3BundleStore(
+                settings.model_artifacts_bucket,
+                settings.online_bundle_prefix,
+                region=settings.aws_region,
+            )
+        )
     reranker = None
     if settings.rerank_enabled and settings.rerank_max_users > 0:
         reranker = BedrockReranker(
@@ -61,6 +73,7 @@ def main() -> None:
         writer,
         reranker,
         details_writer=details_writer,
+        bundle_store=bundle_store,
     )
     if reranker is not None:
         log.info(

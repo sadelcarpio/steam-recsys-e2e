@@ -64,6 +64,9 @@ class InferenceSettings(BaseSettings):
     # Details of every catalog game for serving (insert-only: only new games are written).
     game_details_table: str = "game-details"
     sync_game_details: bool = True
+    # Online bundle for serving (s3://<model_artifacts_bucket>/<prefix>/bundle.npz + manifest).
+    online_bundle_enabled: bool = True
+    online_bundle_prefix: str = "serving/online"
     # Local file: write the items as JSON lines there instead of DynamoDB (dry runs).
     output_path: str | None = None
 

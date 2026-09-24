@@ -2,7 +2,8 @@
 # pipeline (skipped while s3://model-artifacts-<acct>/models/champion/ is empty). Scores every
 # user against every game with the champion two-tower model, reranks the top reviewers'
 # candidates with a Bedrock LLM and writes one DynamoDB item per user whose recommendations
-# changed, plus the popularity fallback item and the details of new games (game-details).
+# changed, plus the popularity fallback item, the details of new games (game-details) and the
+# online catalog for serving (s3://model-artifacts-<acct>/serving/online/).
 # The image is shipped by the inference CD; the job itself is defined by the `Infer`
 # state (orchestration.tf, `local.inference_job`).
 
@@ -15,6 +16,8 @@ locals {
   # Cross-region inference profiles (us. / eu. / apac. / global.) route to the base model in
   # several regions: allow the profile and the base model everywhere.
   bedrock_base_model_id = replace(var.inference_bedrock_model_id, "/^(us|eu|apac|global)\\./", "")
+  # Online catalog (item embeddings + manifest) written by inference, read by serving.
+  online_bundle_prefix = "serving/online"
 }
 
 # ---- Output: recommendations table -----------------------------------------------------------
@@ -54,6 +57,7 @@ resource "aws_ssm_parameter" "inference" {
     GLUE_DATABASE          = local.marts_database
     RECOMMENDATIONS_TABLE  = aws_dynamodb_table.recommendations.name
     GAME_DETAILS_TABLE     = aws_dynamodb_table.game_details.name
+    ONLINE_BUNDLE_PREFIX   = local.online_bundle_prefix
     BEDROCK_MODEL_ID       = var.inference_bedrock_model_id
     RERANK_MAX_USERS       = tostring(var.inference_rerank_max_users)
   }
@@ -116,6 +120,11 @@ data "aws_iam_policy_document" "inference" {
     sid       = "ReadModels"
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.model_artifacts.arn}/models/*"]
+  }
+  statement {
+    sid       = "PublishOnlineBundle"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.model_artifacts.arn}/${local.online_bundle_prefix}/*"]
   }
   statement {
     sid       = "SyncRecommendations"

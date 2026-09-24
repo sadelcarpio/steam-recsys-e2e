@@ -30,6 +30,9 @@ class Candidates:
 
     rows: np.ndarray  # int64 [users, K] catalog rows, NO_ROW = none
     scores: np.ndarray  # float32 [users, K] cosine similarity
+    # float32 [catalog rows, output_dim]: the L2-normalized item embeddings scored against
+    # (also exported for online serving, `online.build_catalog`)
+    item_embeddings: np.ndarray
 
     def of(self, user: int) -> tuple[np.ndarray, np.ndarray]:
         valid = self.rows[user] != NO_ROW
@@ -76,4 +79,4 @@ def retrieve(
         len(users),
         time.monotonic() - started,
     )
-    return Candidates(rows=rows, scores=scores)
+    return Candidates(rows=rows, scores=scores, item_embeddings=item_embeddings.numpy())

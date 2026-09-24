@@ -22,6 +22,9 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `writer.py`: stage 4. `DynamoWriter` (`stored_hashes` = parallel scan, threaded batch
     writes / deletes, a resource per thread), `JsonlWriter` (dry runs, no stored state)
   - `details.py`: mart `game_details` -> `game-details` table, insert-only (`sync_game_details`)
+  - `online.py`: the online catalog for serving (`build_catalog`, `encode_catalog`,
+    `S3BundleStore` puts the catalog, then a manifest pinned to its version id that names the
+    model's `user_tower.npz`; `LocalBundleStore` for dry runs)
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
@@ -51,6 +54,12 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   never deleted as a gone user.
 - `game-details` is insert-only: an existing game is never rewritten. To force a reload,
   delete the items (or the table) first.
+- Online model ownership: training exports the user tower (`steam_training.export`, fixed per
+  model), and this pipeline publishes only the catalog side (it depends on the current game
+  features). Serving refuses a pair whose `model_id`s differ. The manifest is published only
+  when the model has its `user_tower.npz`. `test_online_parity.py` runs training's export and
+  this catalog through serving's numpy code, and compares the result with torch and with batch
+  retrieval.
 - LLM output is untrusted: the final order is always a permutation of the retrieved candidates,
   and explanations are kept only for the top `EXPLAIN_TOP_N`. One user's failure never fails
   the run.

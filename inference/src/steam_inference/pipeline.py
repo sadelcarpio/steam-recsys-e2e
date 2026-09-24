@@ -1,6 +1,7 @@
 """Batch inference: champion model -> top K per user -> LLM rerank (top reviewers) -> DynamoDB
 (only the users whose recommendations changed are written), plus the popularity fallback item
-and the details of new games (insert-only)."""
+the details of new games (insert-only) and the online catalog (item embeddings of the current
+catalog, for the serving Lambda's POST /recommendations)."""
 
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from steam_inference.contracts import (
 )
 from steam_inference.details import sync_game_details
 from steam_inference.features import InferenceData, load_inference_data
+from steam_inference.online import BundleStore, build_catalog, encode_catalog
 from steam_inference.rerank import RankFn, Reranked, RerankRequest, rerank_all
 from steam_inference.retrieval import Candidates, retrieve
 from steam_inference.writer import Writer
@@ -40,6 +42,7 @@ def run_inference(
     rank_fn: RankFn | None,
     *,
     details_writer: Writer | None = None,
+    bundle_store: BundleStore | None = None,
     now: datetime | None = None,
 ) -> InferenceSummary:
     started = time.monotonic()
@@ -69,6 +72,24 @@ def run_inference(
         user_batch_size=settings.user_batch_size,
         item_batch_size=settings.item_batch_size,
     )
+
+    online_bundle = None
+    if bundle_store is not None:
+        if store.has_user_tower_numpy(metadata.model_id):
+            online_bundle = bundle_store.publish(
+                encode_catalog(build_catalog(data.games, candidates.item_embeddings)),
+                model_id=metadata.model_id,
+                generated_at=now,
+                catalog_games=len(data.games),
+                user_tower_key=store.user_tower_numpy_key(metadata.model_id),
+            )
+        else:
+            log.warning(
+                "model %s has no numpy user tower (saved before the export existed): online "
+                "catalog not published; run `python -m steam_training export --model-id %s`",
+                metadata.model_id,
+                metadata.model_id,
+            )
 
     reranked: dict[int, Reranked] = {}
     failures = 0
@@ -123,6 +144,7 @@ def run_inference(
         deleted=deleted,
         popular_games=len(popular.recommendations) if popular else 0,
         game_details_written=details_written,
+        online_bundle=online_bundle,
         snapshots={**data.snapshots, "game_details": details_snapshot},
         seconds=round(time.monotonic() - started, 1),
     )

@@ -43,6 +43,7 @@ def test_training_writes_artifacts_that_reload(settings, source, store):
     assert _keys(store) == {
         "models/abc123/user_tower.pt",
         "models/abc123/item_tower.pt",
+        "models/abc123/user_tower.npz",
         "models/abc123/metadata.json",
     }
     assert metadata.snapshots["interactions"] == 123
@@ -60,7 +61,7 @@ def test_promotion_flow(settings, source, store):
     run_training(settings, source, store)
     first = run_promotion(settings, source, store)
     assert first.promoted and first.champion is None
-    assert "models/champion/user_tower.pt" in _keys(store)
+    assert {"models/champion/user_tower.pt", "models/champion/user_tower.npz"} <= _keys(store)
     champion_metrics = json.loads(
         store.s3.get_object(Bucket=BUCKET, Key="evaluation/champion/metrics.json")["Body"].read()
     )

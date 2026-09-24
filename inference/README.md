@@ -18,6 +18,8 @@ steam_marts (Iceberg, pyiceberg)
                               DynamoDB game-explainable-recommendations (one item per user, changed ones only,
                                                                         + "__popular__" fallback item)
   game_details   text, image URL (new games only) ─► DynamoDB game-details (read by serving)
+  item embeddings ─► S3 serving/online/ catalog.npz + manifest.json (serving's online endpoint,
+                    with the model's models/<id>/user_tower.npz from training)
 ```
 
 1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
@@ -55,6 +57,20 @@ steam_marts (Iceberg, pyiceberg)
    games. Descriptions are cleaned to plain text (tags dropped, HTML entities decoded). The
    sync is skipped with a warning while the mart does not exist, and it also runs only when a
    model exists.
+7. **Online catalog.** Every run writes the catalog side of serving's online model to
+   `s3://model-artifacts-<acct>/serving/online/catalog.npz` (`contracts.ONLINE_BUNDLE_ARRAYS`,
+   about 14 MB for about 50k games). It holds the item embeddings scored in step 2, plus each
+   catalog row's `game_id`, `game_idx` and name. Then it writes `manifest.json`
+   (`OnlineBundleManifest`), which:
+   - pins the catalog's S3 version id;
+   - names the model's numpy user tower, `models/<model_id>/user_tower.npz`. Training writes
+     that file with every model, and it never changes.
+
+   The catalog is rewritten every run because the item embeddings move with the weekly
+   `reviews_ratio` and new games. Old versions expire through the bucket's 90-day
+   noncurrent-version rule. When the model has no `user_tower.npz` (it was saved before the
+   export existed), nothing is published and the previous manifest stays; run
+   `python -m steam_training export --model-id champion` (training README).
 
 ## Output contract (`src/steam_inference/contracts.py`)
 
@@ -135,6 +151,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `RECOMMENDATIONS_TABLE` | `game-explainable-recommendations` | |
 | `GAME_DETAILS_TABLE` / `SYNC_GAME_DETAILS` | `game-details` / true | Insert-only game details |
 | `POPULAR_WINDOW_DAYS` | 90 | Window of the popularity fallback |
+| `ONLINE_BUNDLE_ENABLED` / `ONLINE_BUNDLE_PREFIX` | true / `serving/online` | Online catalog + manifest (dry runs: `online/` next to `OUTPUT_PATH`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user |
 | `MAX_USERS` | 0 (all) | Only the N most active users (local runs) |

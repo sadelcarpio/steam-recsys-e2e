@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.43.101",
+    "numpy>=2.5.3",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
 ]
@@ -19,7 +20,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "moto[dynamodb,ssm]>=5.2.3",
+    "moto[dynamodb,s3,ssm]>=5.2.3",
     "pytest>=9.1.1",
     "ruff>=0.16.8",
 ]

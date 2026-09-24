@@ -68,6 +68,16 @@ class ServingSettings(BaseSettings):
     # Cache-Control max-age of successful responses (recommendations change weekly).
     cache_max_age_seconds: int = Field(300, ge=0)
 
+    # ---- online recommendations (POST /recommendations) ----
+    # Bucket of the online bundle written by the inference pipeline; unset = endpoint disabled.
+    model_artifacts_bucket: str | None = None
+    online_bundle_prefix: str = "serving/online"
+    # A warm container re-reads the manifest at most this often (a new bundle is loaded then).
+    online_refresh_seconds: int = Field(300, ge=0)
+    # Liked games accepted per request (only the first HISTORY_LENGTH known ones feed the model;
+    # all of them are excluded from the results).
+    max_liked_games: int = Field(100, ge=1, le=1000)
+
     log_level: str = "INFO"
 
     @classmethod

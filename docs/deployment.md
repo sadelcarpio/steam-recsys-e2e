@@ -318,8 +318,19 @@ to keep the URL public. The outputs `serving_function_url` / `serving_auth_type`
 job summary.
 
 **Deploy.** Actions → *serving CD* → Run workflow (on `main`). It runs the tests, uploads the
-zip, invokes `/health` and `/popular` directly (this works under either auth type) and prints
-the URL. Until then the function is a placeholder that answers 503.
+zip, invokes `/health`, `/popular` and `POST /recommendations` directly (this works under
+either auth type) and prints the URL.
+
+**Online model.** `POST /recommendations` needs two things:
+- the champion's numpy user tower, which every model trained from now on gets automatically;
+- the catalog that each inference run publishes to `s3://model-artifacts-<acct>/serving/online/`.
+
+The current champion was trained before the export existed. Backfill it once (local, admin
+credentials), then run *inference CD* with `run_now` or wait for the weekly run:
+
+```bash
+cd training && MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> uv run --extra cpu python -m steam_training export --model-id champion
+``` Until then the function is a placeholder that answers 503.
 
 **Try it:**
 
@@ -327,6 +338,8 @@ the URL. Until then the function is a placeholder that answers 503.
 URL=$(aws lambda get-function-url-config --function-name recsys-serving --query FunctionUrl --output text)
 curl "${URL}popular?limit=3"                                   # NONE
 curl "${URL}users/<steam id>/recommendations?details=false"    # unknown ids get the popular list
+curl -X POST "${URL}recommendations" -H 'content-type: application/json' \
+  -d '{"liked_game_ids": [620, 105600], "limit": 5}'           # online (503 before the first run)
 # AWS_IAM: sign with the client role's credentials
 curl --aws-sigv4 "aws:amz:us-east-1:lambda" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
   -H "x-amz-security-token: $AWS_SESSION_TOKEN" "${URL}popular"

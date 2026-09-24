@@ -79,7 +79,7 @@ Order: EventBridge → 1 → 2 → 3 → 4
 ### Training (outside the Step Functions workflow)
 
 - S3 (Iceberg, read with pyiceberg) → SageMaker training job (`training CD`) → S3 `model-artifacts-<account-id>/models/<sha>/`
-  (user + item tower); `training promote` evaluates it vs `models/champion/` and swaps it in when better
+  (user + item tower, plus the user tower as numpy for online serving); `training promote` evaluates it vs `models/champion/` and swaps it in when better
 
 ### Batch inference (4)
 
@@ -89,11 +89,16 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - SageMaker Inference Pipeline → top-K recs (changed users only) + `__popular__` fallback → DynamoDB
   `game-explainable-recommendations`
 - S3 (Iceberg `game_details`) → SageMaker Inference Pipeline → new games only → DynamoDB `game-details`
+- SageMaker Inference Pipeline → online catalog (current item embeddings) → S3
+  `model-artifacts-<account-id>/serving/online/` (the user tower comes from training:
+  `models/<sha>/user_tower.npz`)
 
 ### Serving (online path)
 
 - User → user id → Lambda Function URL → Lambda `recsys-serving` → reads DynamoDB
   `game-explainable-recommendations` (+ `game-details`) → recommendations → User
+- User → liked game ids → `POST /recommendations` → Lambda `recsys-serving` (the model's numpy user
+  tower over the online catalog's item embeddings, exact top K) → recommendations → User
 - No LB in front of the Lambda; the diagram shows the Lambda called directly (Function URL, auth
   `AWS_IAM` or `NONE`, chosen in the infrastructure CD)
 

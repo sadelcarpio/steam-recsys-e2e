@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 POPULAR_USER_ID = "__popular__"
 # Steam 64-bit account ids (a string: exceeds JavaScript's safe integers).
@@ -73,16 +73,31 @@ class RecommendationOut(_Response):
     details: GameDetails | None = None  # when requested and the game has details
 
 
+class OnlineRequest(BaseModel):
+    """Body of POST /recommendations: recommendations for a history given in the request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    # Steam appids the user liked, most recent first (the order feeds the model's history).
+    liked_game_ids: list[StrictInt] = Field(min_length=1)
+    limit: StrictInt | None = None
+    details: StrictBool | None = None
+
+
 class RecommendationsResponse(_Response):
     # "personalized": the user's own list. "popular": the fallback for users without one (and
-    # the `/popular` endpoint, where user_id is null).
-    source: Literal["personalized", "popular"]
+    # the `/popular` endpoint, where user_id is null). "online": computed for the request's
+    # liked games (POST /recommendations).
+    source: Literal["personalized", "popular", "online"]
     user_id: str | None
     model_id: str
     generated_at: datetime
     reranked: bool
     rerank_model: str | None = None
     recommendations: list[RecommendationOut]
+    # POST /recommendations only: liked games that made up the history / that were unknown
+    used_game_ids: list[int] | None = None
+    ignored_game_ids: list[int] | None = None
 
 
 class ErrorResponse(_Response):
