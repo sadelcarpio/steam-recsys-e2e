@@ -69,6 +69,9 @@ Row contracts: `src/steam_etl/contracts.py`.
 - Known approximation: a review older than its game's latest loaded row (it would need to arrive
   late) is counted on top of the latest state. `FULL_REFRESH=true` recomputes exactly (lookups
   are kept).
+- The reviews backfill (data ingestion, spec 6) delivers exactly such late reviews, so while it
+  is pending the pipeline's `Transform` runs with `FULL_REFRESH=true` (Step Functions override
+  from the Lambda's `etl_full_refresh`).
 
 ## ID conversion: at the transformation layer or as a training artifact?
 

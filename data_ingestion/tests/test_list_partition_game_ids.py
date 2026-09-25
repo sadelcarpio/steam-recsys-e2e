@@ -130,6 +130,40 @@ def test_review_partitions_are_weighted_by_known_totals(
 
 
 @responses.activate
+def test_pending_backfills_weigh_more_and_request_an_etl_full_refresh(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    for appid in range(1, 8):
+        aws.games.put_item(Item={"appid": appid, "status": "scraped", "attempts": 0})
+    cursors = {
+        1: {"total_reviews": 50, "oldest_review_ts": 10},  # pending
+        2: {"total_reviews": 50, "oldest_review_ts": 10, "backfill_complete": True},
+        3: {"total_reviews": 50},  # legacy, not seeded
+    }
+    for appid, fields in cursors.items():
+        aws.cursors.put_item(Item={"appid": appid, "last_review_ts": 0, **fields})
+    # a new game bigger than the cap starts its backfill on its first scrape
+    aws.games.put_item(Item={"appid": 9, "status": "pending", "attempts": 0})
+    aws.games.update_item(
+        Key={"appid": 9},
+        UpdateExpression="SET recommendations = :r",
+        ExpressionAttributeValues={":r": 5000},
+    )
+    _mock_app_list([])
+    capped = settings.model_copy(update={"max_reviews_per_game": 2000})
+
+    result = run("run-5", capped, client, aws.s3, aws.dynamodb)
+
+    assert result.backfill_game_ids == 2 and result.etl_full_refresh
+    parts = _partitions(aws, "reviews/run-5/")
+    assert [1] in parts.values() and [9] in parts.values()  # ~200 requests each
+
+    off = capped.model_copy(update={"backfill_reviews_per_run": 0})
+    result = run("run-6", off, client, aws.s3, aws.dynamodb)
+    assert result.backfill_game_ids == 0 and not result.etl_full_refresh
+
+
+@responses.activate
 def test_handler_uses_env_api_key_and_validates_event(
     aws: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

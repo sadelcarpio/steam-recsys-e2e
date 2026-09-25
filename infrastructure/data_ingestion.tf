@@ -30,6 +30,7 @@ resource "aws_ssm_parameter" "ingestion" {
     NUM_REVIEW_WORKERS       = tostring(var.num_review_workers)
     GAMES_PER_TASK           = tostring(var.games_per_task)
     MAX_REVIEWS_PER_GAME     = tostring(var.max_reviews_per_game)
+    BACKFILL_REVIEWS_PER_RUN = tostring(var.backfill_reviews_per_run)
     REQUEST_INTERVAL_SECONDS = tostring(var.request_interval_seconds)
   }
   name  = "${local.ingestion_ssm_prefix}/${each.key}"

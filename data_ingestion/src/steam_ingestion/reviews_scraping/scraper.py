@@ -1,7 +1,10 @@
 """ECS task `reviews-scraping`: incremental reviews for one `reviews/<run_id>/part-<n>.json`.
 
 For each appid, pages newest-first (`filter=recent`) until reaching the `last_review_ts`
-stored in `reviews-state-cursor`. Rows are buffered and flushed to
+stored in `reviews-state-cursor` (forward pass, capped by `max_reviews_per_game`). Then, while
+older reviews are pending, it pages the range `[1, oldest_review_ts]` newest-first for up to
+`backfill_reviews_per_run` reviews and moves `oldest_review_ts` back (backward pass); an
+exhausted range marks the game `backfill_complete`. Rows are buffered and flushed to
 `s3://raw-steam-data-*/reviews/<scrape-date>-<worker-id>-<part>.parquet`; after each flush the
 cursors of games whose reviews are *fully* written are committed. A game split across a flush
 keeps its old cursor, so a crash can only re-emit rows (dedupe on `rec_id` downstream), never
@@ -11,6 +14,8 @@ skip them.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -21,7 +26,7 @@ from steam_ingestion.config import IngestionSettings, ScrapeTaskSettings, config
 from steam_ingestion.models import REVIEWS_PARTITION_RE, ReviewRecord
 from steam_ingestion.schemas import REVIEWS_SCHEMA
 from steam_ingestion.state import ReviewCursor, ReviewsCursorState
-from steam_ingestion.steam_api import SteamApiError, SteamClient
+from steam_ingestion.steam_api import ReviewPage, SteamApiError, SteamClient
 from steam_ingestion.storage import next_part_number, put_parquet, read_partition
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,21 @@ def _int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+@dataclass
+class _Walk:
+    """What one pass over a game's review pages buffered."""
+
+    count: int = 0
+    oldest: int | None = None
+    newest: int | None = None
+    total: int | None = None  # `total_reviews` of the first page
+
+    def add(self, ts: int) -> None:
+        self.count += 1
+        self.oldest = ts if self.oldest is None else min(self.oldest, ts)
+        self.newest = ts if self.newest is None else max(self.newest, ts)
 
 
 def build_review_record(appid: int, raw: dict[str, Any], scrape_date: date) -> ReviewRecord:
@@ -87,7 +107,7 @@ def scrape_partition(
 
     buffer: list[ReviewRecord] = []
     completed: dict[int, ReviewCursor] = {}  # finished games whose rows are all in `buffer`/S3
-    failures = total_rows = 0
+    failures = backfill_failures = backfill_rows = total_rows = 0
 
     def flush() -> None:
         nonlocal part, total_rows
@@ -103,27 +123,64 @@ def scrape_partition(
             cursor_state.save(completed)
             completed.clear()
 
+    def collect(appid: int, pages: Iterable[ReviewPage], walk: _Walk) -> None:
+        """Buffer every review of `pages` into `walk`, flushing when the buffer is full. On an
+        error `walk` still describes what was buffered (and will be written) so far."""
+        for page in pages:
+            if walk.total is None:
+                walk.total = page.total_reviews
+            for raw in page.reviews:
+                record = build_review_record(appid, raw, today)
+                buffer.append(record)
+                walk.add(record.timestamp_created)
+            if len(buffer) >= settings.reviews_flush_rows:
+                flush()  # current game is not in `completed`: its cursor stays put
+
+    cap, budget = settings.max_reviews_per_game, settings.backfill_reviews_per_run
     for i, appid in enumerate(appids, 1):
         previous = cursors.get(appid)
         since = previous.last_review_ts if previous else 0
-        newest = since
         total = previous.total_reviews if previous else None
+        oldest = previous.oldest_review_ts if previous else None
+        complete = previous.backfill_complete if previous else False
+
+        # forward pass: reviews newer than the cursor
+        forward = _Walk()
         try:
-            for page in client.iter_review_pages(appid, since, settings.max_reviews_per_game):
-                if page.total_reviews is not None:
-                    total = page.total_reviews
-                for raw in page.reviews:
-                    record = build_review_record(appid, raw, today)
-                    buffer.append(record)
-                    newest = max(newest, record.timestamp_created)
-                if len(buffer) >= settings.reviews_flush_rows:
-                    flush()  # current game is not in `completed`: its cursor stays put
+            collect(appid, client.iter_review_pages(appid, since, cap), forward)
         except SteamApiError as exc:
             failures += 1
             logger.warning("appid %d failed: %s", appid, exc)
         else:
-            if previous is None or newest != since or total != previous.total_reviews:
-                completed[appid] = ReviewCursor(last_review_ts=newest, total_reviews=total)
+            if forward.total is not None:
+                total = forward.total
+            if previous is None:
+                # first scrape: the whole history unless the cap truncated the walk
+                oldest, complete = forward.oldest, not (cap and forward.count >= cap)
+
+            # backward pass: reviews older than the oldest one written (end_date is inclusive, so
+            # the boundary second can repeat: the ETL dedupes on review_id)
+            if budget and not complete and oldest is not None:
+                backward = _Walk()
+                try:
+                    collect(appid, client.iter_review_pages(appid, 0, budget, oldest), backward)
+                    complete = backward.count < budget  # the range ran out before the budget
+                except SteamApiError as exc:
+                    # keep what was buffered (the cursor moves back to it); the rest is next run's
+                    backfill_failures += 1
+                    logger.warning("appid %d backfill failed: %s", appid, exc)
+                backfill_rows += backward.count
+                if backward.oldest is not None:
+                    oldest = min(oldest, backward.oldest)
+
+            cursor = ReviewCursor(
+                last_review_ts=max(since, forward.newest or 0),
+                total_reviews=total,
+                oldest_review_ts=oldest,
+                backfill_complete=complete,
+            )
+            if cursor != previous:
+                completed[appid] = cursor
         if i % 500 == 0:
             logger.info(
                 "progress %d/%d (rows=%d, failures=%d)",
@@ -134,7 +191,14 @@ def scrape_partition(
             )
     flush()
 
-    logger.info("done: %d reviews, %d failed games of %d", total_rows, failures, len(appids))
+    logger.info(
+        "done: %d reviews (%d backfilled), %d failed games, %d failed backfills of %d",
+        total_rows,
+        backfill_rows,
+        failures,
+        backfill_failures,
+        len(appids),
+    )
     return not appids or failures / len(appids) <= settings.max_failure_ratio
 
 

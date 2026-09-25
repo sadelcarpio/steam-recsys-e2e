@@ -415,6 +415,27 @@ step 7 of this list. The first `Infer` afterwards:
 
 Verify with the checks of steps 10 and 11.
 
+**Release with the reviews backfill (spec 6):** order matters, because the new `Transform` step
+reads `etl_full_refresh` from the Lambda's result:
+1. Merge to `main`.
+2. *data-ingestion CD* first (new Lambda code and scraper image). The new setting defaults to
+   20000 in the code, so the old infrastructure keeps working.
+3. *infrastructure CD* `apply` (SSM `BACKFILL_REVIEWS_PER_RUN`, the `Transform` override).
+4. With no pipeline execution running, seed the existing cursors once (otherwise only games
+   scraped from now on are backfilled):
+   `cd data_ingestion && AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_backfill`
+   (`--dry-run` first prints the counts).
+
+Each run then backfills up to `BACKFILL_REVIEWS_PER_RUN` older reviews per game, and its
+`Transform` is a full refresh (Athena rebuilds the marts, lookups are kept) until every game is
+`backfill_complete`. Check the progress:
+
+```bash
+aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
+  --filter-expression "attribute_exists(oldest_review_ts) AND backfill_complete = :f" \
+  --expression-attribute-values '{":f": {"BOOL": false}}'     # games still backfilling
+```
+
 ## Order for a fresh account (summary)
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →

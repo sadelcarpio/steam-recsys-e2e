@@ -34,9 +34,12 @@ def balance_by_weight(
     return [sorted(b) for b in bins if b]
 
 
-def estimated_review_requests(total_reviews: int | None, max_reviews_per_game: int) -> float:
-    """Rough request count to scrape a game's reviews: 1 + pages of (capped) reviews."""
+def estimated_review_requests(
+    total_reviews: int | None, max_reviews_per_game: int, backfill_reviews: int = 0
+) -> float:
+    """Rough request count to scrape a game's reviews: 1 + pages of (capped) reviews, plus the
+    pages of this run's backfill budget when older reviews are pending."""
     total = total_reviews or 0
     if max_reviews_per_game:
         total = min(total, max_reviews_per_game)
-    return 1.0 + total / 100
+    return 1.0 + (total + backfill_reviews) / 100

@@ -34,6 +34,10 @@ class ListPartitionResult(_Strict):
     new_game_ids: int
     games_to_scrape: int
     reviews_game_ids: int
+    # games whose older reviews are backfilled this run; while > 0 the pipeline's Transform
+    # runs dbt with FULL_REFRESH (older rows invalidate the incremental marts)
+    backfill_game_ids: int = 0
+    etl_full_refresh: bool = False
     games_partitions: list[str]
     reviews_partitions: list[str]
 

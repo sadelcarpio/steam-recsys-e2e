@@ -5,7 +5,9 @@ with `appid = 0` (not a real app) holds the catalog cursor (`last_modified` of t
 seen), used as `if_modified_since` for the next GetAppList call.
 
 `reviews-state-cursor`: one item per appid with `last_review_ts` (newest review creation
-timestamp already written to S3) and `total_reviews` (used to balance review partitions).
+timestamp already written to S3), `total_reviews` (used to balance review partitions), and the
+backfill of older reviews: `oldest_review_ts` (oldest review written; absent = unknown, a cursor
+from before the backfill that was not seeded) and `backfill_complete`.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from boto3.dynamodb.conditions import Attr
+from botocore.exceptions import ClientError
 
 from steam_ingestion.models import GameState, GameStatus
 
@@ -132,6 +135,13 @@ class GameIdsState:
 class ReviewCursor:
     last_review_ts: int
     total_reviews: int | None
+    oldest_review_ts: int | None = None
+    backfill_complete: bool = False
+
+    @property
+    def backfill_pending(self) -> bool:
+        """Older reviews may remain. Unknown `oldest_review_ts` (unseeded cursor): not pending."""
+        return self.oldest_review_ts is not None and not self.backfill_complete
 
 
 class ReviewsCursorState:
@@ -151,12 +161,32 @@ class ReviewsCursorState:
                 request = resp.get("UnprocessedKeys") or {}
         return out
 
-    def load_totals(self) -> dict[int, int]:
-        return {
-            int(item["appid"]): int(item["total_reviews"])
-            for item in _scan(self._table, ProjectionExpression="appid, total_reviews")
-            if item.get("total_reviews") is not None
-        }
+    def load_all(self) -> dict[int, ReviewCursor]:
+        return {int(item["appid"]): _to_cursor(item) for item in _scan(self._table)}
+
+    def seed_backfill(self, appid: int, oldest_review_ts: int | None, complete: bool) -> bool:
+        """Set the backfill fields of an existing cursor that has neither (seeding). False when
+        the cursor is missing or already has them, so seeding is idempotent."""
+        names = {"#o": "oldest_review_ts", "#c": "backfill_complete"}
+        values: dict[str, Any] = {":c": complete, ":t": _now()}
+        expr = "SET #c = :c, updated_at = :t"
+        if oldest_review_ts is not None:
+            expr += ", #o = :o"
+            values[":o"] = oldest_review_ts
+        try:
+            self._table.update_item(
+                Key={"appid": appid},
+                UpdateExpression=expr,
+                ConditionExpression="attribute_exists(appid) AND attribute_not_exists(#o) "
+                "AND attribute_not_exists(#c)",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
 
     def save(self, cursors: dict[int, ReviewCursor]) -> None:
         now = _now()
@@ -169,12 +199,19 @@ class ReviewsCursorState:
                 }
                 if cursor.total_reviews is not None:
                     item["total_reviews"] = cursor.total_reviews
+                if cursor.oldest_review_ts is not None:
+                    item["oldest_review_ts"] = cursor.oldest_review_ts
+                if cursor.oldest_review_ts is not None or cursor.backfill_complete:
+                    item["backfill_complete"] = cursor.backfill_complete
                 batch.put_item(Item=item)
 
 
 def _to_cursor(item: dict[str, Any]) -> ReviewCursor:
     total = item.get("total_reviews")
+    oldest = item.get("oldest_review_ts")
     return ReviewCursor(
         last_review_ts=int(item.get("last_review_ts", 0)),
         total_reviews=int(total) if total is not None else None,
+        oldest_review_ts=int(oldest) if oldest is not None else None,
+        backfill_complete=bool(item.get("backfill_complete", False)),
     )
