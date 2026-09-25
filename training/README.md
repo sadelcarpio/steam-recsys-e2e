@@ -46,7 +46,11 @@ losses) goes to `checkpoints/<model_id>/checkpoint.pt`. Re-running the same `MOD
 after the last finished epoch when its fingerprint matches (Iceberg snapshots, cutoff and the
 settings that change training; `EPOCHS` and the evaluation settings excluded, so a finished run
 can be extended). Random streams are reseeded per epoch, so a resumed run equals an uninterrupted
-one. The checkpoint is deleted once the model is saved. `RESUME=false` always starts over.
+one. The checkpoint is kept after the model is saved, so a finished run is extended by re-running
+the same `MODEL_ID` with a higher `EPOCHS` (only the new epochs train; the model and its metadata
+are overwritten). It expires after 14 days (bucket lifecycle), and a new dbt run changes the
+snapshots, so extend before the next pipeline run. A checkpoint past `EPOCHS` is ignored (the
+run starts over). `RESUME=false` always starts over.
 
 ## Model
 

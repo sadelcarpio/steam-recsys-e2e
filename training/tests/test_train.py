@@ -109,9 +109,6 @@ class MemoryCheckpoints:
         if self.fail_after_epoch is not None and state["epoch"] == self.fail_after_epoch:
             raise KeyboardInterrupt("simulated crash")
 
-    def delete(self):
-        self.state = None
-
 
 def test_resumed_training_equals_an_uninterrupted_run(source, settings):
     data, _ = _examples(source, settings)
@@ -139,6 +136,42 @@ def test_resumed_training_equals_an_uninterrupted_run(source, settings):
         model.state_dict().items(), resumed.state_dict().items(), strict=True
     ):
         assert torch.equal(a, b), name
+
+
+def test_extended_training_equals_a_longer_run(source, settings):
+    longer = MemoryCheckpoints()
+    data, examples = _examples(source, settings)
+    model, losses = train_model(
+        settings, examples, data.catalog, data.vocab, checkpoints=longer, run_fingerprint="a"
+    )
+
+    # a finished 2-epoch run, then the same run with EPOCHS=4
+    extended = MemoryCheckpoints()
+    short = settings.model_copy(update={"epochs": 2})
+    _, examples = _examples(source, settings)
+    train_model(
+        short, examples, data.catalog, data.vocab, checkpoints=extended, run_fingerprint="a"
+    )
+    _, examples = _examples(source, settings)
+    resumed, resumed_losses = train_model(
+        settings, examples, data.catalog, data.vocab, checkpoints=extended, run_fingerprint="a"
+    )
+    assert extended.saves == settings.epochs  # epochs 1-2, then only 3-4
+    assert resumed_losses == losses
+    for (name, a), (_, b) in zip(
+        model.state_dict().items(), resumed.state_dict().items(), strict=True
+    ):
+        assert torch.equal(a, b), name
+
+
+def test_checkpoint_past_epochs_is_ignored(source, settings):
+    checkpoints = MemoryCheckpoints()
+    data, examples = _examples(source, settings)
+    train_model(settings, examples, data.catalog, data.vocab, checkpoints=checkpoints)
+    fewer = settings.model_copy(update={"epochs": 1})
+    _, examples = _examples(source, settings)
+    _, losses = train_model(fewer, examples, data.catalog, data.vocab, checkpoints=checkpoints)
+    assert len(losses) == 1  # started over instead of returning the 4-epoch model
 
 
 def test_checkpoint_of_another_run_is_ignored(source, settings):

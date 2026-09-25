@@ -53,8 +53,8 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
 - Device: models, batches and scoring tensors move to `resolve_device(DEVICE)`; saved state dicts
   are always CPU tensors. Keep numpy in data / collate and torch in the scoring loops.
 - Artifact writes: `metadata.json` is written last for a model, and
-  `evaluation/champion/metrics.json` last for a promotion. The checkpoint is deleted after the
-  model is saved.
+  `evaluation/champion/metrics.json` last for a promotion. The checkpoint is kept after the
+  model is saved (a finished run is extended with more `EPOCHS`; lifecycle expires it in 14 d).
 - Change `ARCHITECTURE_VERSION` when the state dict layout changes. Update `contracts.py`
   whenever the artifact contract changes.
 - `user_tower.npz` mirrors `UserTower.forward` for serving's numpy port

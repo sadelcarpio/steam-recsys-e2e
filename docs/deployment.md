@@ -257,8 +257,10 @@ aws s3 cp s3://model-artifacts-${ACCT}/models/<sha>/metadata.json -
 ```
 
 **Resume / extend.** A failed or stopped job leaves a per-epoch checkpoint. Re-running *training CD*
-on the same commit resumes after the last finished epoch, and `EPOCHS=<more>` extends a
-finished run.
+on the same commit resumes after the last finished epoch. A finished run keeps its checkpoint too:
+re-run the same commit (a tag at it, under *Use workflow from*) with `EPOCHS=<more>` and only the
+new epochs train, overwriting `models/<sha>/`. It works for 14 days (checkpoint lifecycle) and
+until the next dbt run (new Iceberg snapshots start a fresh run).
 
 **No quota? Train locally.** `python -m steam_training train` runs the same pipeline on a
 workstation and uploads the model to the bucket (see `training/README.md`, *Development*). Then

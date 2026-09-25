@@ -78,8 +78,6 @@ class Checkpoints(Protocol):
 
     def save(self, state: dict) -> None: ...
 
-    def delete(self) -> None: ...
-
 
 def resolve_device(setting: str) -> torch.device:
     if setting == "auto":
@@ -169,6 +167,14 @@ def train_model(
     epoch_losses: list[float] = []
     first_epoch = 0
     state = checkpoints.load() if checkpoints is not None and settings.resume else None
+    if state is not None and int(state["epoch"]) > settings.epochs:
+        # Resuming would return a model trained longer than EPOCHS says.
+        log.warning(
+            "ignoring a checkpoint after epoch %d: EPOCHS=%d is lower",
+            state["epoch"],
+            settings.epochs,
+        )
+        state = None
     if state is not None and state["fingerprint"] == run_fingerprint:
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])

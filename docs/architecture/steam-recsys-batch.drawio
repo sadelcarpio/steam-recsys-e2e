@@ -1,6 +1,6 @@
 <mxfile host="Electron" scale="1" border="0">
   <diagram name="Page-1" id="ynkWh0hCt5H_MTmmfgAO">
-    <mxGraphModel dx="1586" dy="598" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1988" dy="808" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -51,7 +51,7 @@
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-37" parent="qQ_05n8uxreXFBnJPeQ2-26" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;fontColor=light-dark(#232F3E,#FFFFFF);" value="Parallel" vertex="1">
           <mxGeometry height="24" width="54" x="77" y="352" as="geometry" />
         </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-40" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=middle;verticalAlign=middle;align=left;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;labelPosition=right;" value="Amazon S3 / User &amp;amp; Item Tower" vertex="1">
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-40" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=middle;verticalAlign=middle;align=right;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;labelPosition=left;" value="Amazon S3 / User &amp;amp; Item Tower" vertex="1">
           <mxGeometry height="48.9" width="48.9" x="761" y="289.1" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-41" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;verticalLabelPosition=top;verticalAlign=bottom" value="Amazon S3 (Iceberg)" vertex="1">
@@ -104,17 +104,13 @@
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-52" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-54" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;exitPerimeter=0;" target="qQ_05n8uxreXFBnJPeQ2-77">
           <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="782.11" y="497.05999999999995" />
-              <mxPoint x="782.11" y="497.05999999999995" />
-            </Array>
             <mxPoint x="681.9000000000001" y="485.5499999999997" as="sourcePoint" />
             <mxPoint x="870" y="486" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-53" connectable="0" parent="qQ_05n8uxreXFBnJPeQ2-52" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#232F3E,#FFFFFF);" value="top-N recs" vertex="1">
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-53" connectable="0" parent="qQ_05n8uxreXFBnJPeQ2-52" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#232F3E,#FFFFFF);" value="top-N recs&lt;div&gt;+ explanations&lt;/div&gt;" vertex="1">
           <mxGeometry relative="1" x="-0.1041" y="-1" as="geometry">
-            <mxPoint x="28" y="-1" as="offset" />
+            <mxPoint x="37" y="44" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-54" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sagemaker_2;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;" value="&lt;div&gt;Amazon SageMaker&lt;/div&gt;Inference Pipeline" vertex="1">
@@ -140,8 +136,8 @@
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-60" parent="qQ_05n8uxreXFBnJPeQ2-26" style="ellipse;whiteSpace=wrap;html=1;shapeInside=1;aspect=fixed;fillColor=light-dark(#FFFFFF,#232F3E);align=center;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;fontColor=light-dark(#232F3E,#FFFFFF);" value="1" vertex="1">
           <mxGeometry height="24" width="24" x="125" y="675" as="geometry" />
         </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-77" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#C925D1;strokeColor=#ffffff;dashed=0;verticalLabelPosition=middle;verticalAlign=middle;align=left;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;labelPosition=right;fontFamily=Amazon Ember;" value="Amazon DynamoDB&lt;div&gt;Recommendations&lt;/div&gt;" vertex="1">
-          <mxGeometry height="60" width="60" x="809.9" y="469" as="geometry" />
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-77" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#C925D1;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;labelPosition=center;fontFamily=Amazon Ember;" value="Amazon DynamoDB&lt;div&gt;Recommendations&lt;/div&gt;" vertex="1">
+          <mxGeometry height="60" width="60" x="707" y="620" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-78" parent="qQ_05n8uxreXFBnJPeQ2-26" style="points=[];aspect=fixed;html=1;align=left;shadow=0;dashed=0;fillColor=#FF6A00;strokeColor=none;shape=mxgraph.alibaba_cloud.eventbridge;labelPosition=right;verticalLabelPosition=middle;verticalAlign=middle;fontFamily=Amazon Ember;" value="Amazon EventBridge" vertex="1">
           <mxGeometry height="48.9" width="48.9" x="281.05" y="873" as="geometry" />
@@ -168,10 +164,10 @@
             <mxPoint x="24" y="-1" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-88" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;" value="&lt;div&gt;AWS Lambda&lt;/div&gt;RecSys Serving" vertex="1">
-          <mxGeometry height="40" width="40" x="819.9" y="590" as="geometry" />
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-88" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;labelPosition=center;" value="&lt;div&gt;AWS Lambda&lt;/div&gt;RecSys Serving" vertex="1">
+          <mxGeometry height="40" width="40" x="879" y="454" as="geometry" />
         </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-91" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-77" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" target="qQ_05n8uxreXFBnJPeQ2-88">
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-91" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-77" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" target="qQ_05n8uxreXFBnJPeQ2-88">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-92" connectable="0" parent="qQ_05n8uxreXFBnJPeQ2-91" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;" value="recommendations" vertex="1">
@@ -232,7 +228,7 @@
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-102" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-99" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;entryPerimeter=0;startArrow=classic;startFill=1;" target="qQ_05n8uxreXFBnJPeQ2-54">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-103" connectable="0" parent="qQ_05n8uxreXFBnJPeQ2-102" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;" value="rerank items" vertex="1">
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-103" connectable="0" parent="qQ_05n8uxreXFBnJPeQ2-102" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;" value="rerank items&lt;div&gt;+ explain&lt;/div&gt;" vertex="1">
           <mxGeometry relative="1" x="-0.154" y="-2" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
@@ -246,8 +242,16 @@
         <mxCell id="_tKXPNiJDP6OZbIRA0b7-4" parent="qQ_05n8uxreXFBnJPeQ2-26" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);" value="N tasks&lt;div&gt;public IP per task&lt;/div&gt;" vertex="1">
           <mxGeometry height="30" width="60" x="184" y="508.1" as="geometry" />
         </mxCell>
+        <mxCell id="27hQy9bwfdpKXOzjaASy-1" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" target="qQ_05n8uxreXFBnJPeQ2-88">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="27hQy9bwfdpKXOzjaASy-2" connectable="0" parent="27hQy9bwfdpKXOzjaASy-1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="load&lt;div&gt;cold start online path&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="0.3464" as="geometry">
+            <mxPoint y="1" as="offset" />
+          </mxGeometry>
+        </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-6" parent="1" style="shape=actor;whiteSpace=wrap;html=1;fillStyle=solid;fillColor=light-dark(#FFFFFF,#232F3E);" value="" vertex="1">
-          <mxGeometry height="48.9" width="40" x="1585" y="1015.55" as="geometry" />
+          <mxGeometry height="48.9" width="40" x="1637" y="879.55" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-3" edge="1" parent="1" source="qQ_05n8uxreXFBnJPeQ2-88" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.25;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.25;entryY=0.2;entryDx=0;entryDy=0;entryPerimeter=0;" target="qQ_05n8uxreXFBnJPeQ2-6">
           <mxGeometry relative="1" as="geometry">

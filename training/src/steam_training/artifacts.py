@@ -158,7 +158,8 @@ class ArtifactStore:
 
 class S3Checkpoints:
     """Per-epoch training state at checkpoints/<model_id>/checkpoint.pt (`train.Checkpoints`).
-    Deleted once the model is saved; the bucket lifecycle expires abandoned ones."""
+    Kept after the model is saved (a finished run can be extended); the bucket lifecycle
+    expires it after 14 days."""
 
     def __init__(self, store: ArtifactStore, model_id: str) -> None:
         self.store = store
@@ -177,6 +178,3 @@ class S3Checkpoints:
         log.info(
             "checkpoint after epoch %d: s3://%s/%s", state["epoch"], self.store.bucket, self.key
         )
-
-    def delete(self) -> None:
-        self.store.s3.delete_object(Bucket=self.store.bucket, Key=self.key)

@@ -116,8 +116,8 @@ def run_training(
         popularity_baseline=baseline,
         epoch_losses=losses,
     )
+    # The checkpoint is kept: re-running this MODEL_ID with more EPOCHS extends the run.
     store.save_model(model, metadata)
-    checkpoints.delete()
     return metadata
 
 

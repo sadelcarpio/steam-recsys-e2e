@@ -45,6 +45,7 @@ def test_training_writes_artifacts_that_reload(settings, source, store):
         "models/abc123/item_tower.pt",
         "models/abc123/user_tower.npz",
         "models/abc123/metadata.json",
+        "checkpoints/abc123/checkpoint.pt",
     }
     assert metadata.snapshots["interactions"] == 123
     assert metadata.hyperparameters["epochs"] == settings.epochs
@@ -133,9 +134,10 @@ def test_s3_checkpoints_roundtrip_and_cleanup(settings, source, store):
     assert "checkpoints/abc123/checkpoint.pt" in _keys(store)
     loaded = checkpoints.load()
     assert loaded["epoch"] == 1 and torch.equal(loaded["mined"], torch.arange(3))
-    # a finished training run deletes its checkpoint
+    # a finished training run keeps its checkpoint (so it can be extended)
     run_training(settings, source, store)
-    assert not any(k.startswith("checkpoints/") for k in _keys(store))
+    assert "checkpoints/abc123/checkpoint.pt" in _keys(store)
+    assert store.checkpoints("abc123").load()["epoch"] == settings.epochs
 
 
 def test_training_resumes_from_an_s3_checkpoint(settings, source, store, monkeypatch):
@@ -162,4 +164,3 @@ def test_training_resumes_from_an_s3_checkpoint(settings, source, store, monkeyp
     monkeypatch.setattr(store, "checkpoints", original)
     metadata = run_training(settings, source, store)
     assert len(metadata.epoch_losses) == settings.epochs
-    assert not any(k.startswith("checkpoints/") for k in _keys(store))
