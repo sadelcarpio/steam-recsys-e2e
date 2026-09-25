@@ -20,6 +20,12 @@ START = datetime(2024, 1, 1)
 BUCKET = "model-artifacts-test"
 
 
+@pytest.fixture(autouse=True)
+def _no_ssm(monkeypatch) -> None:
+    """The CD job sets USE_SSM=true for every step: tests never read Parameter Store."""
+    monkeypatch.delenv("USE_SSM", raising=False)
+
+
 def game_cluster(game_idx: int) -> int:
     return (game_idx - FIRST_GAME) // GAMES_PER_CLUSTER
 

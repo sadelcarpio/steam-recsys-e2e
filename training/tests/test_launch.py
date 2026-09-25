@@ -6,11 +6,14 @@ import pytest
 from steam_training import launch
 from steam_training.config import LaunchSettings
 
-SETTINGS = LaunchSettings(
-    model_artifacts_bucket="model-artifacts-1",
-    sagemaker_role_arn="arn:aws:iam::123456789012:role/steam-recsys-training",
-    training_image_repository="123456789012.dkr.ecr.us-east-1.amazonaws.com/training",
-)
+# Built at import, before any fixture: the CD job sets USE_SSM=true for every step.
+with pytest.MonkeyPatch.context() as mp:
+    mp.delenv("USE_SSM", raising=False)
+    SETTINGS = LaunchSettings(
+        model_artifacts_bucket="model-artifacts-1",
+        sagemaker_role_arn="arn:aws:iam::123456789012:role/steam-recsys-training",
+        training_image_repository="123456789012.dkr.ecr.us-east-1.amazonaws.com/training",
+    )
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
