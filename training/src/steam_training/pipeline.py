@@ -104,6 +104,10 @@ def run_training(
     results, baseline = _evaluate_all(settings, data, {"model": model}, device)
     log.info("validation %s", results["model"].model_dump_json())
     log.info("popularity baseline %s", baseline.model_dump_json())
+    log.info(
+        "metrics %s",
+        metrics_line(settings.primary_k, {"final": results["model"], "popularity": baseline}),
+    )
 
     metadata = ModelMetadata(
         model_id=settings.model_id,
@@ -119,6 +123,16 @@ def run_training(
     # The checkpoint is kept: re-running this MODEL_ID with more EPOCHS extends the run.
     store.save_model(model, metadata)
     return metadata
+
+
+def metrics_line(primary_k: int, metrics: dict[str, RecallMetrics]) -> str:
+    """`<name>_warm_recall=<x> <name>_all_recall=<x> ...` at `primary_k`. A fixed format that the
+    SageMaker metric definitions (`launch.METRIC_DEFINITIONS`) parse into CloudWatch series."""
+    return " ".join(
+        f"{name}_{segment}_recall={getattr(m, segment).recall[primary_k]:.6f}"
+        for name, m in metrics.items()
+        for segment in ("warm", "all")
+    )
 
 
 def _load_champion(
@@ -222,6 +236,11 @@ def run_promotion(
         promoted=promoted,
         reason=reason,
     )
+    compared = {"candidate": candidate_metrics}
+    if champion_eval is not None:
+        compared["champion"] = champion_eval.metrics
+    compared["popularity"] = baseline
+    log.info("metrics %s", metrics_line(settings.primary_k, compared))
     log.info("promotion: %s (%s)", "PROMOTED" if promoted else "kept champion", reason)
     store.write_report(report)
     if promoted:

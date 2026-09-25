@@ -34,6 +34,25 @@ ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 RESERVED_ENV = {"MODEL_ID", "USE_SSM", "MODEL_ARTIFACTS_BUCKET", "AWS_REGION", "AWS_DEFAULT_REGION"}
 TERMINAL = {"Completed", "Failed", "Stopped"}
 
+# Parsed from the job's logs into CloudWatch (console: the job's Monitor -> Algorithm metrics).
+# Sources: the per-epoch line of `train.train_model` and `pipeline.metrics_line` (at PRIMARY_K).
+_NUMBER = r"([0-9]+\.[0-9]+)"
+METRIC_DEFINITIONS = {
+    "train": {
+        "train:loss": r"epoch \d+/\d+ loss=" + _NUMBER,
+        "train:monitor_warm_recall": r"epoch \d+/\d+ .*warm_recall@\d+=" + _NUMBER,
+        "final:warm_recall": r"final_warm_recall=" + _NUMBER,
+        "final:all_recall": r"final_all_recall=" + _NUMBER,
+        "popularity:warm_recall": r"popularity_warm_recall=" + _NUMBER,
+        "popularity:all_recall": r"popularity_all_recall=" + _NUMBER,
+    },
+    "promote": {
+        "candidate:warm_recall": r"candidate_warm_recall=" + _NUMBER,
+        "champion:warm_recall": r"champion_warm_recall=" + _NUMBER,
+        "popularity:warm_recall": r"popularity_warm_recall=" + _NUMBER,
+    },
+}
+
 
 def parse_env(pairs: list[str]) -> dict[str, str]:
     env: dict[str, str] = {}
@@ -66,6 +85,9 @@ def training_job_request(
             "TrainingImage": f"{settings.training_image_repository}:{image_tag or model_id}",
             "TrainingInputMode": "File",
             "ContainerEntrypoint": ["python", "-m", "steam_training", mode],
+            "MetricDefinitions": [
+                {"Name": name, "Regex": regex} for name, regex in METRIC_DEFINITIONS[mode].items()
+            ],
         },
         "RoleArn": settings.sagemaker_role_arn,
         # Artifacts are written to models/ by the job itself; SageMaker only needs an output

@@ -91,6 +91,13 @@ rate here because each row has one target. It is reported for `warm` rows (the i
 population), `cold` rows and `all`, next to a popularity baseline (most positively reviewed games
 in the training split).
 
+**Curves in the SageMaker console.** Jobs started by the launcher declare metric definitions
+(`launch.METRIC_DEFINITIONS`): SageMaker parses the logs into CloudWatch series, shown under the
+job's *Monitor → Algorithm metrics*. Training: `train:loss` and `train:monitor_warm_recall` per
+epoch, then `final:*` and `popularity:*` recall at `PRIMARY_K`. Promotion: `candidate:`,
+`champion:` and `popularity:warm_recall`. The final values come from a `metrics ...` log line
+(`pipeline.metrics_line`), so only images from this change on emit them.
+
 ## Artifacts and promotion
 
 ```

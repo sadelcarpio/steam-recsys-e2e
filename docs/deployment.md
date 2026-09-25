@@ -246,7 +246,9 @@ aws service-quotas list-requested-service-quota-change-history --service-code sa
 `EPOCHS=10 BATCH_SIZE=2048`. The workflow pushes `training:<sha>` and starts
 `steam-recsys-train-<sha12>-<timestamp>`. It watches the job for up to 50 min (the deploy role's
 credentials last 1 h), and a longer job keeps running. The job summary shows recall@30/50/100
-for warm / cold / all validation rows next to the popularity baseline. Follow a job with:
+for warm / cold / all validation rows next to the popularity baseline. The loss and recall curves
+are also graphed in the console: SageMaker AI → Training jobs → the job → *Monitor* → *Algorithm
+metrics* (`train:loss`, `train:monitor_warm_recall`, `final:*`). Follow a job with:
 
 ```bash
 aws sagemaker list-training-jobs --name-contains steam-recsys --sort-by CreationTime \

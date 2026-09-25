@@ -1,4 +1,6 @@
 import json
+import logging
+import re
 
 import boto3
 import pytest
@@ -7,6 +9,7 @@ from moto import mock_aws
 
 from steam_training.artifacts import ArtifactStore
 from steam_training.contracts import RecallMetrics, SegmentRecall
+from steam_training.launch import METRIC_DEFINITIONS
 from steam_training.pipeline import decide, run_promotion, run_training
 from tests.conftest import BUCKET, FakeSource, make_marts
 
@@ -120,6 +123,46 @@ def test_promotion_evaluates_after_both_cutoffs(settings, store):
     report = run_promotion(candidate, newer_source, store)
     champion_cutoff = store.load_metadata("champion").split.cutoff
     assert report.split.cutoff == max(meta.split.cutoff, champion_cutoff)
+
+
+def _parsed(mode: str, caplog) -> dict[str, list[float]]:
+    """What SageMaker would extract from the job's log lines with the launcher's definitions."""
+    lines = [record.getMessage() for record in caplog.records]
+    return {
+        name: [float(m.group(1)) for line in lines if (m := re.search(regex, line))]
+        for name, regex in METRIC_DEFINITIONS[mode].items()
+    }
+
+
+def _logged(values, tolerance: float = 1e-6):
+    return pytest.approx(values, abs=tolerance)  # the log lines are rounded
+
+
+def test_metric_definitions_parse_the_job_logs(settings, source, store, caplog):
+    caplog.set_level(logging.INFO)
+    settings = settings.model_copy(update={"epoch_eval_rows": 100})  # per-epoch recall line
+    metadata = run_training(settings, source, store)
+    train = _parsed("train", caplog)
+    assert train["train:loss"] == _logged(metadata.epoch_losses, 1e-4)
+    assert len(train["train:monitor_warm_recall"]) == settings.epochs
+    k = settings.primary_k
+    assert train["final:warm_recall"] == _logged([metadata.validation.warm.recall[k]])
+    assert train["final:all_recall"] == _logged([metadata.validation.all.recall[k]])
+    baseline = metadata.popularity_baseline
+    assert train["popularity:warm_recall"] == _logged([baseline.warm.recall[k]])
+    assert train["popularity:all_recall"] == _logged([baseline.all.recall[k]])
+
+    run_promotion(settings, source, store)  # first model: no champion line
+    candidate = settings.model_copy(update={"model_id": "def456", "epochs": 1})
+    run_training(candidate, source, store)
+    caplog.clear()
+    report = run_promotion(candidate, source, store)
+    promote = _parsed("promote", caplog)
+    assert promote["candidate:warm_recall"] == _logged([report.primary(report.candidate.metrics)])
+    assert promote["champion:warm_recall"] == _logged([report.primary(report.champion.metrics)])
+    assert promote["popularity:warm_recall"] == _logged(
+        [report.primary(report.popularity_baseline)]
+    )
 
 
 def test_promotion_requires_a_trained_model(settings, source, store):

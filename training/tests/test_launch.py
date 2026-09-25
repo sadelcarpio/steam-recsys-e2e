@@ -44,6 +44,10 @@ def test_job_request_uses_the_models_own_image():
         "MODEL_ARTIFACTS_BUCKET": "model-artifacts-1",
     }
     assert request["ResourceConfig"]["InstanceType"] == "ml.m5.2xlarge"
+    names = {d["Name"] for d in spec["MetricDefinitions"]}
+    assert names == set(launch.METRIC_DEFINITIONS["promote"])
+    train = launch.training_job_request(SETTINGS, "train", SHA, {}, now)
+    assert len(train["AlgorithmSpecification"]["MetricDefinitions"]) <= 40  # SageMaker limit
 
 
 def test_image_tag_and_instance_type_overrides(monkeypatch):

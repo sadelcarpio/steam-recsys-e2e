@@ -28,7 +28,8 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
     serving Lambda runs without torch
   - `__main__.py`: SageMaker entry (`python -m steam_training {train,promote}`), plus
     `export --model-id` (local backfill of `user_tower.npz`)
-  - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary)
+  - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary);
+    `METRIC_DEFINITIONS` (log regexes -> CloudWatch curves in the SageMaker console)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
   (streams small batches). Unit tests, train → promote end to end with moto S3, and a bitwise
   resumed-equals-uninterrupted checkpoint test.
@@ -62,6 +63,8 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   (bump `USER_TOWER_NUMPY_FORMAT`) and the numpy port together. Parity with torch is tested in
   `inference/tests/test_online_parity.py`. Promotion of a model without the file deletes the
   champion's copy, so a stale user tower is never paired with a new model.
+- Log formats parsed by `launch.METRIC_DEFINITIONS`: the per-epoch line of `train_model` and
+  `pipeline.metrics_line`. Change them together (`test_metric_definitions_parse_the_job_logs`).
 - `inference/` imports this package (path dependency): `TwoTowerModel`, `ArtifactStore`,
   `IcebergSource`, `latest_game_rows` / `catalog_from_table`, `pad_history`,
   `evaluation.embed_catalog`. Keep those APIs stable, or update inference in the same change
