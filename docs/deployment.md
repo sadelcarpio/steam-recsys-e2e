@@ -272,6 +272,8 @@ sha (empty = the commit the workflow runs on). It evaluates the candidate and th
 champion on the same validation rows and writes `evaluation/<sha>/metrics.json`. When the
 candidate wins, it copies the model to `models/champion/` and the report to
 `evaluation/champion/metrics.json`. The first model only has to beat the popularity baseline.
+To swap in a model that loses (e.g. the first one trained on the full backfill), add
+`FORCE_PROMOTION=true` to `env_overrides`: it is still evaluated, and the report says it was forced.
 
 **Roll back** the champion: the bucket is versioned, so restore the previous object versions of
 `models/champion/*` and `evaluation/champion/metrics.json`, or promote an older sha again.

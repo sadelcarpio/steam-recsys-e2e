@@ -208,6 +208,9 @@ def run_promotion(
         baseline,
         settings.min_improvement,
     )
+    if not promoted and settings.force_promotion:
+        log.warning("FORCE_PROMOTION: promoting %s although %s", settings.model_id, reason)
+        promoted, reason = True, f"forced (FORCE_PROMOTION): {reason}"
     report = EvaluationReport(
         model_id=settings.model_id,
         evaluated_at=now,

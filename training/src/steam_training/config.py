@@ -138,6 +138,9 @@ class TrainingSettings(_SsmSettings):
     eval_max_rows: int = Field(500_000, ge=1)
     # Promotion: candidate must beat the champion's warm recall@primary_k by more than this.
     min_improvement: float = Field(0.0, ge=0)
+    # Promotion: promote even when the candidate loses (the report keeps the real metrics and
+    # why it would have been rejected). For deliberate swaps, e.g. a first full-data model.
+    force_promotion: bool = False
 
     log_level: str = "INFO"
 
@@ -166,6 +169,7 @@ NOT_FINGERPRINTED = {
     "eval_batch_size",
     "eval_max_rows",
     "min_improvement",
+    "force_promotion",
     "log_level",
 }
 

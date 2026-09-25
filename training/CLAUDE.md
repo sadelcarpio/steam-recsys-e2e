@@ -20,7 +20,8 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
     checkpoint), `Checkpoints` protocol, `fingerprint`, `resolve_device`
   - `evaluation.py`: stage 4. Pure-torch scoring loops on `device` (`CatalogIndex`, recall@K,
     popularity baseline, `mine_hard_negatives`)
-  - `pipeline.py`: `run_training`, `run_promotion`, `decide`
+  - `pipeline.py`: `run_training`, `run_promotion` (`FORCE_PROMOTION` overrides a rejection,
+    the report keeps the real metrics and reason), `decide`
   - `artifacts.py`: `ArtifactStore` (S3 save / load / promote, `save_user_tower_numpy`),
     `S3Checkpoints`
   - `export.py`: the numpy user tower (`user_tower.npz`, `USER_TOWER_ARRAYS`), which the

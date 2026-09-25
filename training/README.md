@@ -118,7 +118,9 @@ Promotion (`python -m steam_training promote`) evaluates the candidate and the c
 same rows: positive interactions after **both** models' training cutoffs, so neither model has
 seen them. The candidate is promoted when its warm recall@`PRIMARY_K` beats both the popularity
 baseline and the champion (plus `MIN_IMPROVEMENT`). The first model only has to beat the
-baseline. A champion from an older `ARCHITECTURE_VERSION` cannot be loaded, so it is compared
+baseline. `FORCE_PROMOTION=true` (in `env_overrides`) promotes a losing candidate anyway: the
+evaluation still runs and the report's `reason` says `forced (FORCE_PROMOTION): …` with why it
+would have been rejected. A champion from an older `ARCHITECTURE_VERSION` cannot be loaded, so it is compared
 through its stored metrics. Every job runs the image of the model's own commit
 (`training:<sha>`), unless `image_tag` says otherwise (a model trained locally has no image of
 its own).
@@ -147,6 +149,7 @@ forwards them to the job:
 | `EVAL_MAX_ROWS` | 500000 | validation positives kept (uniform sample; recall within ~±0.002) |
 | `EPOCH_EVAL_ROWS` | 50000 | validation rows scored after each epoch (logs only) |
 | `MIN_IMPROVEMENT` | 0 | promotion margin over the champion |
+| `FORCE_PROMOTION` | false | promote even when the candidate loses (report keeps the real metrics) |
 | `DEVICE` | auto | `auto` / `cpu` / `cuda` |
 | `RESUME` | true | resume from a matching checkpoint |
 

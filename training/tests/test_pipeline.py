@@ -84,6 +84,29 @@ def test_promotion_flow(settings, source, store):
     assert store.read_report("weak1") == report
 
 
+def test_forced_promotion_swaps_a_losing_candidate(settings, source, store):
+    run_training(settings, source, store)
+    run_promotion(settings, source, store)
+    weak = settings.model_copy(
+        update={
+            "model_id": "weak1",
+            "epochs": 1,
+            "learning_rate": 1e-6,
+            "mined_negatives": False,
+            "force_promotion": True,
+        }
+    )
+    run_training(weak, source, store)
+    report = run_promotion(weak, source, store)
+    assert report.promoted
+    assert report.reason.startswith("forced (FORCE_PROMOTION): ")
+    assert "does not beat" in report.reason  # why it would have been rejected
+    # the real metrics are kept: the champion it replaced is still in the report
+    assert report.champion is not None and report.champion.model_id == "abc123"
+    assert store.load_metadata("champion").model_id == "weak1"
+    assert store.read_report("champion") == report
+
+
 def test_promotion_evaluates_after_both_cutoffs(settings, store):
     old = FakeSource(make_marts(n_users=300, seed=0))
     run_training(settings, old, store)
