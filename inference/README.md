@@ -32,7 +32,9 @@ steam_marts (Iceberg, pyiceberg)
 3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
    and at most `RERANK_MAX_USERS` (1000), are sent to Bedrock (Converse API) with their last
    `games_reviewed_positive` (the last 5 liked games, the user tower's input) and their K
-   candidates. The model must call a `submit_ranking` tool
+   candidates. Each game is one line: name | genres | developers | free or paid | positive
+   review share | Steam short description (mart `game_details`, cut at
+   `RERANK_DESCRIPTION_CHARS`). The model must call a `submit_ranking` tool
    that returns every candidate once, best first, and explains the first `EXPLAIN_TOP_N` (5).
    Invalid answers are repaired: unknown or repeated numbers are dropped and missing
    candidates are appended. An answer with no usable tool call (e.g. stop reason
@@ -120,7 +122,9 @@ because Steam ids exceed JavaScript's safe integers.
 ## LLM choice and cost
 
 Bedrock has no free tier. Measured on the real marts with the same prompt, each reranked user
-costs about 1.8k input tokens and 0.4k output tokens:
+costs about 1.8k input tokens and 0.4k output tokens without the short descriptions; at
+`RERANK_DESCRIPTION_CHARS=200` they add about 50 tokens per game, roughly 1.8k more input
+tokens for 35 games (estimate):
 
 | Model (`BEDROCK_MODEL_ID`) | Quality of the explanations | Relative cost |
 |---|---|---|
@@ -161,6 +165,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
 | `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
+| `RERANK_DESCRIPTION_CHARS` | 200 | Short description per prompt game, cut at a word boundary; `0` = none (the mart `game_details` is then not read) |
 | `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 32 / 8 | Parallel Bedrock calls (~1000 req/min, half the 2000 RPM quota) / DynamoDB scan segments and writers |
 | `USER_BATCH_SIZE` / `ITEM_BATCH_SIZE` / `NUM_THREADS` | 1024 / 4096 / 0 | Scoring |
 

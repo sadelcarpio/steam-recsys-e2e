@@ -80,6 +80,20 @@ def test_writes_every_user_and_reranks_the_active_ones(settings, source, store, 
     assert [r["score"] for r in reranked] == sorted(r["score"] for r in reranked)
 
 
+def test_rerank_prompt_games_carry_their_short_description(settings, source, store, champion):
+    requests = []
+
+    def recording(request):
+        requests.append(request)
+        return reverse_ranking(request)
+
+    run_inference(settings, source, store, _writer(settings), recording, now=NOW)
+    games = [g for r in requests for g in (*r.liked, *r.candidates)]
+    # odd games have a scraped description (conftest.details_table), even ones none
+    assert any(g.endswith("positive reviews | Shoot & loot 7.") for g in games)
+    assert any(g.endswith("positive reviews") for g in games)
+
+
 def test_rerank_is_capped_to_the_most_active_users(settings, source, store, champion):
     capped = settings.model_copy(update={"rerank_max_users": 1})
     run_inference(capped, source, store, _writer(capped), reverse_ranking, now=NOW)

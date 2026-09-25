@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+from pyiceberg.exceptions import NoSuchTableError
 from steam_training.contracts import USER_HISTORY_LENGTH
 from steam_training.data import (
     GAME_FEATURE_COLUMNS,
@@ -31,6 +32,8 @@ from steam_training.data import (
     latest_game_rows,
     pad_history,
 )
+
+from steam_inference.contracts import clean_text
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +56,8 @@ class Games:
     name: np.ndarray  # object (str) per catalog row
     genre_names: np.ndarray  # object (str) indexed by genre id
     developer_names: np.ndarray  # object (str) indexed by developer id
+    # object (str) per catalog row: Steam short description, truncated ("" = none / not loaded)
+    description: np.ndarray
 
     def __len__(self) -> int:
         return len(self.catalog)
@@ -70,6 +75,8 @@ class Games:
         if items.is_free_known[row]:
             parts.append("free to play" if items.is_free[row] else "paid")
         parts.append(f"{items.reviews_ratio[row]:.0%} positive reviews")
+        if self.description[row]:
+            parts.append(self.description[row])
         return " | ".join(parts)
 
 
@@ -123,10 +130,16 @@ class InferenceData:
 
 
 def load_inference_data(
-    source: TableSource, *, max_users: int = 0, popular_window_days: int = 90
+    source: TableSource,
+    *,
+    max_users: int = 0,
+    popular_window_days: int = 90,
+    description_chars: int = 0,
 ) -> InferenceData:
+    """`description_chars` > 0 also loads the games' short descriptions (for the rerank
+    prompt), truncated to that many characters."""
     snapshots = {table: source.snapshot_id(table) for table in TABLES}
-    games = load_games(source, snapshots)
+    games = load_games(source, snapshots, description_chars)
     review_users, reviews, popular_counts = _load_reviews(
         source, snapshots["interactions"], popular_window_days
     )
@@ -160,7 +173,9 @@ def load_inference_data(
     )
 
 
-def load_games(source: TableSource, snapshots: dict[str, int | None]) -> Games:
+def load_games(
+    source: TableSource, snapshots: dict[str, int | None], description_chars: int = 0
+) -> Games:
     num_games = _max_id(source, "lkp_games", "game_idx", snapshots["lkp_games"]) + 1
     latest = latest_game_rows(
         source.batches(
@@ -170,13 +185,52 @@ def load_games(source: TableSource, snapshots: dict[str, int | None]) -> Games:
         ),
         num_games,
     )
+    game_id = _int64(latest["game_id"])
     return Games(
         catalog=catalog_from_table(latest, num_games),
-        game_id=_int64(latest["game_id"]),
+        game_id=game_id,
         name=np.asarray(pc.fill_null(latest["game_name"], "").to_pylist(), dtype=object),
         genre_names=_lookup_names(source, "lkp_genres", snapshots["lkp_genres"]),
         developer_names=_lookup_names(source, "lkp_developers", snapshots["lkp_developers"]),
+        description=_short_descriptions(source, game_id, description_chars),
     )
+
+
+def _short_descriptions(source: TableSource, game_id: np.ndarray, max_chars: int) -> np.ndarray:
+    """Short description per catalog row from the mart `game_details` (cleaned, truncated);
+    "" when `max_chars` is 0, the game has none, or the mart is missing."""
+    out = np.full(len(game_id), "", dtype=object)
+    if not max_chars:
+        return out
+    try:
+        snapshot_id = source.snapshot_id("game_details")
+    except NoSuchTableError:
+        log.warning("mart game_details not found: no descriptions in the rerank prompt")
+        return out
+    row_of = {int(g): i for i, g in enumerate(game_id)}
+    found = 0
+    for batch in source.batches("game_details", ["game_id", "game_short_description"], snapshot_id):
+        for gid, text in zip(
+            batch["game_id"].to_pylist(), batch["game_short_description"].to_pylist(), strict=True
+        ):
+            row = row_of.get(gid)
+            text = clean_text(text)
+            if row is not None and text:
+                out[row] = truncate(text, max_chars)
+                found += 1
+    log.info("short descriptions for %d of %d catalog games", found, len(game_id))
+    return out
+
+
+def truncate(text: str, max_chars: int) -> str:
+    """At most `max_chars` characters, cut at a word boundary with an ellipsis."""
+    if len(text) <= max_chars:
+        return text
+    cut = text[: max_chars - 1]
+    space = cut.rfind(" ")
+    if space > max_chars // 2:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:.-") + "…"
 
 
 def _load_reviews(

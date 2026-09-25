@@ -14,7 +14,8 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `features.py`: stage 1. Latest `user_features` per user (streamed reduction), latest
     `game_features` per game (all current games, even beyond the model vocab), reviews
     grouped per user and newest first (`Reviews.of` -> CSR), `popular_counts` (recent positive
-    reviews per game_idx), lookup names for prompts
+    reviews per game_idx), lookup names and truncated short descriptions (`game_details`) for
+    prompts
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
   - `rerank.py`: stage 3. Prompt, Bedrock Converse with a forced `submit_ranking` tool,
     `parse_response`, `merge_ranking` (repairs the answer), `rerank_all` (threads, per-user

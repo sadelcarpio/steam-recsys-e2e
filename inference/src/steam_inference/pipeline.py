@@ -61,7 +61,10 @@ def run_inference(
     log.info("serving model %s (trained %s)", metadata.model_id, metadata.created_at)
 
     data = load_inference_data(
-        source, max_users=settings.max_users, popular_window_days=settings.popular_window_days
+        source,
+        max_users=settings.max_users,
+        popular_window_days=settings.popular_window_days,
+        description_chars=settings.rerank_description_chars if settings.rerank_enabled else 0,
     )
     candidates = retrieve(
         model,

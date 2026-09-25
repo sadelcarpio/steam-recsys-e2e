@@ -3,7 +3,7 @@ import pyarrow as pa
 from conftest import FIRST_GAME, N_GAMES, REVIEWS, FakeSource
 
 from steam_inference import features
-from steam_inference.features import load_inference_data
+from steam_inference.features import load_inference_data, truncate
 
 
 def test_users_are_their_latest_features(source):
@@ -84,3 +84,26 @@ def test_popular_counts_from_interactions(source):
     assert counts[FIRST_GAME] == 3  # users 101, 103, 104
     assert counts[4] == 1  # 101's review is negative
     assert len(counts) == FIRST_GAME + N_GAMES - 2  # the last 2 games: nobody reviewed them
+
+
+def test_describe_appends_the_short_description(source):
+    games = load_inference_data(source, description_chars=200).games
+    odd, even = (int(games.catalog.rows(np.array([g]))[0]) for g in (7, 6))
+    # scraped as " Shoot &amp; <b>loot</b> 7. ": cleaned before it reaches the prompt
+    assert games.describe(odd).endswith("positive reviews | Shoot & loot 7.")
+    assert games.describe(even).endswith("positive reviews")  # no description scraped
+
+
+def test_descriptions_are_off_by_default_and_optional(source, marts):
+    assert not load_inference_data(source).games.description.any()
+    without = {k: v for k, v in marts.items() if k != "game_details"}
+    games = load_inference_data(FakeSource(without), description_chars=200).games
+    assert not games.description.any()  # a missing mart is not an error
+
+
+def test_truncate_cuts_at_a_word_boundary():
+    text = "A roguelike deck builder where you climb a spire of monsters and relics"
+    assert truncate(text, 200) == text
+    short = truncate(text, 30)
+    assert short == "A roguelike deck builder…" and len(short) <= 30
+    assert truncate("x" * 50, 10) == "x" * 9 + "…"  # no space to cut at
