@@ -31,7 +31,7 @@ log = logging.getLogger("steam_training.launch")
 
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Set by the launcher itself; an override would detach the job from its model.
-RESERVED_ENV = {"MODEL_ID", "USE_SSM", "MODEL_ARTIFACTS_BUCKET"}
+RESERVED_ENV = {"MODEL_ID", "USE_SSM", "MODEL_ARTIFACTS_BUCKET", "AWS_REGION", "AWS_DEFAULT_REGION"}
 TERMINAL = {"Completed", "Failed", "Stopped"}
 
 
@@ -82,6 +82,9 @@ def training_job_request(
         "Environment": {
             **env,
             "USE_SSM": "true",
+            # SageMaker does not set a region boto3 reads; the SSM / S3 clients need one.
+            "AWS_REGION": settings.aws_region,
+            "AWS_DEFAULT_REGION": settings.aws_region,
             "MODEL_ID": model_id,
             "MODEL_ARTIFACTS_BUCKET": settings.model_artifacts_bucket,
         },

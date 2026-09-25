@@ -22,7 +22,7 @@ def test_parse_env():
         "EPOCHS": "10",
         "RECALL_KS": "[30,50]",
     }
-    for bad in ["epochs=1", "EPOCHS", "MODEL_ID=x", "USE_SSM=false"]:
+    for bad in ["epochs=1", "EPOCHS", "MODEL_ID=x", "USE_SSM=false", "AWS_REGION=eu-west-1"]:
         with pytest.raises(ValueError):
             launch.parse_env([bad])
 
@@ -38,6 +38,8 @@ def test_job_request_uses_the_models_own_image():
     assert request["Environment"] == {
         "EPOCHS": "2",
         "USE_SSM": "true",
+        "AWS_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "us-east-1",
         "MODEL_ID": SHA,
         "MODEL_ARTIFACTS_BUCKET": "model-artifacts-1",
     }
