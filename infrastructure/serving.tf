@@ -63,6 +63,13 @@ data "aws_iam_policy_document" "serving" {
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.model_artifacts.arn}/models/*/user_tower.npz"]
   }
+  # Without ListBucket, S3 answers GetObject on a missing key with AccessDenied instead of
+  # NoSuchKey, so "no catalog published yet" (a 503) became a 500.
+  statement {
+    sid       = "ListModelArtifacts"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.model_artifacts.arn]
+  }
   statement {
     sid       = "Config"
     actions   = ["ssm:GetParametersByPath"]
