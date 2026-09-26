@@ -158,7 +158,9 @@ recomendaciones:
 | Steam id            | Qué muestra                                                                                                     |
 |---------------------|-----------------------------------------------------------------------------------------------------------------|
 | `76561198312196006` | Aventura / indie; 5 explicaciones del LLM basadas en sus juegos (Mad Father, ANNO: Mutationem, Coffin of Ashes) |
-| `76561198093868592` | Simulación *cozy*; 5 explicaciones del LLM (Roadhouse Simulator, Tiny Eden)                                     |
+| `76561198385306369` | Acción AAA; 5 explicaciones del LLM (Marvel's Spider-Man 2, Ghost of Tsushima, God of War Ragnarök)             |
+| `76561198809192947` | Puzles y narrativa; 5 explicaciones del LLM (The Stanley Parable, The Witness, The Talos Principle)             |
+| `76561198833304945` | Acción reciente; 5 explicaciones del LLM (007 First Light, Stellar Blade, DOOM: The Dark Ages)                  |
 | `76561198422199704` | Solo el modelo, sin LLM (juegos *idle* y de granja)                                                             |
 
 Para buscar otros usuarios con explicaciones:
