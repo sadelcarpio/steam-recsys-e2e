@@ -7,7 +7,7 @@ Lambda las sirve por HTTP.
 
 ## Arquitectura
 
-![Arquitectura batch](docs/architecture/steam-recsys-batch.drawio.svg)
+![Arquitectura batch](docs/architecture/steam-recsys-batch.drawio.png)
 
 Flujo semanal (Step Functions, disparado por EventBridge los jueves):
 
