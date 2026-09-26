@@ -28,6 +28,9 @@ s3://<model-artifacts>/serving/online/catalog.npz (the arrays below, rewritten e
 manifest.json (`OnlineBundleManifest`), pinned to that catalog's S3 version and naming the
 model's numpy user tower, models/<model_id>/user_tower.npz (written by training, see
 training/src/steam_training/export.py).
+
+Search index (`search.py`), for the frontend: s3://<model-artifacts>/serving/search/games.json
+(`SearchIndex`, gzipped), the same games as the online catalog, served by CloudFront.
 """
 
 from __future__ import annotations
@@ -165,6 +168,20 @@ class OnlineBundleManifest(_Frozen):
     user_tower_key: str  # models/<model_id>/user_tower.npz, same bucket
 
 
+SEARCH_INDEX_FORMAT = 1
+
+
+class SearchIndex(_Frozen):
+    """serving/search/games.json: the frontend's game search. Keep in sync with
+    frontend/src/api.ts (`SearchIndex`)."""
+
+    format_version: int = SEARCH_INDEX_FORMAT
+    model_id: str
+    generated_at: datetime
+    # [appid, name, reviews], most reviewed first
+    games: list[tuple[int, str, Annotated[int, Field(ge=0)]]]
+
+
 class RankedCandidate(BaseModel):
     """One entry of the LLM's ranking: a candidate number from the prompt (1-based)."""
 
@@ -196,5 +213,6 @@ class InferenceSummary(_Frozen):
     popular_games: int = 0
     game_details_written: int = 0
     online_bundle: str | None = None
+    search_index: str | None = None
     snapshots: dict[str, int | None] = Field(default_factory=dict)
     seconds: float = 0.0

@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 CATALOG_NAME = "catalog.npz"
 MANIFEST_NAME = "manifest.json"
+SEARCH_INDEX_NAME = "games.json"
 
 
 def build_catalog(games: Games, item_embeddings: np.ndarray) -> dict[str, np.ndarray]:
@@ -71,6 +72,10 @@ class BundleStore(Protocol):
         """Store the catalog, then the manifest; return where the manifest is."""
         ...
 
+    def publish_search_index(self, payload: bytes) -> str:
+        """Store the gzipped search index (`search.encode_search_index`); return where."""
+        ...
+
 
 def _manifest(payload: bytes, key: str, version_id: str | None, **fields) -> OnlineBundleManifest:
     return OnlineBundleManifest(
@@ -82,9 +87,12 @@ def _manifest(payload: bytes, key: str, version_id: str | None, **fields) -> Onl
 
 
 class S3BundleStore:
-    def __init__(self, bucket: str, prefix: str, *, region: str) -> None:
+    def __init__(
+        self, bucket: str, prefix: str, *, region: str, search_key: str | None = None
+    ) -> None:
         self.bucket = bucket
         self.prefix = prefix.strip("/")
+        self.search_key = search_key or f"serving/search/{SEARCH_INDEX_NAME}"
         self.s3 = boto3.client("s3", region_name=region)
 
     def publish(self, payload: bytes, **fields) -> str:
@@ -102,6 +110,21 @@ class S3BundleStore:
         log.info("online catalog: %.1f MB, manifest %s", len(payload) / 1e6, uri)
         return uri
 
+    def publish_search_index(self, payload: bytes) -> str:
+        # Served as is by CloudFront: browsers decompress it (Content-Encoding), and caches
+        # revalidate hourly (the index changes once per pipeline run).
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=self.search_key,
+            Body=payload,
+            ContentType="application/json",
+            ContentEncoding="gzip",
+            CacheControl="public, max-age=3600",
+        )
+        uri = f"s3://{self.bucket}/{self.search_key}"
+        log.info("search index: %.1f MB gzipped, %s", len(payload) / 1e6, uri)
+        return uri
+
 
 class LocalBundleStore:
     """Dry runs: the catalog and its manifest in a local directory."""
@@ -115,4 +138,10 @@ class LocalBundleStore:
         manifest = _manifest(payload, CATALOG_NAME, None, **fields)
         path = self.directory / MANIFEST_NAME
         path.write_text(manifest.model_dump_json(indent=2))
+        return str(path)
+
+    def publish_search_index(self, payload: bytes) -> str:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path = self.directory / f"{SEARCH_INDEX_NAME}.gz"
+        path.write_bytes(payload)
         return str(path)

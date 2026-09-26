@@ -11,8 +11,9 @@ on:
         default: plan
       serving_auth_type:
         description: >-
-          Auth of the recsys-serving Function URL: AWS_IAM (SigV4-signed callers only) or NONE
-          (public demo). Every apply sets it, so pick NONE on each apply to keep it public.
+          Auth of the recsys-serving Function URL: AWS_IAM (SigV4-signed callers only; the
+          frontend still works, CloudFront signs its calls) or NONE (URL public too). Every apply
+          sets it, so pick NONE on each apply to keep it public.
         type: choice
         options: [AWS_IAM, NONE]
         default: AWS_IAM
@@ -34,6 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TF_VAR_serving_auth_type: ${{ inputs.serving_auth_type }}
+      # Optional custom domain of the frontend (repository variables; unset = *.cloudfront.net)
+      TF_VAR_frontend_domain_name: ${{ vars.FRONTEND_DOMAIN_NAME }}
+      TF_VAR_frontend_certificate_arn: ${{ vars.FRONTEND_CERTIFICATE_ARN }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
