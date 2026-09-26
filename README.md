@@ -121,12 +121,50 @@ Actions → **inference CD** con `run_now` marcado y
 
 ### 9. Probar la API
 
+Los ejemplos usan [`jq`](https://jqlang.org/) para formatear el JSON (sin `jq`:
+`| python3 -m json.tool`).
+
 ```bash
 URL=$(aws lambda get-function-url-config --function-name recsys-serving --query FunctionUrl --output text)
-curl "${URL}popular?limit=5"
-curl "${URL}users/<steam id>/recommendations"
-curl -X POST "${URL}recommendations" -H 'content-type: application/json' \
-  -d '{"liked_game_ids": [620, 413150], "limit": 5}'
+
+# Estado y juegos populares (el fallback para usuarios desconocidos)
+curl -s "${URL}health" | jq
+curl -s "${URL}popular?limit=5" | jq
+
+# Recomendaciones precalculadas de un usuario (con detalles de cada juego)
+curl -s "${URL}users/76561198312196006/recommendations?limit=5" | jq
+
+# Solo puesto, nombre y explicación del LLM
+curl -s "${URL}users/76561198312196006/recommendations?limit=5&details=false" \
+  | jq '.recommendations[] | {rank, name, explanation}'
+
+# Recomendaciones en línea a partir de juegos que te gustan (Portal 2 y Stardew Valley)
+curl -s -X POST "${URL}recommendations" -H 'content-type: application/json' \
+  -d '{"liked_game_ids": [620, 413150], "limit": 5, "details": false}' \
+  | jq '.recommendations[] | {rank, name}'
+
+# Detalles de un juego
+curl -s "${URL}games/620" | jq
 ```
 
-El detalle de cada endpoint está en [`serving/README.md`](serving/README.md).
+Usuarios de ejemplo (reseñadores públicos de Steam). El modelo usa sus últimos 5 juegos con
+reseña positiva. Los usuarios más activos (`RERANK_MAX_USERS`, 1.000 por defecto) reciben además
+el reordenamiento del LLM (`"reranked": true`), con una explicación para las 5 primeras
+recomendaciones:
+
+| Steam id | Qué muestra |
+|---|---|
+| `76561198312196006` | Aventura / indie; 5 explicaciones del LLM basadas en sus juegos (Mad Father, ANNO: Mutationem, Coffin of Ashes) |
+| `76561198093868592` | Simulación *cozy*; 5 explicaciones del LLM (Roadhouse Simulator, Tiny Eden) |
+| `76561198422199704` | Solo el modelo, sin LLM (juegos *idle* y de granja) |
+
+Para buscar otros usuarios con explicaciones:
+
+```bash
+aws dynamodb scan --table-name game-explainable-recommendations \
+  --filter-expression "reranked = :t" --expression-attribute-values '{":t":{"BOOL":true}}' \
+  --projection-expression user_id --max-items 10 --query 'Items[].user_id.S' --output text
+```
+
+Un id desconocido recibe la lista popular (`"source": "popular"`). El detalle de cada endpoint
+está en [`serving/README.md`](serving/README.md).
