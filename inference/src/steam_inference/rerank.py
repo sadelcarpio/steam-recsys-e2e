@@ -33,7 +33,8 @@ MAX_EXPLANATION_CHARS = 600
 SYSTEM_PROMPT = (
     "You are a Steam game recommendation assistant. A recommender model retrieved candidate "
     "games for one user; you rerank them using the games the user liked, and you "
-    "explain the best picks to the user. Use only the information given. Always answer by "
+    "explain the best picks to the user. Use only the information given. Write every "
+    'explanation in Spanish (neutral Latin American, informal "tú"). Always answer by '
     f"calling the {TOOL_NAME} tool."
 )
 TOOL_SPEC = {
@@ -104,9 +105,10 @@ def build_prompt(request: RerankRequest, explain_top_n: int) -> str:
     if explain_top_n:
         lines.append(
             f"For the first {explain_top_n} entries only, add an explanation: one or two "
-            'sentences addressed to the user ("you") on why the game fits their taste. Only games '
-            "from the liked list may be named as games the user liked or played; never claim the "
-            "user played a candidate. Leave the explanation out for the other entries."
+            'sentences in Spanish, addressed to the user as "tú", on why the game fits their '
+            "taste. Keep game names as given. Only games from the liked list may be named as games "
+            "the user liked or played; never claim the user played a candidate. Leave the "
+            "explanation out for the other entries."
         )
     return "\n".join(lines)
 

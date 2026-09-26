@@ -97,7 +97,7 @@ steam_marts (Iceberg, pyiceberg)
   "user_id": "76561198027267313",
   "recommendations": [
     {"game_id": 63910, "name": "King's Bounty: Crossworlds", "score": 0.4127,
-     "explanation": "As a fan of strategy and RPGs like Dungeons 2, ..."},
+     "explanation": "Como fan de la estrategia y los RPG como Dungeons 2, ..."},
     {"game_id": 203350, "name": "King's Bounty: Warriors of the North", "score": 0.4343}
   ],
   "model_id": "local-test",
@@ -129,7 +129,7 @@ item with the serving package, so a contract change that breaks serving fails he
 
 `recommendations` is ordered best first: the LLM order when `reranked`, the model order
 otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
-Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation`. `score` and
+Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation` (written in Spanish, set in the prompt in `rerank.py`). `score` and
 `generated_at` are as of the last write: an unchanged list keeps them. `user_id` is a string,
 because Steam ids exceed JavaScript's safe integers.
 
