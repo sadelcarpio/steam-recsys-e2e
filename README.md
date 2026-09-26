@@ -23,7 +23,9 @@ Flujo semanal (Step Functions, disparado por EventBridge los jueves):
 
 El **entrenamiento** (`training/`) va aparte y es manual: un job de SageMaker entrena el modelo
 y un workflow de *promote* lo evalúa contra el campeón actual y lo reemplaza si es mejor. La
-infraestructura está en `infrastructure/`. Cada carpeta tiene su propio README con los detalles.
+infraestructura está en `infrastructure/`. El diagrama del modelo *two-tower* (capas y
+dimensiones) está en [`training/README.md`](training/README.md#model). Cada carpeta tiene su propio README con los
+detalles.
 
 ## Costos
 
@@ -152,11 +154,11 @@ reseña positiva. Los usuarios más activos (`RERANK_MAX_USERS`, 1.000 por defec
 el reordenamiento del LLM (`"reranked": true`), con una explicación para las 5 primeras
 recomendaciones:
 
-| Steam id | Qué muestra |
-|---|---|
+| Steam id            | Qué muestra                                                                                                     |
+|---------------------|-----------------------------------------------------------------------------------------------------------------|
 | `76561198312196006` | Aventura / indie; 5 explicaciones del LLM basadas en sus juegos (Mad Father, ANNO: Mutationem, Coffin of Ashes) |
-| `76561198093868592` | Simulación *cozy*; 5 explicaciones del LLM (Roadhouse Simulator, Tiny Eden) |
-| `76561198422199704` | Solo el modelo, sin LLM (juegos *idle* y de granja) |
+| `76561198093868592` | Simulación *cozy*; 5 explicaciones del LLM (Roadhouse Simulator, Tiny Eden)                                     |
+| `76561198422199704` | Solo el modelo, sin LLM (juegos *idle* y de granja)                                                             |
 
 Para buscar otros usuarios con explicaciones:
 
