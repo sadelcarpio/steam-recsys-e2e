@@ -3,14 +3,15 @@ import "./style.css";
 import {
   game,
   onlineRecommendations,
-  popular,
   userRecommendations,
   MAX_LIKED_GAMES,
   USER_ID_PATTERN,
+  ApiError,
   type Recommendation,
   type RecommendationsResponse,
 } from "./api";
 import { cardGrid, detailsView, h, responseSummary } from "./cards";
+import { t } from "./i18n";
 import { LikedGames } from "./liked";
 import { parseRoute, userPath } from "./router";
 import type { GameHit } from "./search";
@@ -40,7 +41,7 @@ document.querySelector<HTMLFormElement>("#user-form")!.addEventListener("submit"
   const input = (e.currentTarget as HTMLFormElement).elements.namedItem("user") as HTMLInputElement;
   const userId = input.value.trim();
   if (!USER_ID_PATTERN.test(userId)) {
-    input.setCustomValidity("A Steam account id: 1 to 20 digits");
+    input.setCustomValidity(t.userIdInvalid);
     input.reportValidity();
     return;
   }
@@ -55,19 +56,14 @@ function render(): void {
   else if (route.page === "user") userPage(route.userId);
   else
     main.append(
-      h(
-        "p",
-        { class: "empty" },
-        "Page not found. ",
-        h("a", { href: "/", "data-nav": "" }, "Go home"),
-      ),
+      h("p", { class: "empty" }, t.notFound, h("a", { href: "/", "data-nav": "" }, t.goHome)),
     );
 }
 
 // ---- shared ------------------------------------------------------------------------------
 
 async function openDetails(rec: Recommendation): Promise<void> {
-  dialog.replaceChildren(h("p", { class: "status" }, "Loading…"));
+  dialog.replaceChildren(h("p", { class: "status" }, t.loading));
   dialog.showModal();
   try {
     const details = rec.details ?? (await game(rec.game_id));
@@ -78,7 +74,7 @@ async function openDetails(rec: Recommendation): Promise<void> {
 }
 
 function closeButton(): HTMLElement {
-  const button = h("button", { class: "close", "aria-label": "Close" }, "×");
+  const button = h("button", { class: "close", "aria-label": t.close }, "×");
   button.addEventListener("click", () => dialog.close());
   return button;
 }
@@ -88,7 +84,9 @@ dialog.addEventListener("click", (e) => {
 });
 
 function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof ApiError && err.detail) console.warn(err.status, err.detail);
+  if (!(err instanceof ApiError)) console.warn(err);
+  return err instanceof ApiError ? err.message : t.errors.unknown;
 }
 
 /** Renders `load()` into `section`, replacing what was there. */
@@ -97,7 +95,7 @@ async function showRecommendations(
   load: () => Promise<RecommendationsResponse>,
   extra?: (r: RecommendationsResponse) => Node | null,
 ): Promise<void> {
-  section.replaceChildren(h("p", { class: "status" }, "Loading recommendations…"));
+  section.replaceChildren(h("p", { class: "status" }, t.loadingRecommendations));
   try {
     const response = await load();
     section.replaceChildren(
@@ -114,7 +112,7 @@ async function showRecommendations(
 
 function userPage(userId: string): void {
   const section = h("section", {});
-  main.append(h("h1", {}, "Recommendations for ", h("code", {}, userId)), section);
+  main.append(h("h1", {}, t.userTitle, h("code", {}, userId)), section);
   (document.querySelector("#user-form input") as HTMLInputElement).value = userId;
   void showRecommendations(section, () => userRecommendations(userId));
 }
@@ -154,34 +152,41 @@ function search(query: string): Promise<GameHit[]> {
 function discoverPage(): void {
   const input = h("input", {
     type: "search",
-    placeholder: "Loading the game catalog…",
-    "aria-label": "Search games",
+    placeholder: t.searchLoading,
+    "aria-label": t.searchLabel,
     autocomplete: "off",
     disabled: "",
   });
   const results = h("ul", { class: "results", role: "listbox" });
   const chips = h("ul", { class: "chips" });
-  const recommend = h("button", { class: "primary" }, "Recommend");
-  const clear = h("button", {}, "Clear");
+  const count = h("p", { class: "hint count" });
+  const recommend = h("button", { class: "primary" }, t.recommend);
+  const clear = h("button", {}, t.clear);
   const section = h("section", {});
+  let searchSize: number | undefined; // set once the index is loaded
 
   main.append(
-    h("h1", {}, "Find your next game"),
-    h(
-      "p",
-      { class: "lead" },
-      "Search the games you liked, then get recommendations from the two-tower model. ",
-      "Or open a player's recommendations with the Steam id box above.",
-    ),
+    h("h1", {}, t.discoverTitle),
+    h("p", { class: "lead" }, t.discoverLead(MAX_LIKED_GAMES)),
     h("div", { class: "search" }, input, results),
     h("div", { class: "liked" }, chips, h("div", { class: "actions" }, recommend, clear)),
+    count,
     section,
   );
+
+  // The search box is closed while the list is full (and until the index is loaded).
+  const updateInput = () => {
+    if (searchSize === undefined) return;
+    input.toggleAttribute("disabled", liked.full);
+    input.placeholder = liked.full
+      ? t.searchFull(MAX_LIKED_GAMES)
+      : t.searchPlaceholder(searchSize);
+  };
 
   const renderLiked = () => {
     chips.replaceChildren(
       ...liked.games.map((g) => {
-        const remove = h("button", { "aria-label": `Remove ${g.name}` }, "×");
+        const remove = h("button", { "aria-label": t.remove(g.name) }, "×");
         remove.addEventListener("click", () => {
           liked.remove(g.game_id);
           renderLiked();
@@ -189,33 +194,34 @@ function discoverPage(): void {
         return h("li", {}, g.name, remove);
       }),
     );
-    if (!liked.games.length) chips.append(h("li", { class: "hint" }, "No games picked yet."));
+    if (!liked.games.length) chips.append(h("li", { class: "hint" }, t.noneChosen));
+    count.textContent = t.picked(liked.games.length, MAX_LIKED_GAMES);
     recommend.toggleAttribute("disabled", !liked.games.length);
     clear.toggleAttribute("disabled", !liked.games.length);
+    updateInput();
   };
 
   const pick = (hit: GameHit) => {
-    if (liked.games.length >= MAX_LIKED_GAMES) return;
-    liked.add(hit);
+    if (!liked.add(hit)) return; // full
     renderLiked();
     input.value = "";
     results.replaceChildren();
-    input.focus();
+    if (!liked.full) input.focus();
   };
 
   let latest = 0;
   input.addEventListener("input", async () => {
     const seq = ++latest;
-    const hits = await search(input.value);
+    const query = input.value;
+    const hits = await search(query);
     if (seq !== latest) return; // a newer query answered first
+    if (query.trim() && !hits.length) {
+      results.replaceChildren(h("li", { class: "hint" }, t.noResults));
+      return;
+    }
     results.replaceChildren(
       ...hits.map((hit) => {
-        const item = h(
-          "li",
-          { role: "option", tabindex: "0" },
-          h("span", {}, hit.name),
-          h("small", {}, `${hit.reviews.toLocaleString()} reviews`),
-        );
+        const item = h("li", { role: "option", tabindex: "0" }, h("span", {}, hit.name));
         item.addEventListener("click", () => pick(hit));
         item.addEventListener("keydown", (e) => {
           if (e.key === "Enter") pick(hit);
@@ -225,38 +231,36 @@ function discoverPage(): void {
     );
   });
 
+  const startHint = () => section.replaceChildren(h("p", { class: "empty" }, t.startHint));
+
   recommend.addEventListener("click", () =>
     showRecommendations(
       section,
       () => onlineRecommendations(liked.games.map((g) => g.game_id)),
       (r) =>
         r.ignored_game_ids?.length
-          ? h(
-              "p",
-              { class: "hint" },
-              `${r.ignored_game_ids.length} picked game(s) are unknown to the model.`,
-            )
+          ? h("p", { class: "hint" }, t.unknownPicked(r.ignored_game_ids.length))
           : null,
     ),
   );
   clear.addEventListener("click", () => {
     liked.clear();
     renderLiked();
-    void showRecommendations(section, popular);
+    startHint();
   });
 
   renderLiked();
+  startHint();
   startSearch().then(
     (size) => {
-      input.removeAttribute("disabled");
-      input.placeholder = `Search ${size.toLocaleString()} games…`;
+      searchSize = size;
+      updateInput();
     },
     (err) => {
-      input.placeholder = "Search is unavailable";
-      results.replaceChildren(h("li", { class: "error" }, errorText(err)));
+      console.warn(err);
+      input.placeholder = t.searchUnavailable;
     },
   );
-  void showRecommendations(section, popular);
 }
 
 render();

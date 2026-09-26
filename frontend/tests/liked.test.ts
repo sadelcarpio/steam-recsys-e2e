@@ -26,4 +26,22 @@ describe("liked games", () => {
     memory.add({ game_id: 4, name: "D" });
     expect(memory.games).toHaveLength(1);
   });
+
+  it("holds at most 5 games (the user tower's history length)", () => {
+    const liked = new LikedGames(null);
+    for (let i = 1; i <= 5; i++) expect(liked.add({ game_id: i, name: `G${i}` })).toBe(true);
+    expect(liked.full).toBe(true);
+    expect(liked.add({ game_id: 6, name: "G6" })).toBe(false);
+    expect(liked.games.map((g) => g.game_id)).toEqual([5, 4, 3, 2, 1]);
+    expect(liked.add({ game_id: 3, name: "G3" })).toBe(true); // re-picking moves it first
+    expect(liked.games.map((g) => g.game_id)).toEqual([3, 5, 4, 2, 1]);
+    liked.remove(1);
+    expect(liked.add({ game_id: 6, name: "G6" })).toBe(true);
+  });
+
+  it("trims a longer stored list", () => {
+    const stored = Array.from({ length: 8 }, (_, i) => ({ game_id: i, name: `G${i}` }));
+    localStorage.setItem("recsys.liked", JSON.stringify(stored));
+    expect(new LikedGames(localStorage).games.map((g) => g.game_id)).toEqual([0, 1, 2, 3, 4]);
+  });
 });

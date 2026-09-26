@@ -1,6 +1,8 @@
 // Client of the serving API (serving/src/steam_serving/contracts.py), reached through the same
 // CloudFront distribution under /api, and of the search index (/data/games.json, written by
-// inference: inference/src/steam_inference/contracts.py `SearchIndex`).
+// inference: inference/src/steam_inference/contracts.py `SearchIndex`). Errors carry a Spanish
+// message for the page; the server's own (English) error stays in `detail`, for the console.
+import { t } from "./i18n";
 
 export interface GameDetails {
   game_id: number;
@@ -46,43 +48,59 @@ export interface SearchIndex {
 
 export const SEARCH_INDEX_FORMAT = 1;
 export const LIMIT = 30; // serving MAX_LIMIT (inference writes 30 per user)
-export const MAX_LIKED_GAMES = 100; // serving MAX_LIKED_GAMES
+// The user tower reads the last 5 liked games (training USER_HISTORY_LENGTH): more would be
+// ignored. Serving accepts up to 100.
+export const MAX_LIKED_GAMES = 5;
 export const USER_ID_PATTERN = /^[0-9]{1,20}$/; // Steam 64-bit account id (a string)
 
 export class ApiError extends Error {
   constructor(
-    readonly status: number,
+    readonly status: number, // 0: no response (network)
     message: string,
+    readonly detail?: string,
   ) {
     super(message);
   }
 }
 
+function statusMessage(status: number): string {
+  if (status === 400 || status === 404 || status === 503) return t.errors[status];
+  return t.errors.other(status);
+}
+
+async function request(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    throw new ApiError(0, t.errors.network, String(err));
+  }
+}
+
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    let message = `HTTP ${response.status}`;
+    let detail: string | undefined;
     try {
       const body = (await response.json()) as { error?: string; detail?: string };
-      if (body.error) message = body.detail ? `${body.error}: ${body.detail}` : body.error;
+      if (body.error) detail = body.detail ? `${body.error}: ${body.detail}` : body.error;
     } catch {
       // not JSON (e.g. a CloudFront error page)
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, statusMessage(response.status), detail);
   }
   return (await response.json()) as T;
 }
 
 export async function userRecommendations(userId: string): Promise<RecommendationsResponse> {
   const id = encodeURIComponent(userId);
-  return json(await fetch(`/api/users/${id}/recommendations?limit=${LIMIT}&details=true`));
+  return json(await request(`/api/users/${id}/recommendations?limit=${LIMIT}&details=true`));
 }
 
 export async function popular(): Promise<RecommendationsResponse> {
-  return json(await fetch(`/api/popular?limit=${LIMIT}&details=true`));
+  return json(await request(`/api/popular?limit=${LIMIT}&details=true`));
 }
 
 export async function game(gameId: number): Promise<GameDetails> {
-  return json(await fetch(`/api/games/${gameId}`));
+  return json(await request(`/api/games/${gameId}`));
 }
 
 // CloudFront signs requests to the Function URL (OAC) but does not hash the body: a POST must
@@ -97,7 +115,7 @@ export async function onlineRecommendations(
 ): Promise<RecommendationsResponse> {
   const body = JSON.stringify({ liked_game_ids: likedGameIds, limit: LIMIT, details: true });
   return json(
-    await fetch("/api/recommendations", {
+    await request("/api/recommendations", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -109,9 +127,9 @@ export async function onlineRecommendations(
 }
 
 export async function searchIndex(): Promise<SearchIndex> {
-  const index = await json<SearchIndex>(await fetch("/data/games.json"));
+  const index = await json<SearchIndex>(await request("/data/games.json"));
   if (index.format_version !== SEARCH_INDEX_FORMAT) {
-    throw new Error(`search index format ${index.format_version}, expected ${SEARCH_INDEX_FORMAT}`);
+    throw new ApiError(200, t.errors.searchIndex, `format ${index.format_version}`);
   }
   return index;
 }

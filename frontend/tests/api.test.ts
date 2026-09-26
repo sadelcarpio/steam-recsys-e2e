@@ -49,19 +49,31 @@ describe("api", () => {
     );
   });
 
-  it("turns API errors into ApiError with the server's message", async () => {
+  it("turns API errors into a Spanish message, keeping the server's in detail", async () => {
     mockFetch(503, { error: "online model not available", detail: "no bundle published yet" });
     const err = await onlineRecommendations([1]).catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(503);
-    expect(err.message).toBe("online model not available: no bundle published yet");
+    expect(err.message).toBe("El modelo aún no está disponible. Inténtalo más tarde.");
+    expect(err.detail).toBe("online model not available: no bundle published yet");
+    mockFetch(500, "not json");
+    expect((await onlineRecommendations([1]).catch((e) => e)).message).toMatch(/HTTP 500/);
+  });
+
+  it("reports network failures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))),
+    );
+    const err = await userRecommendations("1").catch((e) => e);
+    expect([err.status, err.message]).toEqual([0, "No se pudo conectar con el servidor."]);
   });
 
   it("rejects a search index of another format", async () => {
     mockFetch(200, index);
     expect((await searchIndex()).games).toHaveLength(6);
     mockFetch(200, { ...index, format_version: 2 });
-    await expect(searchIndex()).rejects.toThrow("format 2");
+    await expect(searchIndex()).rejects.toMatchObject({ detail: "format 2" });
   });
 
   it("falls back to Steam's CDN image without details", () => {

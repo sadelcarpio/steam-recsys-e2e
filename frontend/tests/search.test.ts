@@ -7,11 +7,13 @@ describe("search", () => {
 
   it("indexes every game", () => expect(search.size).toBe(6));
 
-  it("matches name prefixes, more reviewed games first on similar relevance", () => {
+  it("matches name prefixes, ranked by relevance only", () => {
     const names = search.search("port").map((h) => h.name);
-    expect(new Set(names.slice(0, 2))).toEqual(new Set(["Portal", "Portal 2"]));
-    expect(names).toContain("Portal Knights");
-    expect(names.indexOf("Portal Knights")).toBeLessThan(names.indexOf("Portal Pals Obscure"));
+    expect(names[0]).toBe("Portal"); // the closest match, not the most reviewed ("Portal 2")
+    expect(names).toEqual(expect.arrayContaining(["Portal 2", "Portal Knights"]));
+    // review counts don't reorder equally relevant names
+    const pals = search.search("portal pals").map((h) => h.name);
+    expect(pals[0]).toBe("Portal Pals Obscure");
   });
 
   it("requires every word and tolerates typos in longer words", () => {

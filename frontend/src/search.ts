@@ -1,5 +1,5 @@
 // Game search over the search index, in the browser (MiniSearch): name prefix + fuzzy match,
-// ranked by relevance boosted by the game's review count. Built in a Web Worker
+// ranked by relevance only (too few reviews yet for popularity to mean much). Built in a Web Worker
 // (search.worker.ts) so indexing ~100k names does not block the page.
 import MiniSearch from "minisearch";
 import type { SearchIndex } from "./api";
@@ -24,7 +24,6 @@ export function buildSearch(index: SearchIndex): GameSearch {
       prefix: true,
       fuzzy: (term) => (term.length > 3 ? 0.2 : false),
       combineWith: "AND",
-      boostDocument: (_id, _term, stored) => 1 + Math.log10(1 + Number(stored?.reviews ?? 0)),
     },
   });
   engine.addAll(index.games.map(([game_id, name, reviews]) => ({ game_id, name, reviews })));

@@ -159,9 +159,9 @@ variable "serving_cors_allow_origins" {
 }
 
 variable "serving_reserved_concurrency" {
-  description = "Reserved concurrency of recsys-serving (caps a public URL's cost); -1 = unreserved. Needs an account limit above 10."
+  description = "Reserved concurrency of recsys-serving (caps a public URL's cost); -1 = unreserved. The account limit must exceed it by 10."
   type        = number
-  default     = -1
+  default     = 30
 }
 
 # ---- frontend ------------------------------------------------------------------------------
@@ -174,6 +174,20 @@ variable "frontend_domain_name" {
 
 variable "frontend_certificate_arn" {
   description = "ACM certificate (us-east-1, validated) covering frontend_domain_name."
+  type        = string
+  default     = ""
+}
+
+# ---- cost ----------------------------------------------------------------------------------
+
+variable "budget_monthly_usd" {
+  description = "Monthly cost budget of the account; alerts at 80% actual and 100% forecasted spend."
+  type        = number
+  default     = 50
+}
+
+variable "budget_alert_email" {
+  description = "Where budget alerts go (the BUDGET_ALERT_EMAIL repository variable); empty = no budget."
   type        = string
   default     = ""
 }

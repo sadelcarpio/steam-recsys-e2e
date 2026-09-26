@@ -16,6 +16,7 @@ from steam_training.artifacts import ArtifactStore
 from steam_training.contracts import ARCHITECTURE_VERSION, PADDING_ID
 from steam_training.data import TableSource
 
+from steam_inference.adult import adult_mask
 from steam_inference.config import InferenceSettings
 from steam_inference.contracts import (
     POPULAR_USER_ID,
@@ -67,6 +68,10 @@ def run_inference(
         popular_window_days=settings.popular_window_days,
         description_chars=settings.rerank_description_chars if settings.rerank_enabled else 0,
     )
+    # adult games: never recommended, published or searchable
+    excluded = adult_mask(data.games) if settings.exclude_adult else None
+    if excluded is not None:
+        log.info("excluding %d adult games of %d", int(excluded.sum()), len(data.games))
     candidates = retrieve(
         model,
         data.games,
@@ -75,21 +80,30 @@ def run_inference(
         k=settings.top_k,
         user_batch_size=settings.user_batch_size,
         item_batch_size=settings.item_batch_size,
+        excluded=excluded,
     )
 
     online_bundle = search_index = None
     if bundle_store is not None:
         if store.has_user_tower_numpy(metadata.model_id):
             online_bundle = bundle_store.publish(
-                encode_catalog(build_catalog(data.games, candidates.item_embeddings)),
+                encode_catalog(
+                    build_catalog(
+                        data.games,
+                        candidates.item_embeddings,
+                        keep=~excluded if excluded is not None else None,
+                    )
+                ),
                 model_id=metadata.model_id,
                 generated_at=now,
-                catalog_games=len(data.games),
+                catalog_games=len(data.games) - int(excluded.sum() if excluded is not None else 0),
                 user_tower_key=store.user_tower_numpy_key(metadata.model_id),
             )
             # the frontend's search covers exactly the games the online model can use
             search_index = bundle_store.publish_search_index(
-                encode_search_index(build_search_index(data, model_id=metadata.model_id, now=now))
+                encode_search_index(
+                    build_search_index(data, model_id=metadata.model_id, now=now, excluded=excluded)
+                )
             )
         else:
             log.warning(
@@ -103,7 +117,7 @@ def run_inference(
     failures = 0
     if rank_fn is not None:
         requests = {
-            user: rerank_request(data, candidates, user)
+            user: rerank_request(data, candidates, user, excluded)
             for user in select_rerank_users(data, candidates, settings)
         }
         log.info("reranking %d users with %s", len(requests), settings.bedrock_model_id)
@@ -114,7 +128,7 @@ def run_inference(
             concurrency=settings.rerank_concurrency,
         )
 
-    popular = popular_recommendations(data, k=settings.top_k, now=now)
+    popular = popular_recommendations(data, k=settings.top_k, now=now, excluded=excluded)
     stored = writer.stored_hashes()
     changes = ChangedOnly(
         chain(
@@ -145,6 +159,7 @@ def run_inference(
         skipped=False,
         users=len(data.users),
         catalog_games=len(data.games),
+        adult_games=int(excluded.sum()) if excluded is not None else 0,
         reranked_users=len(reranked),
         rerank_failures=failures,
         written=written,
@@ -181,13 +196,17 @@ class ChangedOnly:
 
 
 def popular_recommendations(
-    data: InferenceData, *, k: int, now: datetime
+    data: InferenceData, *, k: int, now: datetime, excluded: np.ndarray | None = None
 ) -> UserRecommendations | None:
     """The fallback item: the catalog games with the most recent positive reviews (ties: lowest
-    appid), scored by their share of the top game's count. None without recent reviews."""
+    appid), scored by their share of the top game's count, never an `excluded` row (bool per
+    catalog row). None without recent reviews."""
     games = data.games
     game_idx = np.flatnonzero(games.catalog.row_of >= 0)
     rows = games.catalog.row_of[game_idx]
+    if excluded is not None:
+        allowed = ~excluded[rows]
+        game_idx, rows = game_idx[allowed], rows[allowed]
     counts = np.zeros(len(game_idx), dtype=np.int64)
     inside = game_idx < len(data.popular_counts)
     counts[inside] = data.popular_counts[game_idx[inside]]
@@ -225,14 +244,21 @@ def select_rerank_users(
     return positions[order][: settings.rerank_max_users]
 
 
-def rerank_request(data: InferenceData, candidates: Candidates, user: int) -> RerankRequest:
-    """The user's `games_reviewed_positive` (what the user tower saw) + their candidates."""
+def rerank_request(
+    data: InferenceData, candidates: Candidates, user: int, excluded: np.ndarray | None = None
+) -> RerankRequest:
+    """The user's `games_reviewed_positive` (what the user tower saw) + their candidates. Liked
+    `excluded` (adult) games stay out of the prompt, so explanations never name them."""
     games = data.games
     liked = data.users.history[user]
     liked_rows = games.catalog.rows(liked[liked != PADDING_ID])
     rows, _ = candidates.of(user)
     return RerankRequest(
-        liked=[games.describe(int(row)) for row in liked_rows if row >= 0],
+        liked=[
+            games.describe(int(row))
+            for row in liked_rows
+            if row >= 0 and (excluded is None or not excluded[row])
+        ],
         candidates=[games.describe(int(row)) for row in rows],
     )
 

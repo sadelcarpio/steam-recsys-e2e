@@ -41,16 +41,27 @@ def search_index(
     )
 
 
-def build_search_index(data: InferenceData, *, model_id: str, now: datetime) -> SearchIndex:
-    """The run's catalog. `reviews` counts the reviews loaded by this run (every user's when
-    MAX_USERS=0): a popularity signal for ranking search results, not Steam's total."""
+def build_search_index(
+    data: InferenceData,
+    *,
+    model_id: str,
+    now: datetime,
+    excluded: np.ndarray | None = None,
+) -> SearchIndex:
+    """The run's catalog, minus the `excluded` rows (bool per row). `reviews` counts the
+    reviews loaded by this run (every user's when MAX_USERS=0), not Steam's total."""
     games = data.games
     reviewed = data.reviews.game_idx[data.reviews.game_idx >= 0]
     per_idx = np.bincount(reviewed, minlength=len(games.catalog.row_of))
     game_idx = games.catalog.items.game_idx.astype(np.int64)
     reviews = per_idx[np.clip(game_idx, 0, len(per_idx) - 1)] * (game_idx < len(per_idx))
+    rows = np.flatnonzero(~excluded) if excluded is not None else np.arange(len(games))
     return search_index(
-        games.game_id, [str(n) for n in games.name], reviews, model_id=model_id, now=now
+        games.game_id[rows],
+        [str(n) for n in games.name[rows]],
+        reviews[rows],
+        model_id=model_id,
+        now=now,
     )
 
 

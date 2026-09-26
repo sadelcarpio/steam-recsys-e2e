@@ -13,9 +13,9 @@ describe("cards", () => {
     );
     expect(first.querySelector("h3")?.textContent).toBe("#1 Portal 2");
     expect([...first.querySelectorAll(".tags li")].map((li) => li.textContent)).toEqual([
-      "Action",
-      "Adventure",
-      "Puzzle",
+      "Acción",
+      "Aventura",
+      "Puzzle", // not a Steam genre: shown as is
       "$9.99",
     ]);
     expect(cards[1].querySelector(".explanation")).toBeNull();
@@ -39,29 +39,30 @@ describe("cards", () => {
 
   it("shows an empty state", () => {
     const grid = cardGrid({ ...personalized, recommendations: [] }, () => {});
-    expect(grid.textContent).toBe("No recommendations.");
+    expect(grid.textContent).toBe("No hay recomendaciones.");
   });
 
   it("describes where the list comes from", () => {
-    expect(responseSummary(personalized)).toMatch(/reranked and explained by an LLM/);
+    expect(responseSummary(personalized)).toMatch(/reordenadas y explicadas por un LLM/);
+    expect(responseSummary(personalized)).toMatch(/septiembre de 2026/);
     expect(responseSummary({ ...personalized, source: "popular" })).toMatch(
-      /No recommendations for this player/,
+      /^Aún no hay recomendaciones para este jugador/,
     );
     expect(responseSummary({ ...personalized, source: "popular", user_id: null })).toMatch(
-      /^Most popular/,
+      /^Juegos más populares/,
     );
-    expect(responseSummary({ ...personalized, source: "online" })).toMatch(/games you picked/);
+    expect(responseSummary({ ...personalized, source: "online" })).toMatch(/juegos que elegiste/);
   });
 
   it("renders details with facts and a Steam link", () => {
     const view = detailsView(personalized.recommendations[0].details!, "why");
     expect(view.querySelector("h2")?.textContent).toBe("Portal 2");
     expect([...view.querySelectorAll("dt")].map((d) => d.textContent)).toEqual([
-      "Released",
-      "Price",
-      "Developer",
-      "Publisher",
-      "Genres",
+      "Lanzamiento",
+      "Precio",
+      "Desarrollador",
+      "Editor",
+      "Géneros",
     ]);
     expect(view.querySelector("a")?.getAttribute("href")).toBe(
       "https://store.steampowered.com/app/620/",
@@ -70,7 +71,7 @@ describe("cards", () => {
 
   it("labels prices", () => {
     expect(priceLabel(undefined)).toBeNull();
-    expect(priceLabel({ game_id: 1, name: "x", is_free: true })).toBe("Free");
+    expect(priceLabel({ game_id: 1, name: "x", is_free: true })).toBe("Gratis");
     expect(priceLabel({ game_id: 1, name: "x" })).toBeNull();
   });
 });

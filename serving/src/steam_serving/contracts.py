@@ -79,7 +79,8 @@ class OnlineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     # Steam appids the user liked, most recent first (the order feeds the model's history).
-    liked_game_ids: list[StrictInt] = Field(min_length=1)
+    # max_length bounds the parsing work of a huge body; MAX_LIKED_GAMES is the real limit.
+    liked_game_ids: list[StrictInt] = Field(min_length=1, max_length=1000)
     limit: StrictInt | None = None
     details: StrictBool | None = None
 

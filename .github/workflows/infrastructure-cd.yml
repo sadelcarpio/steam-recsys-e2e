@@ -38,6 +38,8 @@ jobs:
       # Optional custom domain of the frontend (repository variables; unset = *.cloudfront.net)
       TF_VAR_frontend_domain_name: ${{ vars.FRONTEND_DOMAIN_NAME }}
       TF_VAR_frontend_certificate_arn: ${{ vars.FRONTEND_CERTIFICATE_ARN }}
+      # Optional monthly cost alert (unset = no budget)
+      TF_VAR_budget_alert_email: ${{ vars.BUDGET_ALERT_EMAIL }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3

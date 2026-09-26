@@ -12,7 +12,9 @@ locals {
   # AWS managed policies (stable ids).
   cache_policy_caching_optimized = "658327ea-f89d-4fab-a63d-7e88639e58f6"
   origin_request_all_except_host = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
-  serving_url_host               = split("/", aws_lambda_function_url.serving.function_url)[2]
+  # HSTS, X-Content-Type-Options, X-Frame-Options SAMEORIGIN, Referrer-Policy, X-XSS-Protection
+  response_headers_security = "67f7725c-6f97-4210-82d7-5512b31e9d03" # SecurityHeadersPolicy
+  serving_url_host          = split("/", aws_lambda_function_url.serving.function_url)[2]
 }
 
 # ---- Bucket --------------------------------------------------------------------------------
@@ -138,9 +140,9 @@ resource "aws_cloudfront_function" "frontend_strip_prefix" {
 
 # ---- Cache ---------------------------------------------------------------------------------
 
-# Cached as long as the origin's Cache-Control says (nothing without one), keyed by path + query
-# string only. No headers in the key: they would be forwarded, and the Function URL and S3 need
-# their own Host.
+# Cached as long as the origin's Cache-Control says (nothing without one). No headers in the
+# key: they would be forwarded, and the Function URL and S3 need their own Host. Query strings:
+# only the API's own (`limit`, `details`), so `?x=<random>` can't bypass the cache.
 resource "aws_cloudfront_cache_policy" "frontend_origin_controlled" {
   name        = "${var.project}-frontend-origin-controlled"
   min_ttl     = 0
@@ -156,7 +158,31 @@ resource "aws_cloudfront_cache_policy" "frontend_origin_controlled" {
       header_behavior = "none"
     }
     query_strings_config {
-      query_string_behavior = "all"
+      query_string_behavior = "whitelist"
+      query_strings {
+        items = ["limit", "details"]
+      }
+    }
+  }
+}
+
+# The search index: one object, no query string in the key.
+resource "aws_cloudfront_cache_policy" "frontend_data" {
+  name        = "${var.project}-frontend-data"
+  min_ttl     = 0
+  default_ttl = 0
+  max_ttl     = 86400
+  parameters_in_cache_key_and_forwarded_to_origin {
+    enable_accept_encoding_gzip   = false
+    enable_accept_encoding_brotli = false
+    cookies_config {
+      cookie_behavior = "none"
+    }
+    headers_config {
+      header_behavior = "none"
+    }
+    query_strings_config {
+      query_string_behavior = "none"
     }
   }
 }
@@ -197,12 +223,13 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   default_cache_behavior {
-    target_origin_id       = "app"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
-    cache_policy_id        = local.cache_policy_caching_optimized
+    target_origin_id           = "app"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = true
+    cache_policy_id            = local.cache_policy_caching_optimized
+    response_headers_policy_id = local.response_headers_security
     function_association {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.frontend_spa.arn
@@ -210,13 +237,14 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   ordered_cache_behavior {
-    path_pattern           = "/data/*"
-    target_origin_id       = "search"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = false # stored gzipped
-    cache_policy_id        = aws_cloudfront_cache_policy.frontend_origin_controlled.id
+    path_pattern               = "/data/*"
+    target_origin_id           = "search"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = false # stored gzipped
+    cache_policy_id            = aws_cloudfront_cache_policy.frontend_data.id
+    response_headers_policy_id = local.response_headers_security
     function_association {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.frontend_strip_prefix.arn
@@ -226,14 +254,15 @@ resource "aws_cloudfront_distribution" "frontend" {
   # GETs are cached as the Lambda's Cache-Control says (query string in the key); POST
   # /recommendations answers no-store.
   ordered_cache_behavior {
-    path_pattern             = "/api/*"
-    target_origin_id         = "api"
-    viewer_protocol_policy   = "redirect-to-https"
-    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods           = ["GET", "HEAD"]
-    compress                 = true
-    cache_policy_id          = aws_cloudfront_cache_policy.frontend_origin_controlled.id
-    origin_request_policy_id = local.origin_request_all_except_host
+    path_pattern               = "/api/*"
+    target_origin_id           = "api"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = true
+    cache_policy_id            = aws_cloudfront_cache_policy.frontend_origin_controlled.id
+    origin_request_policy_id   = local.origin_request_all_except_host
+    response_headers_policy_id = local.response_headers_security
     function_association {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.frontend_strip_prefix.arn
