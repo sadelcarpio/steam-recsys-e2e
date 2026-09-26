@@ -1,5 +1,8 @@
 // The games picked on the discover page, most recent first (the order the model reads the
-// history in). Remembered in localStorage when available: a convenience, never required.
+// history in), at most `max`. Remembered in localStorage when available: a convenience, never
+// required.
+import { MAX_LIKED_GAMES } from "./api";
+
 const KEY = "recsys.liked";
 
 export interface LikedGame {
@@ -10,16 +13,27 @@ export interface LikedGame {
 export class LikedGames {
   games: LikedGame[];
 
-  constructor(private readonly storage: Storage | null = safeStorage()) {
-    this.games = this.load();
+  constructor(
+    private readonly storage: Storage | null = safeStorage(),
+    readonly max: number = MAX_LIKED_GAMES,
+  ) {
+    this.games = this.load().slice(0, max);
   }
 
-  add(game: LikedGame): void {
+  get full(): boolean {
+    return this.games.length >= this.max;
+  }
+
+  /** false (and nothing changes) when the list is full and `game` is not in it yet. */
+  add(game: LikedGame): boolean {
+    const present = this.games.some((g) => g.game_id === game.game_id);
+    if (this.full && !present) return false;
     this.games = [
       { game_id: game.game_id, name: game.name },
       ...this.games.filter((g) => g.game_id !== game.game_id),
     ];
     this.save();
+    return true;
   }
 
   remove(gameId: number): void {

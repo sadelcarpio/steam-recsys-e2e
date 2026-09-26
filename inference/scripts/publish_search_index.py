@@ -2,11 +2,16 @@
 is already in S3, without an inference run. Review counts per game come from one Athena query
 over the `interactions` mart (as a run would count them with MAX_USERS=0).
 
+Adult games (steam_inference.adult: name or "Sexual Content" / "Nudity" genre from the
+`game_details` mart) are left out of the index and, when the catalog still has them, the
+catalog is republished without them too (so POST /recommendations can't return them). Batch
+recommendations already in DynamoDB are only cleaned by the next inference run.
+
     uv run python scripts/publish_search_index.py --dry-run   # writes ./games.json.gz only
     uv run python scripts/publish_search_index.py             # uploads to s3://model-artifacts-<acct>/
 
-Needs s3:GetObject on serving/online/*, Athena on the workgroup and s3:PutObject on the index key.
-The next inference run overwrites the index with the same content (and fresher counts).
+Needs s3:GetObject on serving/online/*, Athena on the workgroup and s3:PutObject on
+serving/online/* and the index key. The next inference run rewrites both with the same rules.
 """
 
 from __future__ import annotations
@@ -22,19 +27,24 @@ from datetime import UTC, datetime
 import boto3
 import numpy as np
 
+from steam_inference.adult import ADULT_GENRES, ADULT_NAME
 from steam_inference.contracts import OnlineBundleManifest
-from steam_inference.online import MANIFEST_NAME, S3BundleStore
+from steam_inference.online import MANIFEST_NAME, S3BundleStore, encode_catalog, filter_catalog
 from steam_inference.search import encode_search_index, index_from_catalog
 
 log = logging.getLogger("publish_search_index")
 
 REVIEWS_QUERY = "SELECT game_idx, count(*) AS reviews FROM {database}.interactions GROUP BY 1"
+ADULT_GENRE_QUERY = (
+    "SELECT DISTINCT game_id FROM {database}.game_details "
+    "WHERE cardinality(filter(game_genres, g -> g IN ({genres}))) > 0"
+)
 
 
-def reviews_per_game_idx(athena, s3, *, database: str, work_group: str) -> dict[int, int]:
-    execution = athena.start_query_execution(
-        QueryString=REVIEWS_QUERY.format(database=database), WorkGroup=work_group
-    )["QueryExecutionId"]
+def athena_rows(athena, s3, query: str, *, work_group: str) -> list[dict[str, str]]:
+    execution = athena.start_query_execution(QueryString=query, WorkGroup=work_group)[
+        "QueryExecutionId"
+    ]
     while True:
         status = athena.get_query_execution(QueryExecutionId=execution)["QueryExecution"]
         state = status["Status"]["State"]
@@ -43,12 +53,16 @@ def reviews_per_game_idx(athena, s3, *, database: str, work_group: str) -> dict[
         time.sleep(2)
     if state != "SUCCEEDED":
         raise RuntimeError(f"Athena query {state}: {status['Status'].get('StateChangeReason')}")
-    # The result CSV (one row per game) is faster to read than paginated GetQueryResults.
+    # The result CSV is faster to read than paginated GetQueryResults.
     location = status["ResultConfiguration"]["OutputLocation"]
     bucket, key = location.removeprefix("s3://").split("/", 1)
     body = s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode()
-    rows = csv.DictReader(io.StringIO(body))
-    return {int(r["game_idx"]): int(r["reviews"]) for r in rows if r["game_idx"]}
+    return list(csv.DictReader(io.StringIO(body)))
+
+
+def catalog_names(arrays: dict[str, np.ndarray]) -> list[str]:
+    utf8, offsets = arrays["item_name_utf8"].tobytes(), arrays["item_name_offsets"]
+    return [utf8[offsets[i] : offsets[i + 1]].decode() for i in range(len(offsets) - 1)]
 
 
 def main() -> None:
@@ -65,6 +79,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     s3 = boto3.client("s3", region_name=args.region)
+    athena = boto3.client("athena", region_name=args.region)
     if args.bucket:
         bucket = args.bucket
     else:
@@ -80,19 +95,41 @@ def main() -> None:
         arrays = {name: npz[name] for name in npz.files}
     log.info("catalog of model %s: %d games", manifest.model_id, manifest.catalog_games)
 
-    reviews: dict[int, int] = {}
-    if not args.no_reviews:
-        per_idx = reviews_per_game_idx(
-            boto3.client("athena", region_name=args.region),
+    genres = ", ".join(f"'{g}'" for g in sorted(ADULT_GENRES))
+    adult_genre_ids = {
+        int(r["game_id"])
+        for r in athena_rows(
+            athena,
             s3,
-            database=args.database,
+            ADULT_GENRE_QUERY.format(database=args.database, genres=genres),
             work_group=args.work_group,
         )
+    }
+    names = catalog_names(arrays)
+    adult = np.array(
+        [
+            int(g) in adult_genre_ids or bool(ADULT_NAME.search(n))
+            for g, n in zip(arrays["item_game_id"], names, strict=True)
+        ]
+    )
+    log.info("adult games in the catalog: %d", int(adult.sum()))
+    catalog_changed = bool(adult.any())
+    if catalog_changed:
+        arrays = filter_catalog(arrays, ~adult)
+
+    reviews: dict[int, int] = {}
+    if not args.no_reviews:
+        rows = athena_rows(
+            athena,
+            s3,
+            REVIEWS_QUERY.format(database=args.database),
+            work_group=args.work_group,
+        )
+        per_idx = {int(r["game_idx"]): int(r["reviews"]) for r in rows if r["game_idx"]}
         reviews = {
             int(game_id): per_idx.get(int(idx), 0)
             for game_id, idx in zip(arrays["item_game_id"], arrays["item_game_idx"], strict=True)
         }
-        log.info("review counts for %d games", sum(1 for n in reviews.values() if n))
 
     index = index_from_catalog(arrays, reviews, model_id=manifest.model_id, now=datetime.now(UTC))
     body = encode_search_index(index)
@@ -100,10 +137,19 @@ def main() -> None:
     if args.dry_run:
         with open("games.json.gz", "wb") as f:
             f.write(body)
-        log.info("dry run: wrote games.json.gz; top 5: %s", index.games[:5])
-    else:
-        store = S3BundleStore(bucket, prefix, region=args.region, search_key=args.search_key)
-        log.info("published %s", store.publish_search_index(body))
+        log.info("dry run: wrote games.json.gz, catalog not republished")
+        return
+    store = S3BundleStore(bucket, prefix, region=args.region, search_key=args.search_key)
+    if catalog_changed:
+        uri = store.publish(
+            encode_catalog(arrays),
+            model_id=manifest.model_id,
+            generated_at=manifest.generated_at,
+            catalog_games=len(arrays["item_game_id"]),
+            user_tower_key=manifest.user_tower_key,
+        )
+        log.info("republished the catalog without adult games: %s", uri)
+    log.info("published %s", store.publish_search_index(body))
 
 
 if __name__ == "__main__":

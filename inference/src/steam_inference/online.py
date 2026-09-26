@@ -31,15 +31,35 @@ MANIFEST_NAME = "manifest.json"
 SEARCH_INDEX_NAME = "games.json"
 
 
-def build_catalog(games: Games, item_embeddings: np.ndarray) -> dict[str, np.ndarray]:
+def build_catalog(
+    games: Games, item_embeddings: np.ndarray, keep: np.ndarray | None = None
+) -> dict[str, np.ndarray]:
+    """`keep`: bool per catalog row (default all); the other rows are left out, so the online
+    endpoint can neither use nor recommend them."""
+    rows = np.flatnonzero(keep) if keep is not None else np.arange(len(games))
     arrays = {
-        "item_embeddings": np.ascontiguousarray(item_embeddings, dtype=np.float32),
-        "item_game_id": games.game_id.astype(np.int64),
-        "item_game_idx": games.catalog.items.game_idx.astype(np.int64),
-        **_names(games.name),
+        "item_embeddings": np.ascontiguousarray(item_embeddings[rows], dtype=np.float32),
+        "item_game_id": games.game_id[rows].astype(np.int64),
+        "item_game_idx": games.catalog.items.game_idx[rows].astype(np.int64),
+        **_names(games.name[rows]),
     }
     assert tuple(arrays) == ONLINE_BUNDLE_ARRAYS
     return arrays
+
+
+def filter_catalog(arrays: dict[str, np.ndarray], keep: np.ndarray) -> dict[str, np.ndarray]:
+    """The rows of a built / published catalog where `keep` (bool per row) is true."""
+    utf8, offsets = arrays["item_name_utf8"].tobytes(), arrays["item_name_offsets"]
+    rows = np.flatnonzero(keep)
+    names = np.array([utf8[offsets[i] : offsets[i + 1]].decode() for i in rows], dtype=object)
+    out = {
+        "item_embeddings": np.ascontiguousarray(arrays["item_embeddings"][rows]),
+        "item_game_id": arrays["item_game_id"][rows],
+        "item_game_idx": arrays["item_game_idx"][rows],
+        **_names(names),
+    }
+    assert tuple(out) == ONLINE_BUNDLE_ARRAYS
+    return out
 
 
 def _names(names: np.ndarray) -> dict[str, np.ndarray]:

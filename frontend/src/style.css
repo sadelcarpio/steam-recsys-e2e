@@ -311,3 +311,7 @@ dialog > .error {
   line-height: 1.6;
   background: var(--surface);
 }
+.count {
+  margin: -0.75rem 0 1.25rem;
+  font-size: 0.9rem;
+}

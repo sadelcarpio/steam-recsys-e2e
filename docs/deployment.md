@@ -367,10 +367,14 @@ curl --aws-sigv4 "aws:amz:us-east-1:lambda" --user "$AWS_ACCESS_KEY_ID:$AWS_SECR
   -H "x-amz-security-token: $AWS_SESSION_TOKEN" "${URL}popular"
 ```
 
-**Concurrency.** The account's Lambda limit is 10 concurrent executions by default, shared
-with `list-partition-game-ids`. A public URL under load can throttle the pipeline's first
-step. Before a public demo, request a higher `Concurrent executions` quota (Service Quotas →
-AWS Lambda), then set `serving_reserved_concurrency` (e.g. 5) to cap the function.
+**Concurrency.** `serving_reserved_concurrency` (default 30) caps the function, and with it
+the cost of a public URL or site. The account limit must exceed it by 10 (unreserved
+minimum). New accounts start at 10 concurrent executions: request more first (Service Quotas
+→ AWS Lambda → `Concurrent executions`), or set the variable to -1 (unreserved).
+
+**Budget alert (optional).** Set the repository variable `BUDGET_ALERT_EMAIL` and apply the
+*infrastructure CD*: an account-wide monthly budget (`budget_monthly_usd`, default $50) emails
+at 80% of actual spend and at 100% of the forecast. AWS asks the address to confirm first.
 
 ## 12. Frontend
 

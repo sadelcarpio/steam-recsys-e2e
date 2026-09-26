@@ -1,12 +1,12 @@
 # Frontend
 
-Static web app over the serving API: search Steam games, pick the ones you liked, and get
-recommendations as game cards. Or open a Steam user's precomputed recommendations at
+Static web app over the serving API, in Spanish: search Steam games, pick up to 5 you liked,
+and get recommendations as game cards. Or open a Steam user's precomputed recommendations at
 `/u/<steam id>`. No login.
 
 | Page          | What it does                                                        | API                                          |
 |---------------|---------------------------------------------------------------------|----------------------------------------------|
-| `/`           | Search, pick liked games, **Recommend**; popular games before that  | `POST /api/recommendations`, `GET /api/popular` |
+| `/`           | Search, pick up to 5 liked games (the model reads the last 5), **Recomendar** | `POST /api/recommendations`         |
 | `/u/<id>`     | A user's recommendations (popular games for unknown users)          | `GET /api/users/<id>/recommendations`        |
 | card click    | Game details dialog + Steam store link                              | details come with the list (`details=true`)  |
 
@@ -26,7 +26,11 @@ Browser ──► CloudFront
 - **Search runs in the browser.** Each inference run writes `games.json` (gzipped: the ~180k
   games of the online catalog as `[appid, name, reviews]`). A Web Worker downloads it once
   and indexes it with [MiniSearch](https://lucaong.github.io/minisearch/) (prefix + typo
-  tolerant, more reviewed games first). There is no search server.
+  tolerant, ranked by relevance only). There is no search server.
+- **No adult games.** Inference leaves them out of the index, the catalog and every
+  recommendation list (`inference/src/steam_inference/adult.py`).
+- **Spanish UI.** Every text the app renders is in `src/i18n.ts`, including Steam's genre
+  names. Game names, descriptions and LLM explanations are shown as the data has them.
 - Images come straight from Steam's CDN (`header_image`).
 
 Infrastructure: `infrastructure/frontend.tf` (+ the CloudFront Functions in

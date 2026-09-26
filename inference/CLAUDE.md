@@ -30,12 +30,15 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `search.py`: the frontend's search index (`build_search_index` / `index_from_catalog`:
     catalog games as [appid, name, reviews], `encode_search_index`: gzipped JSON), published
     with the catalog
+  - `adult.py`: `adult_mask` / `is_adult` (Steam's "Sexual Content" / "Nudity" genres or an
+    explicit word in the name)
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
   - `__main__.py`: SageMaker Processing entry point (`python -m steam_inference`)
 - `scripts/publish_search_index.py`: publishes the search index from the catalog already in
-  S3 (+ review counts from one Athena query), without an inference run
+  S3 (+ review counts from one Athena query), without an inference run; drops adult games
+  from both (republishing the catalog when it had any)
 - `tests/`: `conftest.py` builds synthetic marts, a random-init model saved as champion
   (moto S3 + DynamoDB) and a fake LLM. There are no AWS calls. `test_serving_contract.py`
   reads and serves the written items with `steam_serving` (an editable dev dependency on
@@ -49,6 +52,10 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
 - A missing model (no `models/<MODEL_ID>/metadata.json`) is a successful skip that writes
   nothing. An architecture mismatch fails loudly.
 - Never recommend a game the user already reviewed (positive or negative).
+- Adult games (`adult_mask`, on unless `EXCLUDE_ADULT=false`) never reach anything published:
+  masked in retrieval (so never candidates, reranked or explained), dropped from the popular
+  item, the online catalog (`build_catalog(keep=...)`) and the search index, and left out of
+  prompts. A new output must apply the same mask.
 - Only changed items are written: `UserRecommendations.content_hash` covers what the user
   sees, but not the scores or the time. A new visible field must go into the hash, or changes
   to it will never be written. Deletes of users that are gone happen only on full runs

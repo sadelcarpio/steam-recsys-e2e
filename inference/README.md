@@ -76,7 +76,13 @@ steam_marts (Iceberg, pyiceberg)
    noncurrent-version rule. When the model has no `user_tower.npz` (it was saved before the
    export existed), nothing is published and the previous manifest stays; run
    `python -m steam_training export --model-id champion` (training README).
-8. **Search index.** With the online catalog (same games, same condition), the run writes
+8. **Adult games** (`adult.py`) are excluded from everything the run publishes: retrieval
+   (never a candidate, so never recommended or explained), the popularity fallback, the
+   online catalog and the search index, and liked adult games stay out of LLM prompts. A game
+   is adult when it has Steam's "Sexual Content" / "Nudity" genre or an explicit word in its
+   name (hentai, nsfw, porn…): the genres alone miss most of them, and `required_age` mostly
+   marks violence. About 2,500 of 176k games today. `EXCLUDE_ADULT=false` turns it off.
+9. **Search index.** With the online catalog (same games, same condition), the run writes
    `s3://model-artifacts-<acct>/serving/search/games.json` (`contracts.SearchIndex`): every
    catalog game as `[appid, name, reviews]`, most reviewed first, where `reviews` counts the
    reviews loaded by this run. Stored gzipped with `Content-Encoding: gzip` (about 2-3 MB for
@@ -166,6 +172,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `GAME_DETAILS_TABLE` / `SYNC_GAME_DETAILS` | `game-details` / true | Insert-only game details |
 | `POPULAR_WINDOW_DAYS` | 90 | Window of the popularity fallback |
 | `ONLINE_BUNDLE_ENABLED` / `ONLINE_BUNDLE_PREFIX` | true / `serving/online` | Online catalog + manifest (dry runs: `online/` next to `OUTPUT_PATH`) |
+| `EXCLUDE_ADULT` | true | Leave adult games out of recommendations, the popular list, the online catalog and search (`adult.py`) |
 | `SEARCH_INDEX_KEY` | `serving/search/games.json` | Frontend search index, written with the online catalog (dry runs: `online/games.json.gz`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user |

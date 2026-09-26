@@ -205,6 +205,7 @@ class InferenceSummary(_Frozen):
     reason: str = ""
     users: int = 0
     catalog_games: int = 0
+    adult_games: int = 0  # excluded from everything published (adult.py)
     reranked_users: int = 0
     rerank_failures: int = 0
     written: int = 0

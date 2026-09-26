@@ -69,6 +69,8 @@ class InferenceSettings(BaseSettings):
     online_bundle_prefix: str = "serving/online"
     # Game search index of the frontend, published with the online catalog (same bucket).
     search_index_key: str = "serving/search/games.json"
+    # Adult games (adult.py): never recommended, in the popular list, the online catalog or search.
+    exclude_adult: bool = True
     # Local file: write the items as JSON lines there instead of DynamoDB (dry runs).
     output_path: str | None = None
 

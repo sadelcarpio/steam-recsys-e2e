@@ -108,8 +108,8 @@ resource "aws_lambda_function" "serving" {
   # 1 GB: the online bundle (~28 MB) stays in memory, and CPU scales with memory (numpy).
   memory_size = 1024
   timeout     = 15
-  # -1 = unreserved. The default account limit (10 concurrent executions) leaves no room to
-  # reserve any: request more first (docs/deployment.md, step 11).
+  # Caps the cost of a public URL / site. Needs an account limit above it + 10 (this account has
+  # 400; new accounts start at 10: docs/deployment.md, step 11). -1 = unreserved.
   reserved_concurrent_executions = var.serving_reserved_concurrency
 
   environment {

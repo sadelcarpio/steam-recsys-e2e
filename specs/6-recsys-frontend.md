@@ -65,6 +65,14 @@ Browser ──► CloudFront
 Optional: repository variables `FRONTEND_DOMAIN_NAME` + `FRONTEND_CERTIFICATE_ARN` (ACM, us-east-1) feed the
 infrastructure CD; DNS points a CNAME / alias at the distribution.
 
+### Revisions after the first deploy
+
+- UI in Spanish (everything the app renders; game data as is), at most 5 liked games (the model's history
+  length), search ranked by relevance only and no popular list on the landing page.
+- Adult games excluded from search, the online catalog and all recommendations (inference `adult.py`).
+- Hardening: API cache key limited to `limit` / `details`, security headers, reserved concurrency 30, optional
+  monthly budget alert; serving rejects non-ASCII digits (was a 500) and bodies over 1000 liked games.
+
 ### Out of scope
 
 User login, saving liked lists server-side.

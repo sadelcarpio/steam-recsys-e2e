@@ -6,6 +6,7 @@ import {
   type Recommendation,
   type RecommendationsResponse,
 } from "./api";
+import { formatDate, genreName, t } from "./i18n";
 
 type Child = Node | string | null | undefined | false;
 
@@ -28,7 +29,7 @@ export function storeUrl(gameId: number): string {
 
 export function priceLabel(details?: GameDetails): string | null {
   if (!details) return null;
-  if (details.is_free) return "Free";
+  if (details.is_free) return t.free;
   if (details.price == null) return null;
   return `$${details.price.toFixed(2)}`;
 }
@@ -46,7 +47,7 @@ function tags(details?: GameDetails): HTMLElement | null {
   return h(
     "ul",
     { class: "tags" },
-    ...genres.map((g) => h("li", {}, g)),
+    ...genres.map((g) => h("li", {}, genreName(g))),
     price && h("li", { class: "price" }, price),
   );
 }
@@ -75,33 +76,29 @@ export function cardGrid(
   response: RecommendationsResponse,
   onOpen: (rec: Recommendation) => void,
 ): HTMLElement {
-  if (!response.recommendations.length) return h("p", { class: "empty" }, "No recommendations.");
+  if (!response.recommendations.length) return h("p", { class: "empty" }, t.noRecommendations);
   return h("div", { class: "grid" }, ...response.recommendations.map((r) => gameCard(r, onOpen)));
 }
 
 export function responseSummary(response: RecommendationsResponse): string {
-  const when = new Date(response.generated_at).toLocaleDateString();
+  const when = formatDate(response.generated_at);
   switch (response.source) {
     case "personalized":
-      return response.reranked
-        ? `Personalized for this player, reranked and explained by an LLM (${when}).`
-        : `Personalized for this player by the two-tower model (${when}).`;
+      return response.reranked ? t.summaryReranked(when) : t.summaryPersonalized(when);
     case "online":
-      return `Computed now from the games you picked (model ${response.model_id}).`;
+      return t.summaryOnline(response.model_id);
     case "popular":
-      return response.user_id
-        ? `No recommendations for this player yet: showing the most popular games (${when}).`
-        : `Most popular games in recent reviews (${when}).`;
+      return response.user_id ? t.summaryFallback(when) : t.summaryPopular(when);
   }
 }
 
 export function detailsView(details: GameDetails, explanation?: string): HTMLElement {
   const facts: [string, string | undefined][] = [
-    ["Released", details.release_date],
-    ["Price", priceLabel(details) ?? undefined],
-    ["Developer", details.developers?.join(", ")],
-    ["Publisher", details.publishers?.join(", ")],
-    ["Genres", details.genres?.join(", ")],
+    [t.released, details.release_date],
+    [t.price, priceLabel(details) ?? undefined],
+    [t.developer, details.developers?.join(", ")],
+    [t.publisher, details.publishers?.join(", ")],
+    [t.genres, details.genres?.map(genreName).join(", ")],
   ];
   return h(
     "div",
@@ -115,10 +112,6 @@ export function detailsView(details: GameDetails, explanation?: string): HTMLEle
       {},
       ...facts.filter(([, v]) => v).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v as string)]),
     ),
-    h(
-      "a",
-      { href: storeUrl(details.game_id), target: "_blank", rel: "noopener" },
-      "View on Steam ↗",
-    ),
+    h("a", { href: storeUrl(details.game_id), target: "_blank", rel: "noopener" }, t.viewOnSteam),
   );
 }
