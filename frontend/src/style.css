@@ -90,6 +90,14 @@ header {
   display: flex;
   gap: 0.5rem;
 }
+#user-form input {
+  flex: 1 1 auto;
+  width: 14rem;
+}
+#user-form button,
+.actions button {
+  white-space: nowrap;
+}
 
 main {
   max-width: 1200px;
@@ -159,10 +167,9 @@ h1 {
 
 .liked {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.75rem;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
   margin: 1rem 0 1.5rem;
 }
 .chips {
@@ -314,4 +321,19 @@ dialog > .error {
 .count {
   margin: -0.75rem 0 1.25rem;
   font-size: 0.9rem;
+}
+
+@media (max-width: 600px) {
+  #user-form {
+    width: 100%;
+  }
+  #user-form input {
+    width: auto;
+  }
+  .liked {
+    align-items: stretch;
+  }
+  .actions button {
+    flex: 1;
+  }
 }
