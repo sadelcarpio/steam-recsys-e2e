@@ -20,6 +20,11 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
 - `var.serving_auth_type` comes from the infrastructure CD input (`TF_VAR_serving_auth_type`),
   so a plan without it falls back to `AWS_IAM`. A public URL (`NONE`) needs both
   `aws_lambda_permission`s (`InvokeFunctionUrl` + `InvokeFunction` via the function URL).
+- `frontend.tf` owns the only bucket policy of `model-artifacts` (CloudFront reads
+  `serving/search/*`): add statements there rather than a second `aws_s3_bucket_policy`. The
+  CloudFront Functions (`cloudfront/*.js`, runtime `cloudfront-js-2.0`, ES5-ish) are tested by
+  `frontend/tests/cloudfront.test.ts`. The `/api/*` cache policy must not key on headers (they
+  would be forwarded, and the Function URL needs its own `Host`).
 - The state machine definition is HCL (`local.pipeline_definition` in `orchestration.tf`):
   `ListPartitionGameIds -> Scrape -> Transform -> CheckChampion -> HasChampion -> Infer |
   NoChampion`. `CheckChampion` lists `models/champion/metadata.json` (written last by a

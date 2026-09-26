@@ -163,3 +163,17 @@ variable "serving_reserved_concurrency" {
   type        = number
   default     = -1
 }
+
+# ---- frontend ------------------------------------------------------------------------------
+
+variable "frontend_domain_name" {
+  description = "Custom domain of the frontend (e.g. recs.example.com); empty = the *.cloudfront.net domain. Point a CNAME / alias record at frontend_cloudfront_domain."
+  type        = string
+  default     = ""
+}
+
+variable "frontend_certificate_arn" {
+  description = "ACM certificate (us-east-1, validated) covering frontend_domain_name."
+  type        = string
+  default     = ""
+}

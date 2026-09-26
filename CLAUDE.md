@@ -10,6 +10,7 @@ component, described below:
 | Training       | @training       | Responsible of taking the processed Iceberg tables from the ETL in order to train the recommender model (currently only retrieval since there is not enough user signal). Output artifacts are the User and Item tower.                                                                                                                                                                                                                                              |
 | Inference      | @inference      | Includes the Inference Pipeline which reads the necessary features from the Iceberg Tables, runs the two tower model and reranks the top N items with an LLM, including a natural text paragraph on why the recommendation was chosen                                                                                                                                                                                                                                |
 | Serving        | @serving        | Lightweight lambda app to serve the final recommender system. Fetch the recommendations for each user directly from DynamoDB's `game-explainable-recommendations` table (popularity fallback for unknown users), enriched with the `game-details` table, behind a Lambda Function URL (auth `AWS_IAM` or `NONE`)                                                                                                                                                                         |
+| Frontend       | @frontend       | Static web app (Vite + TypeScript) on S3 behind CloudFront: in-browser game search over a search index written by inference, liked games → online recommendations, `/u/<steam id>` for a user's precomputed recommendations. CloudFront routes `/api/*` to the serving Function URL (signed with OAC, so it can stay `AWS_IAM`) and `/data/*` to the search index                                                    |
 | Infrastructure | @infrastructure | Necessary AWS infrastructure (terraform), including AWS Lambda for serving, EventBridge to schedule the Step Function to handle the full ingestion to recs pipeline. Since doing batch retrieval recommendation recomputation triggers as new data arrives in batch.                                                                                                                                                                                                 |
 
 ## General Outlines
@@ -101,6 +102,9 @@ Order: EventBridge → 1 → 2 → 3 → 4
   tower over the online catalog's item embeddings, exact top K) → recommendations → User
 - No LB in front of the Lambda; the diagram shows the Lambda called directly (Function URL, auth
   `AWS_IAM` or `NONE`, chosen in the infrastructure CD)
+- Browser → CloudFront → S3 `recsys-frontend-<account-id>` (the app), `/data/*` → S3
+  `model-artifacts-<account-id>/serving/search/games.json` (search index, written by inference with
+  the online catalog), `/api/*` → Lambda `recsys-serving` (Function URL, OAC-signed)
 
 ## Not shown (deliberately)
 

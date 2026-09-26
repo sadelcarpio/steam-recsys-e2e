@@ -20,6 +20,7 @@ steam_marts (Iceberg, pyiceberg)
   game_details   text, image URL (new games only) ─► DynamoDB game-details (read by serving)
   item embeddings ─► S3 serving/online/ catalog.npz + manifest.json (serving's online endpoint,
                     with the model's models/<id>/user_tower.npz from training)
+  catalog names    ─► S3 serving/search/games.json (the frontend's in-browser game search)
 ```
 
 1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
@@ -75,6 +76,13 @@ steam_marts (Iceberg, pyiceberg)
    noncurrent-version rule. When the model has no `user_tower.npz` (it was saved before the
    export existed), nothing is published and the previous manifest stays; run
    `python -m steam_training export --model-id champion` (training README).
+8. **Search index.** With the online catalog (same games, same condition), the run writes
+   `s3://model-artifacts-<acct>/serving/search/games.json` (`contracts.SearchIndex`): every
+   catalog game as `[appid, name, reviews]`, most reviewed first, where `reviews` counts the
+   reviews loaded by this run. Stored gzipped with `Content-Encoding: gzip` (about 2-3 MB for
+   ~180k games); the frontend downloads it through CloudFront and searches it in the browser.
+   To publish it without a run (from the catalog already in S3, counts from one Athena query):
+   `uv run python scripts/publish_search_index.py [--dry-run]`.
 
 ## Output contract (`src/steam_inference/contracts.py`)
 
@@ -158,6 +166,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `GAME_DETAILS_TABLE` / `SYNC_GAME_DETAILS` | `game-details` / true | Insert-only game details |
 | `POPULAR_WINDOW_DAYS` | 90 | Window of the popularity fallback |
 | `ONLINE_BUNDLE_ENABLED` / `ONLINE_BUNDLE_PREFIX` | true / `serving/online` | Online catalog + manifest (dry runs: `online/` next to `OUTPUT_PATH`) |
+| `SEARCH_INDEX_KEY` | `serving/search/games.json` | Frontend search index, written with the online catalog (dry runs: `online/games.json.gz`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user |
 | `MAX_USERS` | 0 (all) | Only the N most active users (local runs) |

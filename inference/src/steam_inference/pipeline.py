@@ -29,6 +29,7 @@ from steam_inference.features import InferenceData, load_inference_data
 from steam_inference.online import BundleStore, build_catalog, encode_catalog
 from steam_inference.rerank import RankFn, Reranked, RerankRequest, rerank_all
 from steam_inference.retrieval import Candidates, retrieve
+from steam_inference.search import build_search_index, encode_search_index
 from steam_inference.writer import Writer
 
 log = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ def run_inference(
         item_batch_size=settings.item_batch_size,
     )
 
-    online_bundle = None
+    online_bundle = search_index = None
     if bundle_store is not None:
         if store.has_user_tower_numpy(metadata.model_id):
             online_bundle = bundle_store.publish(
@@ -85,6 +86,10 @@ def run_inference(
                 generated_at=now,
                 catalog_games=len(data.games),
                 user_tower_key=store.user_tower_numpy_key(metadata.model_id),
+            )
+            # the frontend's search covers exactly the games the online model can use
+            search_index = bundle_store.publish_search_index(
+                encode_search_index(build_search_index(data, model_id=metadata.model_id, now=now))
             )
         else:
             log.warning(
@@ -148,6 +153,7 @@ def run_inference(
         popular_games=len(popular.recommendations) if popular else 0,
         game_details_written=details_written,
         online_bundle=online_bundle,
+        search_index=search_index,
         snapshots={**data.snapshots, "game_details": details_snapshot},
         seconds=round(time.monotonic() - started, 1),
     )

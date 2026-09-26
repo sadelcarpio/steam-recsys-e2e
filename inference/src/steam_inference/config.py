@@ -67,6 +67,8 @@ class InferenceSettings(BaseSettings):
     # Online bundle for serving (s3://<model_artifacts_bucket>/<prefix>/bundle.npz + manifest).
     online_bundle_enabled: bool = True
     online_bundle_prefix: str = "serving/online"
+    # Game search index of the frontend, published with the online catalog (same bucket).
+    search_index_key: str = "serving/search/games.json"
     # Local file: write the items as JSON lines there instead of DynamoDB (dry runs).
     output_path: str | None = None
 

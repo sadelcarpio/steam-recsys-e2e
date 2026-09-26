@@ -84,3 +84,20 @@ output "serving_client_role_arn" {
   description = "Role that may call the serving URL when its auth type is AWS_IAM."
   value       = aws_iam_role.serving_client.arn
 }
+
+output "frontend_url" {
+  value = "https://${local.frontend_custom_domain ? var.frontend_domain_name : aws_cloudfront_distribution.frontend.domain_name}"
+}
+
+output "frontend_cloudfront_domain" {
+  description = "Target of the custom domain's CNAME / alias record."
+  value       = aws_cloudfront_distribution.frontend.domain_name
+}
+
+output "frontend_bucket" {
+  value = aws_s3_bucket.frontend.bucket
+}
+
+output "frontend_distribution_id" {
+  value = aws_cloudfront_distribution.frontend.id
+}

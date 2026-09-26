@@ -110,6 +110,7 @@ Order matters only on the first deploy: the pipeline's ECS tasks run the `:lates
 | *training CD* | image `training:<sha>` + a SageMaker training job for that commit (see step 9) |
 | *inference CD* | image `inference` (SageMaker Processing job `Infer`, the pipeline's last step; see step 10) |
 | *serving CD* | Lambda `recsys-serving` code (zip) + smoke test (see step 11) |
+| *frontend CD* | static app to S3 `recsys-frontend-<acct>` + CloudFront invalidation + smoke test (see step 12) |
 
 Later deploys: re-run the component's CD workflow after merging; the next pipeline run picks up
 the new `:latest` image.
@@ -371,6 +372,30 @@ with `list-partition-game-ids`. A public URL under load can throttle the pipelin
 step. Before a public demo, request a higher `Concurrent executions` quota (Service Quotas →
 AWS Lambda), then set `serving_reserved_concurrency` (e.g. 5) to cap the function.
 
+## 12. Frontend
+
+A static app on S3 behind CloudFront (`frontend/README.md`). The same distribution serves the
+app, the serving API under `/api/*`, and the search index under `/data/*`.
+
+1. *infrastructure CD* → `apply`. It creates the bucket, the distribution (a first apply takes
+   a few minutes) and CloudFront's permission to call `recsys-serving`. The URL is the
+   `frontend_url` output.
+2. *frontend CD*: builds and uploads the app, then checks `/u/<id>`, `/api/health` and
+   `/data/games.json` through CloudFront.
+3. Game search needs `serving/search/games.json`, which inference writes with the online
+   catalog: one inference run after the *inference CD* that includes it (*inference CD* with
+   `run_now`, or the next weekly run). Until then search shows as unavailable; user pages and
+   popular games work.
+
+**Auth.** The frontend works with either `serving_auth_type`: under `AWS_IAM` CloudFront signs
+its calls (Origin Access Control), so the site stays public while the raw Function URL answers
+403. Keep `serving_reserved_concurrency` in mind (step 11): the site is public either way.
+
+**Custom domain (optional).** Request an ACM certificate for the domain in **us-east-1** and
+validate it. Set the repository variables `FRONTEND_DOMAIN_NAME` and
+`FRONTEND_CERTIFICATE_ARN`, apply the *infrastructure CD*, then point a `CNAME` (or a Route 53
+alias) at the `frontend_cloudfront_domain` output.
+
 ## Updating an existing deployment
 
 Roll a release onto an account that already runs the pipeline in this order. Skip the steps of
@@ -381,7 +406,7 @@ components the release does not touch.
 3. *data-ingestion CD* / *etl CD*: new images, used by the next `Scrape` / `Transform`.
 4. Training changes only: *training CD* (new models); promote as in step 9.
 5. *inference CD*: new image for the next `Infer`. With `run_now`, it also runs it immediately.
-6. *serving CD*: new Lambda code.
+6. *serving CD*: new Lambda code. *frontend CD*: new app.
 7. Data now instead of Thursday: step 8 (ETL alone), then *inference CD* with `run_now`. Or run
    the whole pipeline (step 7).
 
@@ -394,5 +419,5 @@ check).
 6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there) →
 9 SageMaker quota, train and promote →
 10 inference (automatic from the next pipeline run, or *inference CD* with `run_now`) →
-11 serving (*serving CD*; its auth is an *infrastructure CD* input). After that, the weekly
+11 serving (*serving CD*; its auth is an *infrastructure CD* input) → 12 frontend (*frontend CD*). After that, the weekly
 schedule runs everything incrementally (step 7).

@@ -93,7 +93,8 @@ aws secretsmanager put-secret-value --secret-id data-ingestion/steam-api-key --s
 
 ### 5. Desplegar los componentes
 
-Desde `main`, en Actions: **data-ingestion CD** (`target=all`), **etl CD**, **inference CD** y **serving CD**.
+Desde `main`, en Actions: **data-ingestion CD** (`target=all`), **etl CD**, **inference CD**,
+**serving CD** y **frontend CD**.
 
 ### 6. Primera corrida del pipeline
 
@@ -170,3 +171,12 @@ aws dynamodb scan --table-name game-explainable-recommendations \
 
 Un id desconocido recibe la lista popular (`"source": "popular"`). El detalle de cada endpoint
 está en [`serving/README.md`](serving/README.md).
+
+### 10. Frontend
+
+Una app web estática (S3 + CloudFront) sobre la misma API: buscar juegos, elegir los que te
+gustaron y recibir recomendaciones como tarjetas, o abrir `/u/<steam id>` para ver las
+recomendaciones precalculadas de un usuario. La URL es la salida `frontend_url` del
+**infrastructure CD** (o el resumen del **frontend CD**). La búsqueda corre en el navegador
+sobre un índice que escribe cada corrida de inferencia. Detalles y dominio propio:
+[`frontend/README.md`](frontend/README.md).

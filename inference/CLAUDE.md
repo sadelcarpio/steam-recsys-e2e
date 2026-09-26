@@ -25,11 +25,17 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `details.py`: mart `game_details` -> `game-details` table, insert-only (`sync_game_details`)
   - `online.py`: the online catalog for serving (`build_catalog`, `encode_catalog`,
     `S3BundleStore` puts the catalog, then a manifest pinned to its version id that names the
-    model's `user_tower.npz`; `LocalBundleStore` for dry runs)
+    model's `user_tower.npz`; `LocalBundleStore` for dry runs; both also publish the search
+    index)
+  - `search.py`: the frontend's search index (`build_search_index` / `index_from_catalog`:
+    catalog games as [appid, name, reviews], `encode_search_index`: gzipped JSON), published
+    with the catalog
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
   - `__main__.py`: SageMaker Processing entry point (`python -m steam_inference`)
+- `scripts/publish_search_index.py`: publishes the search index from the catalog already in
+  S3 (+ review counts from one Athena query), without an inference run
 - `tests/`: `conftest.py` builds synthetic marts, a random-init model saved as champion
   (moto S3 + DynamoDB) and a fake LLM. There are no AWS calls. `test_serving_contract.py`
   reads and serves the written items with `steam_serving` (an editable dev dependency on
@@ -61,6 +67,9 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   when the model has its `user_tower.npz`. `test_online_parity.py` runs training's export and
   this catalog through serving's numpy code, and compares the result with torch and with batch
   retrieval.
+- The search index (`SearchIndex`, `SEARCH_INDEX_FORMAT`) is read by the frontend
+  (`frontend/src/api.ts`): change both together. It is published only with the online catalog,
+  so search offers exactly the games `POST /recommendations` can use.
 - LLM output is untrusted: the final order is always a permutation of the retrieved candidates,
   and explanations are kept only for the top `EXPLAIN_TOP_N`. One user's failure never fails
   the run.
