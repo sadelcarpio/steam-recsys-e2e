@@ -46,9 +46,15 @@ variable "max_games_tasks" {
 }
 
 variable "max_reviews_per_game" {
-  description = "Newest reviews fetched per game per run; 0 = full history."
+  description = "Newest reviews fetched per game per run (forward pass); 0 = no cap."
   type        = number
   default     = 2000
+}
+
+variable "backfill_reviews_per_run" {
+  description = "Older reviews backfilled per game per run past the ones already scraped; 0 = off. While any backfill is pending the pipeline's Transform runs dbt with FULL_REFRESH."
+  type        = number
+  default     = 20000
 }
 
 variable "request_interval_seconds" {

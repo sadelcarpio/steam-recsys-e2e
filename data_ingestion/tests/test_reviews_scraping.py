@@ -50,24 +50,32 @@ def _review(rec_id: int, ts: int) -> dict:
     }
 
 
-def _mock_reviews(appid: int, pages: list[list[dict]], total: int | None = None) -> None:
-    """Newest-first pages; the last page echoes its own cursor back, as Steam does."""
+def _no_range(request) -> tuple[bool, str]:
+    return "end_date" not in request.params, "forward requests carry no date range"
+
+
+def _mock_reviews(
+    appid: int, pages: list[list[dict]], total: int | None = None, until: int | None = None
+) -> None:
+    """Newest-first pages; the last page echoes its own cursor back, as Steam does. `until`:
+    the backfill range `[1, until]` (else only requests without a date range match)."""
     url = f"https://store.steampowered.com/appreviews/{appid}"
+    prefix = "" if until is None else f"b{until}-"
     for i, reviews in enumerate(pages):
-        cursor_in = "*" if i == 0 else f"c{i}"
+        cursor_in = "*" if i == 0 else f"{prefix}c{i}"
         last = i == len(pages) - 1
         body: dict = {
             "success": 1,
-            "cursor": cursor_in if last else f"c{i + 1}",
+            "cursor": cursor_in if last else f"{prefix}c{i + 1}",
             "reviews": reviews,
         }
         if i == 0:
             body["query_summary"] = {"total_reviews": total or sum(len(p) for p in pages)}
-        responses.get(
-            url,
-            match=[matchers.query_param_matcher({"cursor": cursor_in}, strict_match=False)],
-            json=body,
-        )
+        params = {"cursor": cursor_in}
+        if until is not None:
+            params |= {"start_date": "1", "end_date": str(until)}
+        match = [matchers.query_param_matcher(params, strict_match=False)]
+        responses.get(url, match=match if until is not None else [*match, _no_range], json=body)
 
 
 def _seed(aws: SimpleNamespace, appids: list[int]) -> None:
@@ -195,3 +203,150 @@ def test_cursor_load_batches_over_100_keys(aws: SimpleNamespace) -> None:
     state.save({a: ReviewCursor(last_review_ts=a, total_reviews=None) for a in range(1, 251)})
     loaded = state.load(list(range(1, 301)))
     assert len(loaded) == 250 and loaded[250].last_review_ts == 250
+
+
+def _backfill_state(cursor: dict) -> tuple[int | None, bool]:
+    oldest = cursor.get("oldest_review_ts")
+    return (int(oldest) if oldest is not None else None), bool(cursor.get("backfill_complete"))
+
+
+@responses.activate
+def test_first_scrape_within_the_cap_is_complete(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    _mock_reviews(10, [[_review(2, 200), _review(1, 100)]])
+    capped = settings.model_copy(update={"max_reviews_per_game": 5})
+    assert scrape_partition(KEY, capped, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert _backfill_state(_cursor(aws, 10)) == (100, True)
+    assert len(responses.calls) == 1  # no backfill request
+
+
+@responses.activate
+def test_first_scrape_truncated_by_the_cap_backfills_in_the_same_run(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    _mock_reviews(10, [[_review(5, 500), _review(4, 400)], [_review(3, 300)]], total=5)
+    # older than 400 (inclusive): the boundary review repeats, then the rest of the history
+    _mock_reviews(10, [[_review(4, 400), _review(3, 300)], [_review(2, 200)]], until=400)
+    run = settings.model_copy(update={"max_reviews_per_game": 2, "backfill_reviews_per_run": 3})
+
+    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 3, 4, 4, 5]
+    cursor = _cursor(aws, 10)
+    assert int(cursor["last_review_ts"]) == 500 and int(cursor["total_reviews"]) == 5
+    assert _backfill_state(cursor) == (200, False)  # budget of 3 reached: more may remain
+
+
+@responses.activate
+def test_pending_backfill_continues_and_completes(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=6, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(6, 600), _review(5, 500)]])  # forward: one new review
+    _mock_reviews(10, [[_review(3, 300), _review(2, 200)], [_review(1, 100)]], until=300)
+
+    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [1, 2, 3, 6]
+    cursor = _cursor(aws, 10)
+    assert int(cursor["last_review_ts"]) == 600
+    assert _backfill_state(cursor) == (100, True)  # the range ran out: history complete
+
+
+@responses.activate
+def test_complete_and_legacy_cursors_are_not_backfilled(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10, 20])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {
+            10: ReviewCursor(300, 3, oldest_review_ts=100, backfill_complete=True),
+            20: ReviewCursor(300, 3),  # written before the backfill and not seeded
+        }
+    )
+    _mock_reviews(10, [[_review(3, 300)]])
+    _mock_reviews(20, [[_review(13, 300)]])
+    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert len(responses.calls) == 2  # forward passes only
+    assert _backfill_state(_cursor(aws, 10)) == (100, True)
+    assert _backfill_state(_cursor(aws, 20)) == (None, False)
+
+
+@responses.activate
+def test_failed_backfill_keeps_forward_progress_and_what_was_fetched(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=9, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(6, 600)]])
+    url = "https://store.steampowered.com/appreviews/10"
+    responses.get(
+        url,
+        match=[
+            matchers.query_param_matcher({"cursor": "*", "end_date": "300"}, strict_match=False)
+        ],
+        json={"success": 1, "cursor": "b1", "reviews": [_review(2, 200)]},
+    )
+    responses.get(
+        url,
+        match=[matchers.query_param_matcher({"cursor": "b1"}, strict_match=False)],
+        status=503,
+    )
+
+    # a failed backfill does not count as a failed game
+    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 6]
+    cursor = _cursor(aws, 10)
+    assert int(cursor["last_review_ts"]) == 600
+    assert _backfill_state(cursor) == (200, False)
+
+
+@responses.activate
+def test_ignored_date_range_does_not_complete_the_backfill(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=9, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(5, 500)]])
+    _mock_reviews(10, [[_review(5, 500)]], until=300)  # Steam returned the newest instead
+    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert list_keys(aws.s3, RAW_BUCKET, "reviews/") == []
+    assert _backfill_state(_cursor(aws, 10)) == (300, False)
+
+
+@responses.activate
+def test_backfill_disabled_with_a_zero_budget(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=9, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(5, 500)]])
+    off = settings.model_copy(update={"backfill_reviews_per_run": 0})
+    assert scrape_partition(KEY, off, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert len(responses.calls) == 1
+
+
+def test_cursor_backfill_fields_roundtrip(aws: SimpleNamespace) -> None:
+    state = ReviewsCursorState(aws.cursors, aws.dynamodb)
+    cursors = {
+        1: ReviewCursor(10, 5, oldest_review_ts=3, backfill_complete=False),
+        2: ReviewCursor(10, 5, oldest_review_ts=None, backfill_complete=True),
+        3: ReviewCursor(10, None),
+    }
+    state.save(cursors)
+    assert state.load([1, 2, 3]) == cursors
+    assert state.load_all() == cursors
+    assert [c.backfill_pending for c in cursors.values()] == [True, False, False]

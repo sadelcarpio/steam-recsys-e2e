@@ -171,7 +171,9 @@ locals {
         Next       = "Transform"
       }
       # dbt build (staging -> intermediate -> marts + data tests). Every model is incremental
-      # and idempotent, so a retry never double-loads.
+      # and idempotent, so a retry never double-loads. While a reviews backfill is pending the
+      # Lambda sets etl_full_refresh: backfilled reviews are older than the loaded rows, which
+      # the incremental marts cannot absorb, so the marts are rebuilt (lookups never are).
       Transform = {
         Type     = "Task"
         Resource = "arn:aws:states:::ecs:runTask.sync"
@@ -187,6 +189,15 @@ locals {
             }
           }
           PropagateTags = "TASK_DEFINITION"
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "dbt"
+              Environment = [{
+                Name      = "FULL_REFRESH"
+                "Value.$" = "States.Format('{}', $.partitions.result.etl_full_refresh)"
+              }]
+            }]
+          }
         }
         Retry      = local.ecs_task_retry
         ResultPath = null

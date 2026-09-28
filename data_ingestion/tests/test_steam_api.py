@@ -205,3 +205,36 @@ def test_iter_pages_no_new_reviews_still_reports_total(client: SteamClient) -> N
     )
     pages = list(client.iter_review_pages(10, since_ts=100))
     assert len(pages) == 1 and pages[0].reviews == [] and pages[0].total_reviews == 1
+
+
+@responses.activate
+def test_iter_pages_date_range_for_backfill(client: SteamClient) -> None:
+    responses.get(
+        REVIEWS_URL,
+        match=[
+            matchers.query_param_matcher(
+                {"start_date": "1", "end_date": "150", "date_range_type": "include"},
+                strict_match=False,
+            )
+        ],
+        json={
+            "success": 1,
+            "cursor": "*",  # an exhausted range echoes the cursor back
+            "query_summary": {"total_reviews": 2},
+            "reviews": [_review(2, 150), _review(1, 100)],  # end_date is inclusive
+        },
+    )
+    pages = list(client.iter_review_pages(10, until_ts=150))
+    assert [r["recommendationid"] for r in pages[0].reviews] == ["2", "1"]
+    assert "filter=recent" in responses.calls[0].request.url
+
+
+@responses.activate
+def test_iter_pages_ignored_date_range_is_an_error(client: SteamClient) -> None:
+    """start_date=0 (or an unsupported range) returns the newest reviews instead."""
+    responses.get(
+        REVIEWS_URL,
+        json={"success": 1, "cursor": "c1", "reviews": [_review(3, 300)]},
+    )
+    with pytest.raises(SteamApiError, match="date range ignored"):
+        list(client.iter_review_pages(10, until_ts=150))

@@ -26,3 +26,4 @@ def test_estimated_review_requests_caps_totals() -> None:
     assert estimated_review_requests(None, 0) == 1.0
     assert estimated_review_requests(10_000, 0) == 101.0
     assert estimated_review_requests(10_000, 2000) == 21.0
+    assert estimated_review_requests(10_000, 2000, backfill_reviews=20_000) == 221.0

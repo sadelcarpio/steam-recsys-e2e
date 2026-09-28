@@ -56,7 +56,8 @@ variables or a CD workflow.
       backfill)
     - ECS Fargate `reviews-scraping` (×N tasks, one per partition; public subnet,
       assignPublicIp=ENABLED, so each task has a distinct egress IP to avoid per-IP throttling)
-3. ECS Fargate `dbt`: runs models through Athena
+3. ECS Fargate `dbt`: runs models through Athena (a full refresh while a reviews backfill is
+   pending: the Lambda's `etl_full_refresh`)
 4. SageMaker Inference Pipeline: a SageMaker Processing job `steam-recsys-infer-*` (only when
    `models/champion/` exists, else skipped): top-K recs per user + LLM reranking
 
@@ -69,6 +70,7 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - Steam API → (review + game data) → scraping tasks (2)
 - scraping tasks ↔ DynamoDB `game-ids-state`, `reviews-state-cursor` (read/write scrape state)
 - scraping tasks → S3 `raw-steam-data-<account-id>/games/*.parquet`, `raw-steam-data-<account-id>/reviews/*.parquet`
+  (reviews: newest first, then a per-run backfill of older reviews, spec 6)
 
 ### Data lake
 

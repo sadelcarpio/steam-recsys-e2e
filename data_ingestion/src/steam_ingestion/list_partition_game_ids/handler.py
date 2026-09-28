@@ -5,7 +5,9 @@
 3. Write `games/<run_id>/appids-<n>.json`: every pending appid (new + retries), ≤ games_per_task
    per file, one games-scraping task per file.
 4. Write `reviews/<run_id>/part-<n>.json`: every known scrapable appid, balanced across
-   num_review_workers by estimated request count.
+   num_review_workers by estimated request count (including this run's backfill of older
+   reviews). `etl_full_refresh` tells the pipeline to rebuild the marts: backfilled reviews are
+   older than rows already loaded.
 
 Re-running the same run_id rewrites the same files: new appids are persisted as pending before
 the cursor moves, and both prefixes are cleared first.
@@ -77,14 +79,20 @@ def run(
     review_ids = sorted(
         set(new_ids) | {a for a, s in known.items() if s.status != GameStatus.UNAVAILABLE}
     )
-    totals = cursor_state.load_totals()
-    weights = {
-        a: estimated_review_requests(
-            totals.get(a, known[a].recommendations if a in known else None),
-            settings.max_reviews_per_game,
-        )
-        for a in review_ids
-    }
+    cursors = cursor_state.load_all()
+    cap, budget = settings.max_reviews_per_game, settings.backfill_reviews_per_run
+    weights: dict[int, float] = {}
+    backfill_ids = 0
+    for a in review_ids:
+        cursor = cursors.get(a)
+        if cursor is not None and cursor.total_reviews is not None:
+            total = cursor.total_reviews
+        else:
+            total = known[a].recommendations if a in known else None
+        # a first scrape truncated by the cap starts its backfill in the same run
+        backfill = cursor.backfill_pending if cursor else bool(cap and (total or 0) > cap)
+        backfill_ids += bool(backfill and budget)
+        weights[a] = estimated_review_requests(total, cap, budget if backfill else 0)
     reviews_keys = []
     delete_prefix(s3, settings.partitions_bucket, f"reviews/{run_id}/")
     for n, part in enumerate(balance_by_weight(review_ids, weights, settings.num_review_workers)):
@@ -99,6 +107,8 @@ def run(
         new_game_ids=len(new_ids),
         games_to_scrape=len(pending),
         reviews_game_ids=len(review_ids),
+        backfill_game_ids=backfill_ids,
+        etl_full_refresh=backfill_ids > 0,
         games_partitions=games_keys,
         reviews_partitions=reviews_keys,
     )

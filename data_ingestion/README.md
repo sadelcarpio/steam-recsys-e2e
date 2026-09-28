@@ -16,12 +16,33 @@ EventBridge Scheduler ─► Step Functions
 |---|---|---|
 | Lambda `list-partition-game-ids` | `steam_ingestion.list_partition_game_ids.handler.handler` | GetAppList (games only, `if_modified_since` = stored catalog cursor), registers new appids as `pending` in `game-ids-state`, writes game partitions (pending appids, ≤ `GAMES_PER_TASK` each) and review partitions (all known games, balanced by estimated request count across `NUM_REVIEW_WORKERS`). |
 | ECS `games-scraping` | `python -m steam_ingestion.games_scraping` | `appdetails` + review summary for each appid → `games/<scrape-date>-<n>-<part>.parquet`; marks appids `scraped` / `unavailable` / retries up to `MAX_GAME_ATTEMPTS`. |
-| ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. |
+| ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor (at most `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. |
 
 Output schemas: `src/steam_ingestion/schemas.py` (`GAMES_SCHEMA`, `REVIEWS_SCHEMA`).
 
 **Downstream note:** a crashed/retried reviews task can re-emit rows for the game it was on;
 deduplicate on `rec_id` (games on `appid` + latest `scrape_date`).
+
+### Reviews backfill (spec 6)
+
+The first scrape of a game keeps its newest `MAX_REVIEWS_PER_GAME` reviews. Each later run then
+fetches up to `BACKFILL_REVIEWS_PER_RUN` **older** reviews per game with Steam's undocumented
+`start_date=1&end_date=<oldest_review_ts>&date_range_type=include` range (newest-first inside
+the range, `end_date` inclusive), and moves the cursor's `oldest_review_ts` back. When the range
+runs out (Steam stops returning pages, for the biggest games after a few hundred thousand
+reviews) the cursor gets `backfill_complete`. A review outside the range means Steam ignored it:
+that game's backfill stops for the run (forward results are kept). While any backfill is
+pending, the Lambda returns `etl_full_refresh: true` and the pipeline rebuilds the marts
+(backfilled reviews are older than rows already loaded).
+
+Cursors written before the backfill have no `oldest_review_ts` and are never backfilled until
+seeded, once, from the raw reviews (Athena; conditional writes, safe to re-run; run it while no
+pipeline execution is running):
+
+```bash
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_backfill --dry-run   # counts only
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_backfill
+```
 
 ## Configuration
 
@@ -38,7 +59,8 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `GAMES_PER_TASK` | 8000 | ~7 h per task at the store rate limit (2 requests per game) |
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
 | `THROTTLE_COOLDOWN_SECONDS` | 60 | Minimum wait after an HTTP 429 (or `Retry-After` if longer), so retries outlast the throttle window |
-| `MAX_REVIEWS_PER_GAME` | 2000 | Newest reviews per game per run; `0` = full history |
+| `MAX_REVIEWS_PER_GAME` | 2000 | Newest reviews per game per run (forward pass); `0` = no cap. More new reviews than this in one run leave a gap that is not backfilled |
+| `BACKFILL_REVIEWS_PER_RUN` | 20000 | Older reviews per game per run (backfill); `0` = off |
 | `MAX_GAME_ATTEMPTS` | 3 | |
 | `MAX_FAILURE_RATIO` | 0.2 | Task exits 1 above this share of failed games |
 | `PARTITION_KEY` | – | Per-task, injected by the Distributed Map |

@@ -163,29 +163,33 @@ class SteamClient:
         return body.get("query_summary") or {}
 
     def iter_review_pages(
-        self, appid: int, since_ts: int = 0, max_reviews: int = 0
+        self, appid: int, since_ts: int = 0, max_reviews: int = 0, until_ts: int | None = None
     ) -> Iterator[ReviewPage]:
         """Newest-first review pages, stopping at reviews created at/before `since_ts`.
 
         Yielded pages only contain reviews newer than `since_ts`. `max_reviews` (0 = no cap)
-        truncates the walk once that many reviews were yielded.
+        truncates the walk once that many reviews were yielded. `until_ts` restricts the walk to
+        reviews created at/before it (inclusive): Steam's undocumented `start_date` / `end_date`
+        range, used to backfill older reviews. `total_reviews` is then the count in the range. A
+        review newer than `until_ts` means the range was ignored: `SteamApiError`.
         """
+        params: dict[str, Any] = {
+            "json": "1",
+            "filter": "recent",
+            "language": "all",
+            "purchase_type": "all",
+            "review_type": "all",
+            "num_per_page": str(REVIEWS_PAGE_SIZE),
+        }
+        if until_ts is not None:
+            # start_date=0 means "no range" to Steam, so the range starts at 1.
+            params |= {"start_date": "1", "end_date": str(until_ts), "date_range_type": "include"}
         cursor = "*"
         seen_cursors: set[str] = set()
         yielded = 0
         while True:
             body = self._get_json(
-                APP_REVIEWS_URL.format(appid=appid),
-                {
-                    "json": "1",
-                    "filter": "recent",
-                    "language": "all",
-                    "purchase_type": "all",
-                    "review_type": "all",
-                    "cursor": cursor,
-                    "num_per_page": str(REVIEWS_PAGE_SIZE),
-                },
-                "appreviews",
+                APP_REVIEWS_URL.format(appid=appid), {**params, "cursor": cursor}, "appreviews"
             )
             if not body.get("success", 1):
                 return
@@ -193,6 +197,10 @@ class SteamClient:
                 (body.get("query_summary") or {}).get("total_reviews") if cursor == "*" else None
             )
             raw = body.get("reviews") or []
+            if until_ts is not None and any(
+                int(r.get("timestamp_created", 0)) > until_ts for r in raw
+            ):
+                raise SteamApiError("appreviews: date range ignored (review after end_date)")
             fresh = [r for r in raw if int(r.get("timestamp_created", 0)) > since_ts]
             reached_cutoff = len(fresh) < len(raw)
             if max_reviews:
