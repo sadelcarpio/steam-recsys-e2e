@@ -447,12 +447,14 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
 3. *data-ingestion CD*: the image with `steam_ingestion.tags_scraping` (the task definition runs
    `:latest`). Do steps 2-4 before the next pipeline run; a run in between only skips the tags
    (the failed `ScrapeTags` is caught).
-4. *etl CD* (`stg_steam__game_tags`, `lkp_tags`, `game_tags`), then *inference CD*. Inference
-   must be updated **before** a model with tags is promoted: older images reject its metadata.
-   The new image keeps serving the current champion (trained without tags).
+4. *etl CD* (`stg_steam__game_tags`, `lkp_tags`, `game_tags`).
 5. Run the pipeline (step 7) so the tags are scraped and `game_tags` is built. Check:
    `select count(*) from steam_marts.game_tags;` (most catalog games).
-6. *training CD* (`USE_GAME_TAGS=true` by default), then promote (step 9). Promotion compares it
+6. *inference CD* any time **before the promotion below**: older inference images reject the
+   metadata of a model trained with tags (the champion without tags works with both images).
+   Deployed before the pipeline run above, it already adds the tags to the rerank prompt and the
+   adult filter.
+7. *training CD* (`USE_GAME_TAGS=true` by default), then promote (step 9). Promotion compares it
    with the current champion on the same rows.
 
 ## Order for a fresh account (summary)
