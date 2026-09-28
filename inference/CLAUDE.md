@@ -30,8 +30,8 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `search.py`: the frontend's search index (`build_search_index` / `index_from_catalog`:
     catalog games as [appid, name, reviews], `encode_search_index`: gzipped JSON), published
     with the catalog
-  - `adult.py`: `adult_mask` / `is_adult` (Steam's "Sexual Content" / "Nudity" genres or an
-    explicit word in the name)
+  - `adult.py`: `adult_mask` / `is_adult` (Steam's "Sexual Content" / "Nudity" genres, an
+    explicit word in the name, or the adult Steam tags of `ADULT_TAGS` / top `ADULT_TOP_TAGS`)
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
@@ -48,6 +48,10 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   (SageMaker convention).
 
 ## Invariants
+
+- Steam tags (`game_tags` / `lkp_tags`, spec 8) are optional marts: loaded when present,
+  required when the model's `vocab.tags` is set (it fails loudly otherwise). Deploy this image
+  before promoting a model trained with tags: older images reject its metadata.
 
 - A missing model (no `models/<MODEL_ID>/metadata.json`) is a successful skip that writes
   nothing. An architecture mismatch fails loudly.

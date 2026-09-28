@@ -92,6 +92,8 @@ class TrainingSettings(_SsmSettings):
     # Probability of replacing a game_idx with OOV so the OOV row learns a generic item and
     # games without training interactions fall back to their content features.
     item_id_dropout: float = Field(0.1, ge=0, le=1)
+    # Steam user tags as an item feature (marts `game_tags` + `lkp_tags`, spec 8).
+    use_game_tags: bool = True
 
     # ---- model ----
     game_embedding_dim: int = Field(64, ge=4)

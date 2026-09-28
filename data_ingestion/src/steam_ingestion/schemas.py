@@ -35,6 +35,17 @@ GAMES_SCHEMA = pl.Schema(
     }
 )
 
+GAME_TAGS_SCHEMA = pl.Schema(
+    {
+        "appid": pl.Int64,
+        "tag_ids": pl.List(pl.Int64),
+        "tag_names": pl.List(pl.String),
+        "tag_weights": pl.List(pl.Int64),
+        "scraped_at": pl.Int64,
+        "scrape_date": pl.Date,
+    }
+)
+
 REVIEWS_SCHEMA = pl.Schema(
     {
         "rec_id": pl.Int64,

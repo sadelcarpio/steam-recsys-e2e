@@ -1,6 +1,7 @@
 """Two-tower retrieval model.
 
 Item tower: game_idx embedding + mean-pooled developer / publisher / genre / category embeddings
+            + weighted mean of the game's Steam user tag embeddings (when `vocab.tags` is set)
             + numerical features (is_free, is_free known, reviews ratio) -> MLP -> L2 norm.
 User tower: mean-pooled `games_reviewed_positive` over a *frozen copy* of the item tower's game
             embedding table (+ history length) -> MLP -> L2 norm.
@@ -29,10 +30,15 @@ ATTRIBUTES = ("developers", "publishers", "genres", "categories")
 
 @dataclass
 class Bag:
-    """EmbeddingBag input: flat ids + start offset of each row."""
+    """EmbeddingBag input: flat ids + start offset of each row (+ per-value weights)."""
 
     values: torch.Tensor  # int64 [n_values]
     offsets: torch.Tensor  # int64 [rows]
+    weights: torch.Tensor | None = None  # float32 [n_values]
+
+    def to(self, device: torch.device) -> Bag:
+        weights = self.weights.to(device) if self.weights is not None else None
+        return Bag(self.values.to(device), self.offsets.to(device), weights)
 
 
 @dataclass
@@ -43,21 +49,20 @@ class ItemBatch:
     publishers: Bag
     genres: Bag
     categories: Bag
+    tags: Bag  # weighted (each row sums to 1); ignored by a model without tags
 
     def __len__(self) -> int:
         return len(self.game_idx)
 
     def to(self, device: torch.device) -> ItemBatch:
-        def bag(b: Bag) -> Bag:
-            return Bag(b.values.to(device), b.offsets.to(device))
-
         return ItemBatch(
             game_idx=self.game_idx.to(device),
             numeric=self.numeric.to(device),
-            developers=bag(self.developers),
-            publishers=bag(self.publishers),
-            genres=bag(self.genres),
-            categories=bag(self.categories),
+            developers=self.developers.to(device),
+            publishers=self.publishers.to(device),
+            genres=self.genres.to(device),
+            categories=self.categories.to(device),
+            tags=self.tags.to(device),
         )
 
 
@@ -100,9 +105,19 @@ class ItemTower(nn.Module):
                 for name, size in self.attribute_sizes.items()
             }
         )
+        # Steam user tags: a weighted mean (weights sum to 1 per game, so mode "sum"). Only in
+        # models trained with tags, so older models keep their state dict layout.
+        self.tag_size = vocab.tags
+        self.tags = (
+            nn.EmbeddingBag(
+                vocab.tags, config.attribute_embedding_dim, mode="sum", padding_idx=PADDING_ID
+            )
+            if vocab.tags is not None
+            else None
+        )
         in_dim = (
             config.game_embedding_dim
-            + len(ATTRIBUTES) * config.attribute_embedding_dim
+            + (len(ATTRIBUTES) + (self.tags is not None)) * config.attribute_embedding_dim
             + NUM_NUMERIC_FEATURES
         )
         self.mlp = _mlp(in_dim, config.hidden_dim, config.output_dim)
@@ -113,6 +128,10 @@ class ItemTower(nn.Module):
             bag: Bag = getattr(items, name)
             values = _clip_to_vocab(bag.values, self.attribute_sizes[name])
             parts.append(self.attributes[name](values, bag.offsets))
+        if self.tags is not None:
+            bag = items.tags
+            values = _clip_to_vocab(bag.values, self.tag_size)
+            parts.append(self.tags(values, bag.offsets, per_sample_weights=bag.weights))
         parts.append(items.numeric)
         return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 

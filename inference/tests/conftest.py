@@ -103,6 +103,39 @@ def make_marts() -> dict[str, pa.Table]:
     }
 
 
+N_TAGS = 8
+
+
+def add_tags(marts: dict[str, pa.Table], tags_of=None) -> dict[str, pa.Table]:
+    """Marts `lkp_tags` ("Tag 0".."Tag 7") and `game_tags` (weight descending). Default: every
+    game but the last gets Tag (idx % 8) and Tag ((idx + 1) % 8)."""
+    games = marts["lkp_games"]["game_idx"].to_pylist()
+    tags_of = tags_of or (lambda g: [FIRST_GAME + g % N_TAGS, FIRST_GAME + (g + 1) % N_TAGS])
+    rows = [
+        {"game_idx": g, "game_tags": tags, "game_tag_weights": [100.0 * (len(tags) - i)
+                                                               for i in range(len(tags))]}
+        for g in games[:-1]
+        if (tags := tags_of(g))
+    ]  # fmt: skip
+    schema = pa.schema(
+        [
+            ("game_idx", pa.int64()),
+            ("game_tags", LIST_TYPE),
+            ("game_tag_weights", pa.list_(pa.float64())),
+        ]
+    )
+    return {
+        **marts,
+        "lkp_tags": pa.table(
+            {
+                "id": pa.array(range(FIRST_GAME, FIRST_GAME + N_TAGS), pa.int64()),
+                "name": [f"Tag {i}" for i in range(N_TAGS)],
+            }
+        ),
+        "game_tags": pa.Table.from_pylist(rows, schema=schema),
+    }
+
+
 def details_table(games: Iterable[int]) -> pa.Table:
     """Mart game_details (strings as scraped: HTML entities, blanks)."""
     str_list = pa.list_(pa.string())
@@ -157,10 +190,12 @@ class FakeSource:
         yield from self.tables[table].select(columns).to_batches(max_chunksize=self.batch_rows)
 
 
-def make_model(seed: int = 0) -> TwoTowerModel:
+def make_model(seed: int = 0, tags: int | None = None) -> TwoTowerModel:
     torch.manual_seed(seed)
     config = ModelConfig(
-        vocab=VocabSizes(games=MODEL_GAMES, developers=5, publishers=4, genres=6, categories=3),
+        vocab=VocabSizes(
+            games=MODEL_GAMES, developers=5, publishers=4, genres=6, categories=3, tags=tags
+        ),
         game_embedding_dim=8,
         attribute_embedding_dim=4,
         hidden_dim=16,

@@ -56,6 +56,10 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
 - Artifact writes: `metadata.json` is written last for a model, and
   `evaluation/champion/metrics.json` last for a promotion. The checkpoint is kept after the
   model is saved (a finished run is extended with more `EPOCHS`; lifecycle expires it in 14 d).
+- Tags (spec 8): `VocabSizes.tags` is optional. `None` = a model without the tags module, so
+  models trained before tags keep loading. New optional item features follow that pattern;
+  anything else that changes the state dict layout needs an `ARCHITECTURE_VERSION` bump.
+  `ItemFeatures.tags` is a weighted `Ragged` (weights sum to 1 per row, empty without tags).
 - Change `ARCHITECTURE_VERSION` when the state dict layout changes. Update `contracts.py`
   whenever the artifact contract changes.
 - `user_tower.npz` mirrors `UserTower.forward` for serving's numpy port
@@ -66,7 +70,7 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
 - Log formats parsed by `launch.METRIC_DEFINITIONS`: the per-epoch line of `train_model` and
   `pipeline.metrics_line`. Change them together (`test_metric_definitions_parse_the_job_logs`).
 - `inference/` imports this package (path dependency): `TwoTowerModel`, `ArtifactStore`,
-  `IcebergSource`, `latest_game_rows` / `catalog_from_table`, `pad_history`,
+  `IcebergSource`, `latest_game_rows` / `catalog_from_table` / `attach_game_tags`, `pad_history`,
   `evaluation.embed_catalog`. Keep those APIs stable, or update inference in the same change
   (its CI runs on `training/src/**`).
 - Promotion and training run the image of the model's commit (`training:<model_id>`) unless

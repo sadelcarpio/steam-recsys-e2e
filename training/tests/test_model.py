@@ -84,3 +84,49 @@ def test_padding_positions_do_not_change_the_user_embedding():
     model.sync_user_table()
     b = model.user_tower(torch.tensor([[2, 3, 0, 0, 0]]))
     assert torch.allclose(a, b)
+
+
+# ---- tags (spec 8) ---------------------------------------------------------------------------
+
+
+def tags_config(tags: int | None = 6) -> ModelConfig:
+    return config().model_copy(update={"vocab": VOCAB.model_copy(update={"tags": tags})})
+
+
+def tagged(tags: list[list[int]], weights: list[list[float]]) -> ItemFeatures:
+    base = items([2] * len(tags))
+    ragged = Ragged.from_lists(tags)
+    flat = np.array([w for row in weights for w in row], dtype=np.float32)
+    return ItemFeatures(**{**base.__dict__, "tags": Ragged(ragged.values, ragged.offsets, flat)})
+
+
+def test_models_without_tags_keep_the_old_layout_and_ignore_tags():
+    model = TwoTowerModel(tags_config(None))
+    assert model.item_tower.tags is None
+    assert not any(k.startswith("item_tower.tags") for k in model.state_dict())
+    reference = TwoTowerModel(config())  # a model saved before tags existed
+    model.load_state_dict(reference.state_dict())
+    model.eval()
+    a = model.item_tower(to_item_batch(tagged([[2]], [[1.0]])))
+    b = model.item_tower(to_item_batch(tagged([[5]], [[1.0]])))
+    assert torch.equal(a, b)
+
+
+def test_tag_bag_is_a_weighted_mean_of_tag_embeddings():
+    model = TwoTowerModel(tags_config())
+    assert model.item_tower.tags.weight.shape == (6, 4)
+    batch = to_item_batch(tagged([[2, 3], [2, 3], [2, 3], [9]], [[1, 0], [0, 1], [0.5, 0.5], [1]]))
+    table = model.item_tower.tags.weight
+    pooled = model.item_tower.tags(batch.tags.values.clamp(max=5), batch.tags.offsets,
+                                   per_sample_weights=batch.tags.weights)  # fmt: skip
+    assert torch.allclose(pooled[0], table[2]) and torch.allclose(pooled[1], table[3])
+    assert torch.allclose(pooled[2], (table[2] + table[3]) / 2)
+    out = model.item_tower(batch)
+    assert not torch.allclose(out[0], out[1])  # the weights change the item embedding
+    assert torch.allclose(out.norm(dim=1), torch.ones(4))  # tag 9 >= vocab -> OOV, no error
+
+
+def test_games_without_tags_get_an_empty_bag():
+    model = TwoTowerModel(tags_config())
+    out = model.item_tower(to_item_batch(tagged([[], [2]], [[], [1.0]])))
+    assert out.shape == (2, 6) and torch.isfinite(out).all()

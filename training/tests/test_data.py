@@ -8,7 +8,9 @@ import pytest
 from steam_training.data import (
     GAME_FEATURE_COLUMNS,
     EvalRows,
+    ItemFeatures,
     Ragged,
+    attach_game_tags,
     catalog_at,
     load_training_data,
     temporal_cutoff,
@@ -137,3 +139,66 @@ def test_null_labels_and_features_are_handled(marts):
 def test_eval_rows_sample():
     rows = EvalRows(np.zeros((10, 5), np.int64), np.arange(10), np.ones(10, bool))
     assert len(rows.sample(3)) == 3 and rows.sample(20) is rows
+
+
+# ---- tags (spec 8) ---------------------------------------------------------------------------
+
+
+def _tags_table(rows: list[tuple[int, list[int] | None, list[float] | None]]) -> pa.Table:
+    return pa.table(
+        {
+            "game_idx": pa.array([r[0] for r in rows], pa.int64()),
+            "game_tags": pa.array([r[1] for r in rows], pa.list_(pa.int64())),
+            "game_tag_weights": pa.array([r[2] for r in rows], pa.list_(pa.float64())),
+        }
+    )
+
+
+def test_attach_game_tags_joins_by_game_idx_and_normalizes_weights():
+    latest = pa.table({"game_idx": pa.array([4, 2, 3, 99], pa.int64())})
+    tags = _tags_table([(2, [5, 6], [300.0, 100.0]), (4, [7], [0.0]), (3, [], [])])
+    joined = attach_game_tags(latest, tags.to_batches(max_chunksize=1), num_games=10)
+    assert joined["game_idx"].to_pylist() == [4, 2, 3, 99]  # row order kept
+    assert joined["game_tags"].to_pylist() == [[7], [5, 6], [], None]
+    items = ItemFeatures.from_arrow(
+        joined.append_column("game_is_free", pa.array([None] * 4, pa.bool_()))
+        .append_column("game_reviews_ratio", pa.array([0.5] * 4))
+        .append_column("game_developers", pa.array([[]] * 4, pa.list_(pa.int64())))
+        .append_column("game_publishers", pa.array([[]] * 4, pa.list_(pa.int64())))
+        .append_column("game_genres", pa.array([[]] * 4, pa.list_(pa.int64())))
+        .append_column("game_categories", pa.array([[]] * 4, pa.list_(pa.int64())))
+    )
+    assert [items.tags.row(i) for i in range(4)] == [[7], [5, 6], [], []]
+    # weights sum to 1 per game; all-zero weights become uniform
+    assert items.tags.weights.tolist() == pytest.approx([1.0, 0.75, 0.25])
+    picked = items.tags.take(np.array([1, 0]))
+    assert picked.values.tolist() == [5, 6, 7]
+    assert picked.weights.tolist() == pytest.approx([0.75, 0.25, 1.0])
+
+
+def test_attach_game_tags_without_rows_gives_empty_bags():
+    latest = pa.table({"game_idx": pa.array([2, 3], pa.int64())})
+    joined = attach_game_tags(latest, [], num_games=5)
+    assert joined["game_tags"].to_pylist() == [None, None]
+
+
+def test_item_features_without_tag_columns_have_empty_tags(marts):
+    items = ItemFeatures.from_arrow(marts["game_features"])
+    assert len(items.tags) == len(items) and len(items.tags.values) == 0
+
+
+def test_load_with_tags(source):
+    without = load(source)
+    assert without.vocab.tags is None
+    assert len(without.catalog.items.tags.values) == 0
+    data = load(source, with_tags=True)
+    assert data.vocab.tags == FIRST_GAME + 6
+    assert {"lkp_tags", "game_tags"} <= set(data.snapshots)
+    tags = data.catalog.items.tags
+    first = data.catalog.rows(np.array([FIRST_GAME]))[0]
+    last = data.catalog.rows(np.array([FIRST_GAME + N_GAMES - 1]))[0]
+    assert tags.row(first) == [FIRST_GAME, FIRST_GAME + 4]
+    assert tags.weights[tags.offsets[first] : tags.offsets[first + 1]].tolist() == pytest.approx(
+        [0.9, 0.1]
+    )
+    assert tags.row(last) == []  # no tags in the mart

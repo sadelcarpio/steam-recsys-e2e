@@ -10,6 +10,8 @@ from conftest import (
     N_GAMES,
     REVIEWS,
     TABLE,
+    FakeSource,
+    add_tags,
     make_metadata,
     make_model,
     reverse_ranking,
@@ -239,3 +241,15 @@ def test_skipped_run_syncs_no_details(settings, source, store):
         settings, source, store, _writer(settings), None, details_writer=details, now=NOW
     )
     assert summary.skipped and summary.game_details_written == 0
+
+
+def test_a_model_with_tags_scores_the_tagged_catalog(settings, marts, store):
+    model = make_model(tags=FIRST_GAME + 8)
+    store.save_model(model, make_metadata(model, "tags1"))
+    settings = settings.model_copy(update={"model_id": "tags1"})
+    summary = run_inference(
+        settings, FakeSource(add_tags(marts)), store, _writer(settings), None, now=NOW
+    )
+    assert summary.model_id == "tags1" and summary.users == 4
+    with pytest.raises(RuntimeError, match="tags"):
+        run_inference(settings, FakeSource(marts), store, _writer(settings), None, now=NOW)

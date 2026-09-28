@@ -45,6 +45,7 @@ def test_layers(manifest):
     models = _models(manifest)
     assert {m.name for m in models.values() if m.config.schema == "staging"} == {
         "stg_steam__games",
+        "stg_steam__game_tags",
         "stg_steam__reviews",
     }
     assert set(MART_CONTRACTS) == {m.name for m in models.values() if m.config.schema == "marts"}

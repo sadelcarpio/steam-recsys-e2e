@@ -85,6 +85,11 @@ class IngestionSettings(BaseSettings):
     max_reviews_per_game: int = Field(0, ge=0)
     # Older reviews fetched per game per run past the ones already scraped (backfill); 0 = off.
     backfill_reviews_per_run: int = Field(100_000, ge=0)
+    # tags-scraping (IStoreBrowseService/GetItems, api.steampowered.com: not the store throttle)
+    tags_batch_size: int = Field(100, ge=1, le=200)
+    tags_per_game: int = Field(20, ge=1, le=50)
+    tags_request_interval_seconds: float = Field(0.5, ge=0)
+    tags_flush_every: int = Field(20_000, ge=1)
     max_game_attempts: int = Field(3, ge=1)
     # A task exits non-zero when more than this share of its games hit exhausted retries.
     max_failure_ratio: float = Field(0.2, ge=0, le=1)

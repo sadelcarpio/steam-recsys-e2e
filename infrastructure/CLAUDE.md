@@ -30,7 +30,8 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
   would be forwarded, and the Function URL needs its own `Host`).
 - The state machine definition is HCL (`local.pipeline_definition` in `orchestration.tf`):
   `ListPartitionGameIds -> Scrape -> Transform -> CheckChampion -> HasChampion -> Infer |
-  NoChampion`. `CheckChampion` lists `models/champion/metadata.json` (written last by a
+  NoChampion`. `Scrape` runs the games / reviews Maps plus `local.tags_branch` (one
+  `tags-scraping` task whose final failure is caught: tags are best effort). `CheckChampion` lists `models/champion/metadata.json` (written last by a
   promotion). New states need matching permissions on `aws_iam_role.pipeline` (RunTask on the
   task definition, PassRole on its roles).
 - Raw Glue tables (`local.raw_tables` in `etl.tf`) mirror the scraper parquet schema; keep them in

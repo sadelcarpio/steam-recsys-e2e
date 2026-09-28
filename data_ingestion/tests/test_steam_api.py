@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 import requests
 import responses
@@ -8,6 +10,10 @@ from responses import matchers
 from steam_ingestion.steam_api import (
     APP_DETAILS_URL,
     APP_LIST_URL,
+    MAX_STORE_ITEMS_PER_CALL,
+    STORE_ITEMS_URL,
+    TAG_LIST_URL,
+    GameTag,
     SteamApiError,
     SteamClient,
 )
@@ -238,3 +244,47 @@ def test_iter_pages_ignored_date_range_is_an_error(client: SteamClient) -> None:
     )
     with pytest.raises(SteamApiError, match="date range ignored"):
         list(client.iter_review_pages(10, until_ts=150))
+
+
+@responses.activate
+def test_get_tag_list(client: SteamClient) -> None:
+    responses.get(
+        TAG_LIST_URL,
+        match=[matchers.query_param_matcher({"language": "english"})],
+        json={"response": {"tags": [{"tagid": 19, "name": "Action"}, {"tagid": 7}]}},
+    )
+    assert client.get_tag_list() == {19: "Action"}
+
+
+@responses.activate
+def test_get_game_tags_sorts_by_weight_and_skips_unknown_apps(client: SteamClient) -> None:
+    responses.get(
+        STORE_ITEMS_URL,
+        json={
+            "response": {
+                "store_items": [
+                    {
+                        "appid": 10,
+                        "success": 1,
+                        "tags": [
+                            {"tagid": 1, "weight": 5},
+                            {"tagid": 2, "weight": 9},
+                            {"tagid": 3, "weight": 7},
+                        ],
+                    },
+                    {"appid": 20, "success": 1},
+                    {"id": 30, "success": 15},
+                ]
+            }
+        },
+    )
+    tags = client.get_game_tags([10, 20, 30], tag_count=2)
+    assert tags == {10: [GameTag(2, 9), GameTag(3, 7)]}
+    query = json.loads(responses.calls[0].request.params["input_json"])
+    assert query["ids"] == [{"appid": 10}, {"appid": 20}, {"appid": 30}]
+    assert query["data_request"] == {"include_tag_count": 2}
+
+
+def test_get_game_tags_rejects_oversized_batches(client: SteamClient) -> None:
+    with pytest.raises(ValueError):
+        client.get_game_tags(list(range(MAX_STORE_ITEMS_PER_CALL + 1)))

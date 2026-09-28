@@ -207,3 +207,17 @@ def test_training_resumes_from_an_s3_checkpoint(settings, source, store, monkeyp
     monkeypatch.setattr(store, "checkpoints", original)
     metadata = run_training(settings, source, store)
     assert len(metadata.epoch_losses) == settings.epochs
+
+
+def test_tags_candidate_is_compared_with_a_champion_without_tags(settings, source, store):
+    old = settings.model_copy(update={"model_id": "notags1", "use_game_tags": False})
+    assert run_training(old, source, store).config.vocab.tags is None
+    assert run_promotion(old, source, store).promoted
+
+    metadata = run_training(settings, source, store)
+    assert metadata.config.vocab.tags is not None
+    model, _ = store.load_model("abc123")
+    assert model.item_tower.tags is not None
+    report = run_promotion(settings, source, store)
+    # the champion without tags is loaded and scored on the same rows (catalog with tags)
+    assert report.champion is not None and report.champion.model_id == "notags1"

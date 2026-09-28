@@ -83,7 +83,18 @@ REVIEWS_SCHEMA = pa.schema(
     ]
 )
 
-RAW_SCHEMAS = {"games": GAMES_SCHEMA, "reviews": REVIEWS_SCHEMA}
+GAME_TAGS_SCHEMA = pa.schema(
+    [
+        ("appid", pa.int64()),
+        ("tag_ids", pa.list_(pa.int64())),
+        ("tag_names", _STR_LIST),
+        ("tag_weights", pa.list_(pa.int64())),
+        ("scraped_at", pa.int64()),
+        ("scrape_date", pa.date32()),
+    ]
+)
+
+RAW_SCHEMAS = {"games": GAMES_SCHEMA, "reviews": REVIEWS_SCHEMA, "game_tags": GAME_TAGS_SCHEMA}
 
 
 def _game(appid, name, *, scrape_date, type_="game", devs=(), pubs=(), genres=(), cats=(),
@@ -191,6 +202,34 @@ BATCH2_REVIEWS = [
     _review(12, 100, 60, True, 5500, **_d2),  # dropped game
     _review(14, 200, 21, False, 7000, **_d2),  # user 200 already reviewed game 21 (review 5)
     _review(2, 100, 21, False, 2000, updated=5800, **_d2),  # edited later: first seen wins
+]
+
+
+def _tags(appid, tags, *, scraped_at, scrape_date):
+    """tags: [(name, weight), ...] by weight descending (the scraper's order)."""
+    return {
+        "appid": appid,
+        "tag_ids": list(range(len(tags))),
+        "tag_names": [n for n, _ in tags],
+        "tag_weights": [w for _, w in tags],
+        "scraped_at": scraped_at,
+        "scrape_date": scrape_date,
+    }
+
+
+# Tags (spec 8): 10 is re-scraped by a retry (the later scrape wins) and a blank name is
+# dropped; 40 is not a catalog game (no row, no lookup id); 50 is tagged in batch 1 but only
+# kept in batch 2. Batch 2 re-tags 10 only (21 keeps its batch 1 tags).
+BATCH1_TAGS = [
+    _tags(10, [("FPS", 900), ("Action", 500), (" ", 100)], scraped_at=T0, **_d1),
+    _tags(10, [("FPS", 950), ("Action", 500)], scraped_at=T0 + 60, **_d1),
+    _tags(21, [(" Indie ", 300), ("Cozy", 200)], scraped_at=T0, **_d1),
+    _tags(40, [("Weird", 10)], scraped_at=T0, **_d1),
+    _tags(50, [("Strategy", 700), ("Space", 600)], scraped_at=T0, **_d1),
+]
+
+BATCH2_TAGS = [
+    _tags(10, [("Action", 990), ("FPS", 950), ("Co-op", 400)], scraped_at=T0 + 604_800, **_d2),
 ]
 
 

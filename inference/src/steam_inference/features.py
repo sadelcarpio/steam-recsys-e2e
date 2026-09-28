@@ -9,14 +9,15 @@ as they arrive.
 
 The catalog covers every current game, including games newer than the model: ids beyond the
 model's vocabularies map to OOV inside the model, so a new game is scored from its content
-features.
+features. Each game's Steam user tags (`game_tags`, spec 8) are joined when the mart exists: a
+model trained with tags needs them, and the prompt / adult filter use their names.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pyarrow as pa
@@ -25,9 +26,11 @@ from pyiceberg.exceptions import NoSuchTableError
 from steam_training.contracts import USER_HISTORY_LENGTH
 from steam_training.data import (
     GAME_FEATURE_COLUMNS,
+    GAME_TAG_COLUMNS,
     Catalog,
     Ragged,
     TableSource,
+    attach_game_tags,
     catalog_from_table,
     latest_game_rows,
     pad_history,
@@ -45,6 +48,10 @@ TABLES = [
     "user_features",
     "interactions",
 ]
+# Steam user tags (spec 8): used when both exist.
+TAG_TABLES = ["lkp_tags", "game_tags"]
+# Tags listed per game in the rerank prompt (the heaviest ones).
+PROMPT_TAGS = 5
 # Rows buffered before the latest-row-per-user reduction runs again.
 REDUCE_ROWS = 1_000_000
 
@@ -58,6 +65,8 @@ class Games:
     developer_names: np.ndarray  # object (str) indexed by developer id
     # object (str) per catalog row: Steam short description, truncated ("" = none / not loaded)
     description: np.ndarray
+    # object (str) indexed by tag id; empty when the tags were not loaded
+    tag_names: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=object))
 
     def __len__(self) -> int:
         return len(self.catalog)
@@ -70,6 +79,9 @@ class Games:
         parts = [self.name[row]]
         if genres:
             parts.append(", ".join(genres))
+        tags = _names(self.tag_names, items.tags.row(row))[:PROMPT_TAGS]
+        if tags:
+            parts.append("tags: " + ", ".join(tags))
         if developers:
             parts.append("by " + ", ".join(developers))
         if items.is_free_known[row]:
@@ -135,10 +147,15 @@ def load_inference_data(
     max_users: int = 0,
     popular_window_days: int = 90,
     description_chars: int = 0,
+    require_tags: bool = False,
 ) -> InferenceData:
     """`description_chars` > 0 also loads the games' short descriptions (for the rerank
-    prompt), truncated to that many characters."""
+    prompt), truncated to that many characters. `require_tags`: fail when the tag marts are
+    missing (the model was trained with tags)."""
     snapshots = {table: source.snapshot_id(table) for table in TABLES}
+    snapshots |= _optional_snapshots(source, TAG_TABLES)
+    if require_tags and not set(TAG_TABLES) <= set(snapshots):
+        raise RuntimeError(f"the model uses Steam tags but {TAG_TABLES} are missing: run the ETL")
     games = load_games(source, snapshots, description_chars)
     review_users, reviews, popular_counts = _load_reviews(
         source, snapshots["interactions"], popular_window_days
@@ -185,6 +202,13 @@ def load_games(
         ),
         num_games,
     )
+    tag_names = np.zeros(0, dtype=object)
+    if set(TAG_TABLES) <= set(snapshots):
+        tags = source.batches("game_tags", GAME_TAG_COLUMNS, snapshots["game_tags"])
+        latest = attach_game_tags(latest, tags, num_games)
+        tag_names = _lookup_names(source, "lkp_tags", snapshots["lkp_tags"])
+    else:
+        log.warning("marts %s not found: games without Steam tags", TAG_TABLES)
     game_id = _int64(latest["game_id"])
     return Games(
         catalog=catalog_from_table(latest, num_games),
@@ -193,7 +217,18 @@ def load_games(
         genre_names=_lookup_names(source, "lkp_genres", snapshots["lkp_genres"]),
         developer_names=_lookup_names(source, "lkp_developers", snapshots["lkp_developers"]),
         description=_short_descriptions(source, game_id, description_chars),
+        tag_names=tag_names,
     )
+
+
+def _optional_snapshots(source: TableSource, tables: list[str]) -> dict[str, int | None]:
+    snapshots = {}
+    for table in tables:
+        try:
+            snapshots[table] = source.snapshot_id(table)
+        except NoSuchTableError:
+            continue
+    return snapshots
 
 
 def _short_descriptions(source: TableSource, game_id: np.ndarray, max_chars: int) -> np.ndarray:

@@ -24,7 +24,9 @@ steam_marts (Iceberg, pyiceberg)
 ```
 
 1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
-   current state. `interactions` supplies each user's reviewed games (excluded from the
+   current state, plus each game's Steam user tags (`game_tags` + `lkp_tags`) when those marts
+   exist (required when the model was trained with tags, else only used by the prompt and the
+   adult filter). `interactions` supplies each user's reviewed games (excluded from the
    recommendations) and review counts. All reads are
    pinned to the snapshot current at the start of the run.
 2. **Retrieval.** Every game is embedded once. Users are scored against all games in chunks
@@ -33,7 +35,7 @@ steam_marts (Iceberg, pyiceberg)
 3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
    and at most `RERANK_MAX_USERS` (1000), are sent to Bedrock (Converse API) with their last
    `games_reviewed_positive` (the last 5 liked games, the user tower's input) and their K
-   candidates. Each game is one line: name | genres | developers | free or paid | positive
+   candidates. Each game is one line: name | genres | top 5 Steam tags | developers | free or paid | positive
    review share | Steam short description (mart `game_details`, cut at
    `RERANK_DESCRIPTION_CHARS`). The model must call a `submit_ranking` tool
    that returns every candidate once, best first, and explains the first `EXPLAIN_TOP_N` (5).
@@ -81,7 +83,8 @@ steam_marts (Iceberg, pyiceberg)
    online catalog and the search index, and liked adult games stay out of LLM prompts. A game
    is adult when it has Steam's "Sexual Content" / "Nudity" genre or an explicit word in its
    name (hentai, nsfw, porn…): the genres alone miss most of them, and `required_age` mostly
-   marks violence. About 2,500 of 176k games today. `EXCLUDE_ADULT=false` turns it off.
+   marks violence. With the tag marts, also a game tagged `NSFW` / `Hentai`, or with
+   `Sexual Content` / `Nudity` among its top 5 tags (lower down they also tag mainstream RPGs). About 2,500 of 176k games today. `EXCLUDE_ADULT=false` turns it off.
 9. **Search index.** With the online catalog (same games, same condition), the run writes
    `s3://model-artifacts-<acct>/serving/search/games.json` (`contracts.SearchIndex`): every
    catalog game as `[appid, name, reviews]`, most reviewed first, where `reviews` counts the

@@ -61,9 +61,11 @@ KEYS = {
     "lkp_publishers": ("id",),
     "lkp_genres": ("id",),
     "lkp_categories": ("id",),
+    "lkp_tags": ("id",),
     "lkp_games": ("game_idx",),
     "game_features": ("game_id", "timestamp"),
     "game_details": ("game_id",),
+    "game_tags": ("game_id",),
     "user_features": ("user_id", "timestamp"),
     "interactions": ("review_id",),
 }
@@ -119,8 +121,8 @@ class Lakehouse:
             location = f"s3://{self.bucket}/{self.prefix}raw/{table}/"
             self.query(fx.external_table_ddl(self.db("raw"), table, location))
 
-    def upload(self, name: str, games: list[dict], reviews: list[dict]) -> None:
-        for table, rows in (("games", games), ("reviews", reviews)):
+    def upload(self, name: str, games: list[dict], reviews: list[dict], tags: list[dict]) -> None:
+        for table, rows in (("games", games), ("reviews", reviews), ("game_tags", tags)):
             buf = io.BytesIO()
             pq.write_table(fx.to_table(rows, fx.RAW_SCHEMAS[table]), buf, compression="zstd")
             key = f"{self.prefix}raw/{table}/{name}.parquet"
@@ -185,12 +187,12 @@ def runs() -> dict[str, Snapshot]:
     lh = Lakehouse()
     try:
         lh.create_raw_tables()
-        lh.upload("batch1", fx.BATCH1_GAMES, fx.BATCH1_REVIEWS)
+        lh.upload("batch1", fx.BATCH1_GAMES, fx.BATCH1_REVIEWS, fx.BATCH1_TAGS)
         lh.dbt("run")
         snaps = {"batch1": lh.snapshot()}
         lh.dbt("run")
         snaps["rerun"] = lh.snapshot()
-        lh.upload("batch2", fx.BATCH2_GAMES, fx.BATCH2_REVIEWS)
+        lh.upload("batch2", fx.BATCH2_GAMES, fx.BATCH2_REVIEWS, fx.BATCH2_TAGS)
         lh.dbt("run")
         snaps["batch2"] = lh.snapshot()
         lh.dbt("build", full_refresh=True)  # + all dbt data tests
@@ -222,6 +224,7 @@ def test_incremental_matches_full_refresh(runs):
         "int_game_review_counts",
         "game_features",
         "game_details",
+        "game_tags",
         "user_features",
         "interactions",
     ):
@@ -323,6 +326,28 @@ def test_game_details_one_row_per_catalog_game(runs):
     delta = details[50]
     assert delta["game_short_description"] is None and delta["game_price"] is None
     assert delta["game_developers"] == ["Valve", "New Studio"]
+
+
+def test_lookup_of_tags_covers_catalog_games_only(runs):
+    batch1 = {r["name"]: r["id"] for r in runs["batch1"]["lkp_tags"]}
+    assert batch1 == {"Action": 2, "Cozy": 3, "FPS": 4, "Indie": 5}  # no "Weird" (game 40)
+    batch2 = {r["name"]: r["id"] for r in runs["batch2"]["lkp_tags"]}
+    assert batch2 == {**batch1, "Co-op": 6, "Space": 7, "Strategy": 8}
+
+
+def test_game_tags_latest_scrape_per_catalog_game(runs):
+    batch1 = by(runs["batch1"]["game_tags"], "game_id")
+    assert set(batch1) == {10, 21}
+    assert (batch1[10]["game_tags"], batch1[10]["game_tag_weights"]) == ([4, 2], [950.0, 500.0])
+    assert (batch1[21]["game_idx"], batch1[21]["game_tags"]) == (3, [5, 3])
+    batch2 = by(runs["batch2"]["game_tags"], "game_id")
+    assert set(batch2) == {10, 21, 50}  # 50 joined the catalog with its batch 1 tags
+    assert (batch2[10]["game_tags"], batch2[10]["game_tag_weights"]) == (
+        [2, 4, 6],
+        [990.0, 950.0, 400.0],
+    )
+    assert batch2[21] == batch1[21]  # not re-scraped: not merged again
+    assert (batch2[50]["game_idx"], batch2[50]["game_tags"]) == (11, [8, 7])
 
 
 def test_user_features_last_five_positive_most_recent_first(runs):

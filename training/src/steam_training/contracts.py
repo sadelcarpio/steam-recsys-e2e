@@ -38,6 +38,8 @@ class VocabSizes(_Frozen):
     publishers: int = Field(ge=FIRST_ID)
     genres: int = Field(ge=FIRST_ID)
     categories: int = Field(ge=FIRST_ID)
+    # Steam user tags (spec 8); None for a model trained without them (no tags module).
+    tags: int | None = Field(None, ge=FIRST_ID)
 
 
 class ModelConfig(_Frozen):

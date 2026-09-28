@@ -41,6 +41,10 @@ locals {
       ["written_during_early_access", "boolean"], ["primarily_steam_deck", "boolean"],
       ["scrape_date", "date"],
     ]
+    game_tags = [
+      ["appid", "bigint"], ["tag_ids", "array<bigint>"], ["tag_names", "array<string>"],
+      ["tag_weights", "array<bigint>"], ["scraped_at", "bigint"], ["scrape_date", "date"],
+    ]
   }
 
   # Athena + Glue permissions dbt-athena needs to build views / Iceberg tables in `databases`.
