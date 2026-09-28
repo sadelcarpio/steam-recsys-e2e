@@ -74,6 +74,7 @@ def test_no_bundle_is_503(tables, settings):
         {"liked_game_ids": [12], "details": "yes"},
         {"liked_game_ids": [12], "user_id": "1"},
         {"liked_game_ids": list(range(101))},
+        {"liked_game_ids": list(range(100_000))},  # rejected by the contract, before the limit
         [12],
     ],
 )

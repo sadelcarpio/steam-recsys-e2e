@@ -95,6 +95,10 @@ def test_game(app):
         (f"/users/{USER}/recommendations", {"limit": "0"}, 400),
         (f"/users/{USER}/recommendations", {"limit": "31"}, 400),
         (f"/users/{USER}/recommendations", {"limit": "x"}, 400),
+        # str.isdigit() accepts these, int() does not (was a 500)
+        (f"/users/{USER}/recommendations", {"limit": "²"}, 400),
+        ("/popular", {"limit": "٣"}, 400),
+        ("/games/²", None, 400),
         (f"/users/{USER}/recommendations", {"details": "maybe"}, 400),
         ("/users/12a/recommendations", None, 400),
         ("/users/123456789012345678901/recommendations", None, 400),

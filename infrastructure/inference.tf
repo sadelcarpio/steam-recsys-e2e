@@ -18,6 +18,9 @@ locals {
   bedrock_base_model_id = replace(var.inference_bedrock_model_id, "/^(us|eu|apac|global)\\./", "")
   # Online catalog (item embeddings + manifest) written by inference, read by serving.
   online_bundle_prefix = "serving/online"
+  # Game search index of the frontend, written with the catalog, served by CloudFront (frontend.tf).
+  search_index_prefix = "serving/search"
+  search_index_key    = "${local.search_index_prefix}/games.json"
 }
 
 # ---- Output: recommendations table -----------------------------------------------------------
@@ -58,6 +61,7 @@ resource "aws_ssm_parameter" "inference" {
     RECOMMENDATIONS_TABLE  = aws_dynamodb_table.recommendations.name
     GAME_DETAILS_TABLE     = aws_dynamodb_table.game_details.name
     ONLINE_BUNDLE_PREFIX   = local.online_bundle_prefix
+    SEARCH_INDEX_KEY       = local.search_index_key
     BEDROCK_MODEL_ID       = var.inference_bedrock_model_id
     RERANK_MAX_USERS       = tostring(var.inference_rerank_max_users)
   }
@@ -122,9 +126,12 @@ data "aws_iam_policy_document" "inference" {
     resources = ["${aws_s3_bucket.model_artifacts.arn}/models/*"]
   }
   statement {
-    sid       = "PublishOnlineBundle"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.model_artifacts.arn}/${local.online_bundle_prefix}/*"]
+    sid     = "PublishOnlineBundle"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.model_artifacts.arn}/${local.online_bundle_prefix}/*",
+      "${aws_s3_bucket.model_artifacts.arn}/${local.search_index_key}",
+    ]
   }
   statement {
     sid       = "SyncRecommendations"

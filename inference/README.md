@@ -20,6 +20,7 @@ steam_marts (Iceberg, pyiceberg)
   game_details   text, image URL (new games only) ─► DynamoDB game-details (read by serving)
   item embeddings ─► S3 serving/online/ catalog.npz + manifest.json (serving's online endpoint,
                     with the model's models/<id>/user_tower.npz from training)
+  catalog names    ─► S3 serving/search/games.json (the frontend's in-browser game search)
 ```
 
 1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
@@ -32,7 +33,9 @@ steam_marts (Iceberg, pyiceberg)
 3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
    and at most `RERANK_MAX_USERS` (1000), are sent to Bedrock (Converse API) with their last
    `games_reviewed_positive` (the last 5 liked games, the user tower's input) and their K
-   candidates. The model must call a `submit_ranking` tool
+   candidates. Each game is one line: name | genres | developers | free or paid | positive
+   review share | Steam short description (mart `game_details`, cut at
+   `RERANK_DESCRIPTION_CHARS`). The model must call a `submit_ranking` tool
    that returns every candidate once, best first, and explains the first `EXPLAIN_TOP_N` (5).
    Invalid answers are repaired: unknown or repeated numbers are dropped and missing
    candidates are appended. An answer with no usable tool call (e.g. stop reason
@@ -73,6 +76,19 @@ steam_marts (Iceberg, pyiceberg)
    noncurrent-version rule. When the model has no `user_tower.npz` (it was saved before the
    export existed), nothing is published and the previous manifest stays; run
    `python -m steam_training export --model-id champion` (training README).
+8. **Adult games** (`adult.py`) are excluded from everything the run publishes: retrieval
+   (never a candidate, so never recommended or explained), the popularity fallback, the
+   online catalog and the search index, and liked adult games stay out of LLM prompts. A game
+   is adult when it has Steam's "Sexual Content" / "Nudity" genre or an explicit word in its
+   name (hentai, nsfw, porn…): the genres alone miss most of them, and `required_age` mostly
+   marks violence. About 2,500 of 176k games today. `EXCLUDE_ADULT=false` turns it off.
+9. **Search index.** With the online catalog (same games, same condition), the run writes
+   `s3://model-artifacts-<acct>/serving/search/games.json` (`contracts.SearchIndex`): every
+   catalog game as `[appid, name, reviews]`, most reviewed first, where `reviews` counts the
+   reviews loaded by this run. Stored gzipped with `Content-Encoding: gzip` (about 2-3 MB for
+   ~180k games); the frontend downloads it through CloudFront and searches it in the browser.
+   To publish it without a run (from the catalog already in S3, counts from one Athena query):
+   `uv run python scripts/publish_search_index.py [--dry-run]`.
 
 ## Output contract (`src/steam_inference/contracts.py`)
 
@@ -81,7 +97,7 @@ steam_marts (Iceberg, pyiceberg)
   "user_id": "76561198027267313",
   "recommendations": [
     {"game_id": 63910, "name": "King's Bounty: Crossworlds", "score": 0.4127,
-     "explanation": "As a fan of strategy and RPGs like Dungeons 2, ..."},
+     "explanation": "Como fan de la estrategia y los RPG como Dungeons 2, ..."},
     {"game_id": 203350, "name": "King's Bounty: Warriors of the North", "score": 0.4343}
   ],
   "model_id": "local-test",
@@ -113,14 +129,16 @@ item with the serving package, so a contract change that breaks serving fails he
 
 `recommendations` is ordered best first: the LLM order when `reranked`, the model order
 otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
-Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation`. `score` and
+Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation` (written in Spanish, set in the prompt in `rerank.py`). `score` and
 `generated_at` are as of the last write: an unchanged list keeps them. `user_id` is a string,
 because Steam ids exceed JavaScript's safe integers.
 
 ## LLM choice and cost
 
 Bedrock has no free tier. Measured on the real marts with the same prompt, each reranked user
-costs about 1.8k input tokens and 0.4k output tokens:
+costs about 1.8k input tokens and 0.4k output tokens without the short descriptions; at
+`RERANK_DESCRIPTION_CHARS=200` they add about 50 tokens per game, roughly 1.8k more input
+tokens for 35 games (estimate):
 
 | Model (`BEDROCK_MODEL_ID`) | Quality of the explanations | Relative cost |
 |---|---|---|
@@ -154,6 +172,8 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `GAME_DETAILS_TABLE` / `SYNC_GAME_DETAILS` | `game-details` / true | Insert-only game details |
 | `POPULAR_WINDOW_DAYS` | 90 | Window of the popularity fallback |
 | `ONLINE_BUNDLE_ENABLED` / `ONLINE_BUNDLE_PREFIX` | true / `serving/online` | Online catalog + manifest (dry runs: `online/` next to `OUTPUT_PATH`) |
+| `EXCLUDE_ADULT` | true | Leave adult games out of recommendations, the popular list, the online catalog and search (`adult.py`) |
+| `SEARCH_INDEX_KEY` | `serving/search/games.json` | Frontend search index, written with the online catalog (dry runs: `online/games.json.gz`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user |
 | `MAX_USERS` | 0 (all) | Only the N most active users (local runs) |
@@ -161,6 +181,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
 | `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
+| `RERANK_DESCRIPTION_CHARS` | 200 | Short description per prompt game, cut at a word boundary; `0` = none (the mart `game_details` is then not read) |
 | `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 32 / 8 | Parallel Bedrock calls (~1000 req/min, half the 2000 RPM quota) / DynamoDB scan segments and writers |
 | `USER_BATCH_SIZE` / `ITEM_BATCH_SIZE` / `NUM_THREADS` | 1024 / 4096 / 0 | Scoring |
 

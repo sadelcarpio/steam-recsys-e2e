@@ -49,13 +49,16 @@ def retrieve(
     k: int,
     user_batch_size: int,
     item_batch_size: int,
+    excluded: np.ndarray | None = None,
 ) -> Candidates:
+    """`excluded`: bool per catalog row, never recommended to anyone (adult games)."""
     model.eval()
     started = time.monotonic()
     item_embeddings = embed_catalog(model, games.catalog, item_batch_size)
     k = min(k, len(games))
     rows = np.full((len(users), k), NO_ROW, dtype=np.int64)
     scores = np.zeros((len(users), k), dtype=np.float32)
+    blocked = torch.from_numpy(np.flatnonzero(excluded)) if excluded is not None else None
     for start in range(0, len(users), user_batch_size):
         chunk = users.take(np.arange(start, min(start + user_batch_size, len(users))))
         user_embeddings = model.user_tower(torch.from_numpy(chunk.history))
@@ -66,6 +69,8 @@ def retrieve(
         owner = torch.from_numpy(np.repeat(np.arange(len(chunk)), np.diff(reviewed.offsets)))
         known = catalog_rows >= 0
         chunk_scores[owner[known], catalog_rows[known]] = float("-inf")
+        if blocked is not None:
+            chunk_scores[:, blocked] = float("-inf")
         top = torch.topk(chunk_scores, k, dim=1)
         top_rows = top.indices.numpy()
         top_scores = top.values.numpy()

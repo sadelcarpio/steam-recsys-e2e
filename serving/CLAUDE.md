@@ -58,4 +58,5 @@ Add deps only with `uv add` (never edit the lock).
 Infra: `infrastructure/serving.tf` (function with 1 GB of memory, Function URL and auth type,
 public permissions, client role, SSM, read access to the bundle). The table `game-details`
 lives in `inference.tf`. Workflows: `serving-ci.yml`, `serving-cd.yml`. The auth type is the
-`serving_auth_type` input of the infrastructure CD.
+`serving_auth_type` input of the infrastructure CD. The frontend (`frontend/`) calls this API
+through CloudFront under `/api` (prefix stripped before the Lambda, so routes stay unprefixed).

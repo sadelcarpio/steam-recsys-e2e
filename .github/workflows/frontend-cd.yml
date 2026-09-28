@@ -1,0 +1,68 @@
+name: frontend CD
+
+# Manual deploy of the static app to the recsys-frontend-<account-id> bucket, then a CloudFront
+# invalidation. Infrastructure must be applied first (bucket + distribution, frontend.tf). The
+# API and the search index are served by the same distribution (serving CD / inference runs).
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: frontend-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm test && npm run build
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload
+        run: |
+          account="$(aws sts get-caller-identity --query Account --output text)"
+          bucket="recsys-frontend-${account}"
+          # hashed assets never change; index.html must be revalidated on every load
+          aws s3 sync dist/ "s3://${bucket}/" --delete --exclude index.html \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp dist/index.html "s3://${bucket}/index.html" --cache-control "no-cache"
+
+      - name: Invalidate CloudFront
+        run: |
+          id="$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Comment=='steam-recsys frontend'].Id | [0]" --output text)"
+          [ -n "$id" ] && [ "$id" != None ] || { echo "no frontend distribution: apply infrastructure"; exit 1; }
+          aws cloudfront create-invalidation --distribution-id "$id" --paths "/index.html" "/" > /dev/null
+          domain="$(aws cloudfront get-distribution --id "$id" --query Distribution.DomainName --output text)"
+          aliases="$(aws cloudfront get-distribution --id "$id" \
+            --query 'Distribution.DistributionConfig.Aliases.Items[0]' --output text)"
+          url="https://${domain}"
+          [ "$aliases" != None ] && url="https://${aliases}"
+          # smoke test through CloudFront: app, API, search index
+          sleep 5
+          app="$(curl -s -o /dev/null -w '%{http_code}' "${url}/u/76561198312196006")"
+          api="$(curl -s -o /dev/null -w '%{http_code}' "${url}/api/health")"
+          data="$(curl -s -o /dev/null -w '%{http_code}' "${url}/data/games.json")"
+          {
+            echo '### recsys-frontend deployed'
+            echo "- URL: ${url}"
+            echo "- app route: HTTP ${app}, /api/health: HTTP ${api}, /data/games.json: HTTP ${data}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$app" = 200 ] && [ "$api" = 200 ] || exit 1

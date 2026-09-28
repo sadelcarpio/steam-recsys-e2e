@@ -135,9 +135,8 @@ The Function URL auth type is the Terraform variable `serving_auth_type`, chosen
   curl --aws-sigv4 "aws:amz:us-east-1:lambda" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
     -H "x-amz-security-token: $AWS_SESSION_TOKEN" "$URL/popular"
   ```
-- **`NONE`**: public, for demos. Anyone with the URL can call it. The account's Lambda
-  concurrency limit (10 by default, shared with `list-partition-game-ids`) is then the only
-  throttle: `serving_reserved_concurrency` can cap it once the limit is raised.
+- **`NONE`**: public, for demos. Anyone with the URL can call it, bypassing the frontend's
+  CloudFront cache. `serving_reserved_concurrency` (default 30) caps the function.
 
 CORS (`serving_cors_allow_origins`, default `*`, GET only) is handled by the Function URL, so
 a browser frontend can call it directly.

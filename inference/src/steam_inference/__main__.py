@@ -55,6 +55,7 @@ def main() -> None:
                 settings.model_artifacts_bucket,
                 settings.online_bundle_prefix,
                 region=settings.aws_region,
+                search_key=settings.search_index_key,
             )
         )
     reranker = None

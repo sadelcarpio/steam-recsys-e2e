@@ -14,7 +14,8 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `features.py`: stage 1. Latest `user_features` per user (streamed reduction), latest
     `game_features` per game (all current games, even beyond the model vocab), reviews
     grouped per user and newest first (`Reviews.of` -> CSR), `popular_counts` (recent positive
-    reviews per game_idx), lookup names for prompts
+    reviews per game_idx), lookup names and truncated short descriptions (`game_details`) for
+    prompts
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
   - `rerank.py`: stage 3. Prompt, Bedrock Converse with a forced `submit_ranking` tool,
     `parse_response`, `merge_ranking` (repairs the answer), `rerank_all` (threads, per-user
@@ -24,11 +25,20 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `details.py`: mart `game_details` -> `game-details` table, insert-only (`sync_game_details`)
   - `online.py`: the online catalog for serving (`build_catalog`, `encode_catalog`,
     `S3BundleStore` puts the catalog, then a manifest pinned to its version id that names the
-    model's `user_tower.npz`; `LocalBundleStore` for dry runs)
+    model's `user_tower.npz`; `LocalBundleStore` for dry runs; both also publish the search
+    index)
+  - `search.py`: the frontend's search index (`build_search_index` / `index_from_catalog`:
+    catalog games as [appid, name, reviews], `encode_search_index`: gzipped JSON), published
+    with the catalog
+  - `adult.py`: `adult_mask` / `is_adult` (Steam's "Sexual Content" / "Nudity" genres or an
+    explicit word in the name)
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
   - `__main__.py`: SageMaker Processing entry point (`python -m steam_inference`)
+- `scripts/publish_search_index.py`: publishes the search index from the catalog already in
+  S3 (+ review counts from one Athena query), without an inference run; drops adult games
+  from both (republishing the catalog when it had any)
 - `tests/`: `conftest.py` builds synthetic marts, a random-init model saved as champion
   (moto S3 + DynamoDB) and a fake LLM. There are no AWS calls. `test_serving_contract.py`
   reads and serves the written items with `steam_serving` (an editable dev dependency on
@@ -42,6 +52,10 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
 - A missing model (no `models/<MODEL_ID>/metadata.json`) is a successful skip that writes
   nothing. An architecture mismatch fails loudly.
 - Never recommend a game the user already reviewed (positive or negative).
+- Adult games (`adult_mask`, on unless `EXCLUDE_ADULT=false`) never reach anything published:
+  masked in retrieval (so never candidates, reranked or explained), dropped from the popular
+  item, the online catalog (`build_catalog(keep=...)`) and the search index, and left out of
+  prompts. A new output must apply the same mask.
 - Only changed items are written: `UserRecommendations.content_hash` covers what the user
   sees, but not the scores or the time. A new visible field must go into the hash, or changes
   to it will never be written. Deletes of users that are gone happen only on full runs
@@ -60,6 +74,9 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   when the model has its `user_tower.npz`. `test_online_parity.py` runs training's export and
   this catalog through serving's numpy code, and compares the result with torch and with batch
   retrieval.
+- The search index (`SearchIndex`, `SEARCH_INDEX_FORMAT`) is read by the frontend
+  (`frontend/src/api.ts`): change both together. It is published only with the online catalog,
+  so search offers exactly the games `POST /recommendations` can use.
 - LLM output is untrusted: the final order is always a permutation of the retrieved candidates,
   and explanations are kept only for the top `EXPLAIN_TOP_N`. One user's failure never fails
   the run.

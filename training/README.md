@@ -54,6 +54,44 @@ run starts over). `RESUME=false` always starts over.
 
 ## Model
 
+Dimensions of the current champion (`models/champion/metadata.json` → `config`); the
+vocabulary sizes grow with the catalog.
+
+```mermaid
+flowchart TB
+  subgraph user["User tower"]
+    direction TB
+    H["games_reviewed_positive<br/>last 5 liked games, most recent first (0 = padding)"]
+    UM["id mapper: unseen or newer ids → OOV (1)"]
+    GT["game_table (frozen copy)<br/>176,324 × 64"]
+    POOL["mean over the non-padding games · 64"]
+    LEN["history length / 5 · 1"]
+    UC["concat · 65"]
+    UMLP["Linear 65→128 · ReLU · Linear 128→64"]
+    UN["L2 normalize → user vector u · 64"]
+    H --> UM --> GT --> POOL --> UC
+    UM --> LEN --> UC
+    UC --> UMLP --> UN
+  end
+
+  subgraph item["Item tower"]
+    direction TB
+    G["game_idx"] --> IM["id mapper: unseen or newer ids → OOV (1)"] --> GE["game_embedding<br/>176,324 × 64"]
+    D["developers"] --> DE["EmbeddingBag (mean)<br/>119,849 × 16"]
+    P["publishers"] --> PE["EmbeddingBag (mean)<br/>103,427 × 16"]
+    GN["genres"] --> GNE["EmbeddingBag (mean)<br/>35 × 16"]
+    C["categories"] --> CE["EmbeddingBag (mean)<br/>67 × 16"]
+    N["is_free · is_free_known · reviews_ratio · 3"]
+    GE & DE & PE & GNE & CE & N --> IC["concat · 131"]
+    IC --> IMLP["Linear 131→128 · ReLU · Linear 128→64"] --> IN["L2 normalize → item vector v · 64"]
+  end
+
+  GE -. "copied at the start of every epoch" .-> GT
+  UN --> S["score = u · v / 0.05 (cosine / temperature)"]
+  IN --> S
+  S --> LOSS["sampled softmax: target vs in-batch negatives (logQ correction)<br/>+ explicit (disliked) and mined hard negatives"]
+```
+
 | Tower | Input | Architecture |
 |---|---|---|
 | User | `games_reviewed_positive` (last 5 positively reviewed games) | mean pooling over a **frozen copy** of the item tower's game embedding table + history length → MLP → L2 norm |
@@ -72,14 +110,16 @@ run starts over). `RESUME=false` always starts over.
 
   A batch item that is the same game as the target, or a game in the user's history, is never
   used as a negative.
-- **Cold start.** 66% of the interactions are a user's first positive review (empty history).
+- **Cold start.** About half of the positive reviews (49% on the 2026-09 data) are a user's
+  first positive review (empty history).
   Inference never sees an empty history, so training keeps every warm row and only
   `COLD_ROW_FRACTION` of the cold ones. Those rows teach one "no history" query, a fallback
   ranking. `HISTORY_DROPOUT` randomly truncates warm histories so short histories are learned
   well. Games without training interactions, and ids newer than the model's vocabularies, map to
   OOV (id 1). `ITEM_ID_DROPOUT` trains that OOV row, so new games are ranked by their content
   features.
-- Every embedding table is in memory (about 50k games, 41k developers, 35k publishers); features
+- Every embedding table is in memory (176k games, 120k developers, 103k publishers, 35 genres,
+  67 categories on the 2026-09 data); features
   come from the marts as integer ids (see `etl/README.md`).
 
 ## Evaluation

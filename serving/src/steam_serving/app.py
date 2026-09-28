@@ -178,7 +178,7 @@ class App:
         )
 
     def game(self, game_id: str) -> GameDetails:
-        if not game_id.isdigit() or len(game_id) > 10:
+        if not _is_number(game_id) or len(game_id) > 10:
             raise HttpError(400, "invalid game_id", "a Steam appid")
         game = self.repository.game(int(game_id))
         if game is None:
@@ -196,7 +196,7 @@ class App:
     def _list_options(self, query: dict[str, str]) -> tuple[int, bool]:
         """(limit, details) from the query string of the GET lists."""
         raw_limit, raw_details = query.get("limit"), query.get("details")
-        if raw_limit is not None and not raw_limit.isdigit():
+        if raw_limit is not None and not _is_number(raw_limit):
             raise HttpError(400, "invalid limit", f"an integer from 1 to {self.settings.max_limit}")
         if raw_details is not None and raw_details.lower() not in _TRUE | _FALSE:
             raise HttpError(400, "invalid details", "true or false")
@@ -253,6 +253,12 @@ class App:
             },
             "body": body.model_dump_json(exclude_none=True),
         }
+
+
+def _is_number(value: str) -> bool:
+    """ASCII digits only: str.isdigit() also accepts "²" or "٣", which int() rejects or
+    reads as other numbers."""
+    return value.isascii() and value.isdecimal()
 
 
 def _json_body(event: dict[str, Any]) -> Any:

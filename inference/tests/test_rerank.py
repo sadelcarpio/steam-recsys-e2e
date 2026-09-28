@@ -4,6 +4,7 @@ import pytest
 
 from steam_inference.contracts import LlmRanking, RankedCandidate
 from steam_inference.rerank import (
+    SYSTEM_PROMPT,
     TOOL_NAME,
     BedrockReranker,
     RerankError,
@@ -52,6 +53,7 @@ def test_prompt_lists_taste_and_candidates():
     assert "- Liked A | RPG" in prompt and "- Liked B" in prompt
     assert "1. Cand 1" in prompt and "4. Cand 4" in prompt
     assert "(1-4)" in prompt and "first 3 entries" in prompt
+    assert "Spanish" in prompt and "Spanish" in SYSTEM_PROMPT
     assert "explanation" not in build_prompt(REQUEST, explain_top_n=0)
 
 

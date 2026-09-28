@@ -46,33 +46,17 @@ gh variable set AWS_REGION      --body us-east-1
 Actions → *infrastructure CD* → Run workflow → `action=plan`, review, then `action=apply`. The
 job summary lists the Terraform outputs.
 
-### 3b. First time a change adds infrastructure
+### 3b. Changes that add infrastructure (development)
 
-The deploy role only trusts `main`, so new infrastructure can be applied by the workflow only
-after it is on `main`. Pick one:
+The deploy role only trusts `main`, so *infrastructure CD* applies a change only after it is
+merged. Merge it, then run *infrastructure CD*. If the change adds a pipeline step whose image
+does not exist yet, run that component's CD before the next scheduled run (Thursday 17:00 CT), or
+pause the schedule with `schedule_enabled = false` until then.
 
-**Option A: direct push to `main`** (no admin credentials; the new code is tested on `main`
-after the push instead of gating it):
-
-1. Push to `main`. *etl CI* runs lint, unit tests and the image build; the Athena job is skipped
-   (no `ETL_CI_*` variables yet).
-2. *infrastructure CD* with `action=apply` (step 3a). This adds the `Transform` step to the
-   pipeline before the `etl` image exists, so either finish steps 2-5 of this list before the
-   next scheduled run (Thursday 17:00 CT) or disable the schedule `steam-recsys-weekly` in the
-   EventBridge Scheduler console until step 5 (the next apply re-enables it). Otherwise that run
-   scrapes normally, then fails at `Transform`. Nothing is lost: the next dbt run loads
-   everything pending.
-3. Set the `ETL_CI_*` variables (step 4).
-4. Actions → *etl CI* → Run workflow on `main` (re-running the old run may not pick up the new
-   variables). The Athena test now runs through the CI role.
-5. Green: run *etl CD* (step 6). Red: fix on `main` and repeat from 4.
-
-**Option B: local apply from the PR branch** (keeps CI as a gate before merging):
-
-A PR's CI may need its new infrastructure first (e.g. the etl Athena test needs the CI
-role/bucket/workgroup from `etl.tf`). Apply once from the branch with your admin credentials,
-set the variables (step 4), re-run the PR's CI, then merge. The next CD run from `main` has
-nothing to change:
+When a PR's CI needs its new infrastructure first (e.g. the etl Athena integration test needs the
+CI role, bucket and workgroup of `etl.tf`), apply once from the branch with your admin
+credentials, set any new variables (step 4), re-run the PR's CI, then merge. The next CD run from
+`main` has nothing to change:
 
 ```bash
 cd infrastructure
@@ -126,6 +110,7 @@ Order matters only on the first deploy: the pipeline's ECS tasks run the `:lates
 | *training CD* | image `training:<sha>` + a SageMaker training job for that commit (see step 9) |
 | *inference CD* | image `inference` (SageMaker Processing job `Infer`, the pipeline's last step; see step 10) |
 | *serving CD* | Lambda `recsys-serving` code (zip) + smoke test (see step 11) |
+| *frontend CD* | static app to S3 `recsys-frontend-<acct>` + CloudFront invalidation + smoke test (see step 12) |
 
 Later deploys: re-run the component's CD workflow after merging; the next pipeline run picks up
 the new `:latest` image.
@@ -289,9 +274,8 @@ The pipeline's last step (`Infer`, a SageMaker Processing job on `ml.t3.xlarge`)
 game, reranks the candidates of the 1000 most active users (>= 6 reviews) with Bedrock and
 writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`
 (plus the `__popular__` fallback item). It also loads the details of games missing from
-DynamoDB `game-details` (the first run writes about 50k items; later runs write only new games).
-The ETL must be deployed with the `game_details` mart first; without it the sync is skipped
-with a warning. Details and cost:
+DynamoDB `game-details` (the first run writes the whole catalog, ~176k games on the 2026-09 data;
+later runs write only new games). Details and cost:
 `inference/README.md`.
 
 **Bedrock access (once).** The default model is Amazon Nova 2 Lite through the US cross-region
@@ -310,6 +294,12 @@ run the job right away (e.g. after promoting a new champion) instead of waiting 
 pipeline; `env_overrides` passes container variables such as `RERANK_ENABLED=false` or
 `MODEL_ID=<sha>`. Do not run it while the pipeline's `Infer` step runs (both write the same
 items; harmless, but wasted Bedrock calls).
+
+**Run time.** The job must finish within `inference_max_runtime_seconds` (4 h). On the 2026-09
+data (~9.25M users with a positive review) a full run does not fit: retrieval takes ~1 h 45 min
+and the DynamoDB writes ~128 items/s. Cap the users with `env_overrides`, e.g.
+`MAX_USERS=1000000 RERANK_MAX_USERS=2000` (the most active users; ~2.5 h). Users left out keep
+their previous item, or get the popular list.
 
 **Quota.** Processing jobs have a default quota on `ml.t3.*` (2 × `ml.t3.xlarge`), so no request
 is needed. Every `ml.m5` / `ml.c5` processing quota is 0. For a non-burstable instance, request
@@ -357,18 +347,12 @@ either auth type) and prints the URL. Until the first serving CD, the function i
 that answers 503.
 
 **Online model.** `POST /recommendations` needs two things:
-- the champion's numpy user tower, which every model trained from now on gets automatically;
+- the champion's numpy user tower (`models/<model_id>/user_tower.npz`), written by training with
+  every model;
 - the catalog that each inference run publishes to `s3://model-artifacts-<acct>/serving/online/`.
 
-The current champion was trained before the export existed. Backfill it once (local, admin
-credentials), then run *inference CD* with `run_now` or wait for the weekly run:
-
-```bash
-cd training && MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> uv run --extra cpu python -m steam_training export --model-id champion
-```
-
-Until then, inference logs `no numpy user tower` and publishes no catalog, and the endpoint
-answers 503. Batch recommendations are not affected.
+Until the first inference run publishes the catalog, the endpoint answers 503. Batch
+recommendations do not depend on it.
 
 **Try it:**
 
@@ -383,10 +367,38 @@ curl --aws-sigv4 "aws:amz:us-east-1:lambda" --user "$AWS_ACCESS_KEY_ID:$AWS_SECR
   -H "x-amz-security-token: $AWS_SESSION_TOKEN" "${URL}popular"
 ```
 
-**Concurrency.** The account's Lambda limit is 10 concurrent executions by default, shared
-with `list-partition-game-ids`. A public URL under load can throttle the pipeline's first
-step. Before a public demo, request a higher `Concurrent executions` quota (Service Quotas →
-AWS Lambda), then set `serving_reserved_concurrency` (e.g. 5) to cap the function.
+**Concurrency.** `serving_reserved_concurrency` (default 30) caps the function, and with it
+the cost of a public URL or site. The account limit must exceed it by 10 (unreserved
+minimum). New accounts start at 10 concurrent executions: request more first (Service Quotas
+→ AWS Lambda → `Concurrent executions`), or set the variable to -1 (unreserved).
+
+**Budget alert (optional).** Set the repository variable `BUDGET_ALERT_EMAIL` and apply the
+*infrastructure CD*: an account-wide monthly budget (`budget_monthly_usd`, default $50) emails
+at 80% of actual spend and at 100% of the forecast. AWS asks the address to confirm first.
+
+## 12. Frontend
+
+A static app on S3 behind CloudFront (`frontend/README.md`). The same distribution serves the
+app, the serving API under `/api/*`, and the search index under `/data/*`.
+
+1. *infrastructure CD* → `apply`. It creates the bucket, the distribution (a first apply takes
+   a few minutes) and CloudFront's permission to call `recsys-serving`. The URL is the
+   `frontend_url` output.
+2. *frontend CD*: builds and uploads the app, then checks `/u/<id>`, `/api/health` and
+   `/data/games.json` through CloudFront.
+3. Game search needs `serving/search/games.json`, which inference writes with the online
+   catalog: one inference run after the *inference CD* that includes it (*inference CD* with
+   `run_now`, or the next weekly run). Until then search shows as unavailable; user pages and
+   popular games work.
+
+**Auth.** The frontend works with either `serving_auth_type`: under `AWS_IAM` CloudFront signs
+its calls (Origin Access Control), so the site stays public while the raw Function URL answers
+403. Keep `serving_reserved_concurrency` in mind (step 11): the site is public either way.
+
+**Custom domain (optional).** Request an ACM certificate for the domain in **us-east-1** and
+validate it. Set the repository variables `FRONTEND_DOMAIN_NAME` and
+`FRONTEND_CERTIFICATE_ARN`, apply the *infrastructure CD*, then point a `CNAME` (or a Route 53
+alias) at the `frontend_cloudfront_domain` output.
 
 ## Updating an existing deployment
 
@@ -398,22 +410,12 @@ components the release does not touch.
 3. *data-ingestion CD* / *etl CD*: new images, used by the next `Scrape` / `Transform`.
 4. Training changes only: *training CD* (new models); promote as in step 9.
 5. *inference CD*: new image for the next `Infer`. With `run_now`, it also runs it immediately.
-6. *serving CD*: new Lambda code.
+6. *serving CD*: new Lambda code. *frontend CD*: new app.
 7. Data now instead of Thursday: step 8 (ETL alone), then *inference CD* with `run_now`. Or run
    the whole pipeline (step 7).
 
 Never start step 8 or `run_now` while a pipeline execution is running (step 8 shows how to
 check).
-
-**Release with serving, game details and the online endpoint (spec 5):** steps 1, 2 (creates
-`game-details`, `recsys-serving` and its Function URL), 3 (*etl CD*: the `game_details` mart),
-5, 6. Then backfill the current champion's `user_tower.npz` (step 11, *Online model*), and run
-step 7 of this list. The first `Infer` afterwards:
-- writes about 50k `game-details` items;
-- writes `__popular__`;
-- publishes the online catalog.
-
-Verify with the checks of steps 10 and 11.
 
 **Release with the reviews backfill (spec 6):** order matters, because the new `Transform` step
 reads `etl_full_refresh` from the Lambda's result:
@@ -440,7 +442,7 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →
 6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there) →
-9 SageMaker quota, train and promote (new models include `user_tower.npz`, so no backfill) →
+9 SageMaker quota, train and promote →
 10 inference (automatic from the next pipeline run, or *inference CD* with `run_now`) →
-11 serving (*serving CD*; its auth is an *infrastructure CD* input). After that, the weekly
+11 serving (*serving CD*; its auth is an *infrastructure CD* input) → 12 frontend (*frontend CD*). After that, the weekly
 schedule runs everything incrementally (step 7).

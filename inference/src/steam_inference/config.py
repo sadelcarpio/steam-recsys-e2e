@@ -67,6 +67,10 @@ class InferenceSettings(BaseSettings):
     # Online bundle for serving (s3://<model_artifacts_bucket>/<prefix>/bundle.npz + manifest).
     online_bundle_enabled: bool = True
     online_bundle_prefix: str = "serving/online"
+    # Game search index of the frontend, published with the online catalog (same bucket).
+    search_index_key: str = "serving/search/games.json"
+    # Adult games (adult.py): never recommended, in the popular list, the online catalog or search.
+    exclude_adult: bool = True
     # Local file: write the items as JSON lines there instead of DynamoDB (dry runs).
     output_path: str | None = None
 
@@ -92,6 +96,9 @@ class InferenceSettings(BaseSettings):
     rerank_min_reviews: int = Field(6, ge=1)
     # ... and at most this many per run (bounds the LLM cost).
     rerank_max_users: int = Field(1000, ge=0)
+    # Short description appended to each game of the prompt, cut to this many characters
+    # (~50 tokens each at 200; 0 = none). Gives the LLM what the game is, not only its genres.
+    rerank_description_chars: int = Field(200, ge=0)
     # Recommendations that get an explanation (the top of the reranked list).
     explain_top_n: int = Field(5, ge=0)
     # Parallel Bedrock calls (IO-bound threads). ~1.9 s per call: 32 threads ~ 1000 requests/min,
