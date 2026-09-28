@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable, Iterator
@@ -15,10 +16,15 @@ logger = logging.getLogger(__name__)
 APP_LIST_URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
 APP_REVIEWS_URL = "https://store.steampowered.com/appreviews/{appid}"
+# Undocumented but public (the store front end uses them); no API key.
+STORE_ITEMS_URL = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
+TAG_LIST_URL = "https://api.steampowered.com/IStoreService/GetTagList/v1/"
 
 RETRYABLE_STATUS = {403, 429, 500, 502, 503, 504}
 APP_LIST_PAGE_SIZE = 50_000
 REVIEWS_PAGE_SIZE = 100
+# GetItems ids per call: 200 works, 500 fails (the URL gets too long).
+MAX_STORE_ITEMS_PER_CALL = 200
 
 
 class SteamApiError(RuntimeError):
@@ -29,6 +35,12 @@ class SteamApiError(RuntimeError):
 class CatalogApp:
     appid: int
     last_modified: int
+
+
+@dataclass(frozen=True)
+class GameTag:
+    tag_id: int
+    weight: int
 
 
 @dataclass(frozen=True)
@@ -153,6 +165,39 @@ class SteamClient:
         if not entry.get("success"):
             return None
         return entry.get("data")
+
+    def get_tag_list(self, language: str = "english") -> dict[int, str]:
+        """Every Steam user tag: tag id -> name."""
+        body = self._get_json(TAG_LIST_URL, {"language": language}, "GetTagList")
+        tags = (body.get("response") or {}).get("tags") or []
+        return {int(t["tagid"]): str(t["name"]) for t in tags if "tagid" in t and t.get("name")}
+
+    def get_game_tags(self, appids: list[int], tag_count: int = 20) -> dict[int, list[GameTag]]:
+        """Top `tag_count` user tags of each app, by weight descending. Apps Steam does not know
+        (or with no tags) are left out."""
+        if len(appids) > MAX_STORE_ITEMS_PER_CALL:
+            raise ValueError(f"at most {MAX_STORE_ITEMS_PER_CALL} appids per GetItems call")
+        request = {
+            "ids": [{"appid": a} for a in appids],
+            "context": {"language": "english", "country_code": "US"},
+            "data_request": {"include_tag_count": tag_count},
+        }
+        body = self._get_json(
+            STORE_ITEMS_URL, {"input_json": json.dumps(request, separators=(",", ":"))}, "GetItems"
+        )
+        out: dict[int, list[GameTag]] = {}
+        for item in (body.get("response") or {}).get("store_items") or []:
+            appid = item.get("appid") or item.get("id")
+            if item.get("success") != 1 or appid is None:
+                continue
+            tags = [
+                GameTag(int(t["tagid"]), int(t.get("weight", 0)))
+                for t in item.get("tags") or []
+                if "tagid" in t
+            ]
+            if tags:
+                out[int(appid)] = sorted(tags, key=lambda t: -t.weight)[:tag_count]
+        return out
 
     def get_review_summary(self, appid: int) -> dict[str, Any]:
         body = self._get_json(

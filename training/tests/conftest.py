@@ -83,6 +83,24 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
     game_features = [
         {"timestamp": datetime(1970, 1, 1), **_item_row(int(g), 0.5)} for g in games
     ] + [{"timestamp": START + timedelta(days=200), **_item_row(int(g), 0.7)} for g in games]
+    # Steam user tags: the cluster's tag (heavy) + a noise tag; the last game has none.
+    game_tags = pa.Table.from_pylist(
+        [
+            {
+                "game_idx": int(g),
+                "game_tags": [FIRST_GAME + game_cluster(int(g)), FIRST_GAME + 4 + int(g) % 2],
+                "game_tag_weights": [900.0, 100.0],
+            }
+            for g in games[:-1]
+        ],
+        schema=pa.schema(
+            [
+                ("game_idx", pa.int64()),
+                ("game_tags", pa.list_(pa.int64())),
+                ("game_tag_weights", pa.list_(pa.float64())),
+            ]
+        ),
+    )
     lookup = lambda n: pa.table({"id": pa.array(range(FIRST_GAME, FIRST_GAME + n), pa.int64())})  # noqa: E731
     return {
         "interactions": pa.Table.from_pylist(rows),
@@ -92,6 +110,8 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
         "lkp_publishers": lookup(5),
         "lkp_genres": lookup(N_CLUSTERS),
         "lkp_categories": lookup(5),
+        "lkp_tags": lookup(6),
+        "game_tags": game_tags,
     }
 
 

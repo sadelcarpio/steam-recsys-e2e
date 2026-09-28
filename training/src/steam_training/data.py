@@ -10,9 +10,10 @@ Memory scales with the rows *kept*, not with the table: `interactions` is read i
        - training negatives (`is_positive = false`): user + game only (explicit hard negatives);
        - validation positives, uniformly sampled -> history, target, warm flag;
        - positive counts per game in the training split (popularity baseline + logQ);
-  3. `game_features` rows before the cutoff, reduced to the latest row per game (the catalog).
-Game list features (developers, publishers, genres, categories) come from the catalog: they are
-static per game, only `game_reviews_ratio` / `game_is_free` are kept per row (as of the review).
+  3. `game_features` rows before the cutoff, reduced to the latest row per game (the catalog),
+     joined with each game's current tags (`game_tags`, `with_tags`).
+Game list features (developers, publishers, genres, categories, tags) come from the catalog: they
+are static per game, only `game_reviews_ratio` / `game_is_free` are kept per row (as of the review).
 
 Variable-length id lists are CSR arrays (`Ragged`): batches are gathered with vectorised numpy
 and fed straight into `nn.EmbeddingBag` (values + offsets).
@@ -53,6 +54,7 @@ INTERACTION_COLUMNS = [
     "game_reviews_ratio",
 ]
 GAME_FEATURE_COLUMNS = ["timestamp", *ITEM_COLUMNS]
+GAME_TAG_COLUMNS = ["game_idx", "game_tags", "game_tag_weights"]
 # lookup table -> (id column, VocabSizes field)
 LOOKUPS = {
     "lkp_games": ("game_idx", "games"),
@@ -61,6 +63,7 @@ LOOKUPS = {
     "lkp_genres": ("id", "genres"),
     "lkp_categories": ("id", "categories"),
 }
+TAG_LOOKUPS = {"lkp_tags": ("id", "tags")}
 
 
 # ---- sources -------------------------------------------------------------------------------
@@ -109,10 +112,12 @@ class IcebergSource:
 
 @dataclass(frozen=True)
 class Ragged:
-    """CSR list-of-ints: row i is values[offsets[i]:offsets[i + 1]]."""
+    """CSR list-of-ints: row i is values[offsets[i]:offsets[i + 1]], with optional per-value
+    weights (aligned with `values`)."""
 
     values: np.ndarray  # int64
     offsets: np.ndarray  # int64, len = rows + 1
+    weights: np.ndarray | None = None  # float32, len = len(values)
 
     def __len__(self) -> int:
         return len(self.offsets) - 1
@@ -125,6 +130,10 @@ class Ragged:
         offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
         np.cumsum(lengths, out=offsets[1:])
         return cls(np.asarray(values.to_numpy(zero_copy_only=False), dtype=np.int64), offsets)
+
+    @classmethod
+    def empty(cls, rows: int) -> Ragged:
+        return cls(np.zeros(0, dtype=np.int64), np.zeros(rows + 1, dtype=np.int64))
 
     @classmethod
     def from_lists(cls, rows: list[list[int]]) -> Ragged:
@@ -140,7 +149,9 @@ class Ragged:
         np.cumsum(lengths, out=offsets[1:])
         # position of each output value in `values`: its row start + rank inside the row
         within = np.arange(offsets[-1], dtype=np.int64) - np.repeat(offsets[:-1], lengths)
-        return Ragged(self.values[np.repeat(starts, lengths) + within], offsets)
+        source = np.repeat(starts, lengths) + within
+        weights = self.weights[source] if self.weights is not None else None
+        return Ragged(self.values[source], offsets, weights)
 
     def row(self, i: int) -> list[int]:
         return self.values[self.offsets[i] : self.offsets[i + 1]].tolist()
@@ -156,6 +167,12 @@ class ItemFeatures:
     publishers: Ragged
     genres: Ragged
     categories: Ragged
+    # weighted: each row's weights sum to 1 (empty row: no tags); None -> no tags at all
+    tags: Ragged = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.tags is None:
+            object.__setattr__(self, "tags", Ragged.empty(len(self.game_idx)))
 
     def __len__(self) -> int:
         return len(self.game_idx)
@@ -172,6 +189,7 @@ class ItemFeatures:
             publishers=Ragged.from_arrow(table["game_publishers"]),
             genres=Ragged.from_arrow(table["game_genres"]),
             categories=Ragged.from_arrow(table["game_categories"]),
+            tags=_weighted_tags(table),
         )
 
     def take(self, index: np.ndarray) -> ItemFeatures:
@@ -184,6 +202,7 @@ class ItemFeatures:
             publishers=self.publishers.take(index),
             genres=self.genres.take(index),
             categories=self.categories.take(index),
+            tags=self.tags.take(index),
         )
 
 
@@ -273,12 +292,15 @@ def load_training_data(
     seed: int,
     cutoff: datetime | None = None,
     with_train_rows: bool = True,
+    with_tags: bool = False,
 ) -> TrainingData:
     """Stream the marts (see module docstring). `cutoff` given: split there (promotion) instead
-    of at the `validation_fraction` quantile."""
-    snapshots = {table: source.snapshot_id(table) for table in [*LOOKUPS, "interactions"]}
-    snapshots["game_features"] = source.snapshot_id("game_features")
-    vocab = _vocab_sizes(source, snapshots)
+    of at the `validation_fraction` quantile. `with_tags`: read `lkp_tags` / `game_tags` (the
+    vocabulary gets `tags`, the catalog each game's tags)."""
+    lookups = {**LOOKUPS, **(TAG_LOOKUPS if with_tags else {})}
+    tables = [*lookups, "interactions", "game_features", *(["game_tags"] if with_tags else [])]
+    snapshots = {table: source.snapshot_id(table) for table in tables}
+    vocab = _vocab_sizes(source, snapshots, lookups)
 
     # pass 1: cutoff + validation sampling rate
     timestamps, positive = [], []
@@ -346,11 +368,15 @@ def load_training_data(
         keep_negative = np.flatnonzero(~_bool(batch["is_positive"]) & known & ~is_val)
         negative_parts.append(NegativeRows(user_id[keep_negative], game[keep_negative]))
 
-    # pass 3: catalog as of the cutoff
+    # pass 3: catalog as of the cutoff (+ the games' current tags)
+    tags = (
+        source.batches("game_tags", GAME_TAG_COLUMNS, snapshots["game_tags"]) if with_tags else None
+    )
     catalog = catalog_at(
         source.batches("game_features", GAME_FEATURE_COLUMNS, snapshots["game_features"]),
         cutoff,
         vocab.games,
+        tags,
     )
     train = _concat(TrainRows, train_parts) if with_train_rows else None
     if train is not None:
@@ -388,11 +414,52 @@ def temporal_cutoff(timestamps: np.ndarray, validation_fraction: float) -> datet
     return value.astype("datetime64[us]").item()
 
 
-def catalog_at(batches: Iterable[pa.RecordBatch], cutoff: datetime, num_games: int) -> Catalog:
+def catalog_at(
+    batches: Iterable[pa.RecordBatch],
+    cutoff: datetime,
+    num_games: int,
+    tag_batches: Iterable[pa.RecordBatch] | None = None,
+) -> Catalog:
     """Latest game_features row per game strictly before `cutoff` (what batch inference at
     `cutoff` would see), reduced while streaming. Every game has a 1970-01-01 row, so every known
-    game is included."""
-    return catalog_from_table(latest_game_rows(batches, num_games, cutoff), num_games)
+    game is included. `tag_batches` (the `game_tags` mart) adds each game's current tags."""
+    latest = latest_game_rows(batches, num_games, cutoff)
+    if tag_batches is not None:
+        latest = attach_game_tags(latest, tag_batches, num_games)
+    return catalog_from_table(latest, num_games)
+
+
+def attach_game_tags(
+    latest: pa.Table, tag_batches: Iterable[pa.RecordBatch], num_games: int
+) -> pa.Table:
+    """`latest` (one row per game) plus the `game_tags` / `game_tag_weights` columns of the
+    `game_tags` mart, joined by `game_idx` (null for games without tags: an empty bag). Tags are
+    static per game, like genres: the current tags, whatever the catalog's cutoff."""
+    batches = list(tag_batches)
+    schema = pa.schema(
+        [
+            ("game_idx", pa.int64()),
+            ("game_tags", pa.list_(pa.int64())),
+            ("game_tag_weights", pa.list_(pa.float64())),
+        ]
+    )
+    tags = (
+        pa.Table.from_batches(batches).select(GAME_TAG_COLUMNS).cast(schema)
+        if batches
+        else schema.empty_table()
+    )
+    row_of = np.full(num_games, -1, dtype=np.int64)
+    tag_game = _int64(pc.fill_null(tags["game_idx"], num_games))
+    inside = (tag_game >= 0) & (tag_game < num_games)
+    row_of[tag_game[inside]] = np.flatnonzero(inside)
+    game = _int64(latest["game_idx"])
+    rows = np.where((game >= 0) & (game < num_games), row_of[np.clip(game, 0, num_games - 1)], -1)
+    index = pa.array(rows, mask=rows < 0)
+    for name in ("game_tags", "game_tag_weights"):
+        if name in latest.column_names:
+            latest = latest.drop_columns(name)
+        latest = latest.append_column(name, tags[name].take(index))
+    return latest
 
 
 def latest_game_rows(
@@ -433,9 +500,13 @@ def _latest_per_game(table: pa.Table) -> pa.Table:
 # ---- helpers -------------------------------------------------------------------------------
 
 
-def _vocab_sizes(source: TableSource, snapshots: dict[str, int | None]) -> VocabSizes:
+def _vocab_sizes(
+    source: TableSource,
+    snapshots: dict[str, int | None],
+    lookups: dict[str, tuple[str, str]] = LOOKUPS,
+) -> VocabSizes:
     sizes: dict[str, int] = {}
-    for table, (column, field) in LOOKUPS.items():
+    for table, (column, field) in lookups.items():
         max_id = 0
         for batch in source.batches(table, [column], snapshots[table]):
             if batch.num_rows:
@@ -456,6 +527,24 @@ def _numeric_features(
         .to_numpy(zero_copy_only=False)
         .astype(np.float32),
     )
+
+
+def _weighted_tags(table: pa.Table | pa.RecordBatch) -> Ragged:
+    """Tags of each row with their weights normalized to sum 1 (uniform when they sum to 0);
+    empty rows when the table has no tag columns."""
+    if "game_tags" not in table.column_names:
+        return Ragged.empty(table.num_rows)
+    tags = Ragged.from_arrow(table["game_tags"])
+    raw = pc.list_flatten(table["game_tag_weights"]).to_numpy(zero_copy_only=False)
+    raw = np.nan_to_num(np.asarray(raw, dtype=np.float64), nan=0.0).clip(min=0)
+    if len(raw) != len(tags.values):
+        raise ValueError("game_tags and game_tag_weights are not aligned")
+    lengths = np.diff(tags.offsets)
+    owner = np.repeat(np.arange(len(lengths)), lengths)
+    totals = np.bincount(owner, weights=raw, minlength=len(lengths))
+    uniform = 1.0 / np.maximum(lengths, 1)
+    weights = np.where(totals[owner] > 0, raw / np.maximum(totals[owner], 1e-12), uniform[owner])
+    return Ragged(tags.values, tags.offsets, weights.astype(np.float32))
 
 
 def _fields(obj) -> list[str]:

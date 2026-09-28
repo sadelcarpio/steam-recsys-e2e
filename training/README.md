@@ -26,9 +26,11 @@ the rows **kept** (`data.py`):
 2. Every column, filtered batch by batch: warm training positives, `COLD_ROW_FRACTION` of the
    cold ones, training negatives as `(user, game)` only, and the sampled validation positives.
    Positive counts per game (popularity baseline, logQ) cover every training row.
-3. `game_features` rows before the cutoff, reduced to the latest row per game (the catalog). A
-   target's list features (developers, genres, …) come from the catalog, since they are static
-   per game. `game_reviews_ratio` / `game_is_free` stay per row, as of the review.
+3. `game_features` rows before the cutoff, reduced to the latest row per game (the catalog),
+   joined by `game_idx` with each game's current Steam user tags (mart `game_tags`,
+   `USE_GAME_TAGS`). A target's list features (developers, genres, tags, …) come from the
+   catalog, since they are static per game. `game_reviews_ratio` / `game_is_free` stay per row,
+   as of the review.
 
 Measured on 2.67M interactions: 1.4 GB peak for loading (mostly the Arrow reader's per-file
 buffers), 71 MB of kept arrays (~27 B per interaction). About 5 GB is expected at 100M reviews,
@@ -81,9 +83,10 @@ flowchart TB
     P["publishers"] --> PE["EmbeddingBag (mean)<br/>103,427 × 16"]
     GN["genres"] --> GNE["EmbeddingBag (mean)<br/>35 × 16"]
     C["categories"] --> CE["EmbeddingBag (mean)<br/>67 × 16"]
+    T["Steam user tags + weights"] --> TE["EmbeddingBag (weighted mean)<br/>~450 × 16"]
     N["is_free · is_free_known · reviews_ratio · 3"]
-    GE & DE & PE & GNE & CE & N --> IC["concat · 131"]
-    IC --> IMLP["Linear 131→128 · ReLU · Linear 128→64"] --> IN["L2 normalize → item vector v · 64"]
+    GE & DE & PE & GNE & CE & TE & N --> IC["concat · 147"]
+    IC --> IMLP["Linear 147→128 · ReLU · Linear 128→64"] --> IN["L2 normalize → item vector v · 64"]
   end
 
   GE -. "copied at the start of every epoch" .-> GT
@@ -95,7 +98,7 @@ flowchart TB
 | Tower | Input | Architecture |
 |---|---|---|
 | User | `games_reviewed_positive` (last 5 positively reviewed games) | mean pooling over a **frozen copy** of the item tower's game embedding table + history length → MLP → L2 norm |
-| Item | `game_idx`, `game_developers`, `game_publishers`, `game_genres`, `game_categories`, `game_is_free`, `game_reviews_ratio` | game embedding + mean-pooled attribute embeddings (`EmbeddingBag`) + numerical features → MLP → L2 norm |
+| Item | `game_idx`, `game_developers`, `game_publishers`, `game_genres`, `game_categories`, `game_tags` + `game_tag_weights`, `game_is_free`, `game_reviews_ratio` | game embedding + mean-pooled attribute embeddings (`EmbeddingBag`) + the tag embeddings averaged with the game's normalized tag weights + numerical features → MLP → L2 norm |
 
 - **Shared game table, synced per epoch.** The user tower reads the item tower's game
   embeddings through a snapshot that is copied at the start of every epoch. Within an epoch the
@@ -118,6 +121,12 @@ flowchart TB
   well. Games without training interactions, and ids newer than the model's vocabularies, map to
   OOV (id 1). `ITEM_ID_DROPOUT` trains that OOV row, so new games are ranked by their content
   features.
+- **Steam user tags** (spec 8, `USE_GAME_TAGS=true` by default). Genres are too coarse ("Action"
+  is on most AAA games); players' tags ("Psychological Horror", "Story Rich", "Noir") separate
+  them. Steam's tag weights are normalized to sum 1 per game, so the bag is a weighted mean
+  (`mode="sum"` + `per_sample_weights`). `VocabSizes.tags` is `None` for models trained without
+  tags: they build no tags module and still load (no architecture version bump). Promotion
+  loads the tags whenever the candidate or the champion uses them.
 - Every embedding table is in memory (176k games, 120k developers, 103k publishers, 35 genres,
   67 categories on the 2026-09 data); features
   come from the marts as integer ids (see `etl/README.md`).

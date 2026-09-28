@@ -126,7 +126,7 @@ ARN=$(aws stepfunctions list-state-machines \
 aws stepfunctions start-execution --state-machine-arn "$ARN" --input '{}'
 ```
 
-Flow: `ListPartitionGameIds → Scrape (games + reviews) → Transform (dbt) → CheckChampion →
+Flow: `ListPartitionGameIds → Scrape (games + reviews + tags) → Transform (dbt) → CheckChampion →
 Infer` (`NoChampion`, a successful skip, until a model is promoted in step 9). The first run is
 the backfill and takes hours (Steam rate limits). Logs: CloudWatch `/ecs/data-ingestion`,
 `/ecs/etl`, `/aws/sagemaker/ProcessingJobs` (inference), `/aws/lambda/list-partition-game-ids`,
@@ -439,6 +439,21 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
   --filter-expression "attribute_exists(oldest_review_ts) AND backfill_complete = :f" \
   --expression-attribute-values '{":f": {"BOOL": false}}'     # games still backfilling
 ```
+
+**Release with Steam user tags (spec 8):**
+1. Merge to `main`.
+2. *infrastructure CD* `apply`: task definition `tags-scraping`, the `Scrape` branch, `Scan` on
+   `game-ids-state` for the scraping role, Glue table `steam_raw.game_tags`.
+3. *data-ingestion CD*: the image with `steam_ingestion.tags_scraping` (the task definition runs
+   `:latest`). Do steps 2-4 before the next pipeline run; a run in between only skips the tags
+   (the failed `ScrapeTags` is caught).
+4. *etl CD* (`stg_steam__game_tags`, `lkp_tags`, `game_tags`), then *inference CD*. Inference
+   must be updated **before** a model with tags is promoted: older images reject its metadata.
+   The new image keeps serving the current champion (trained without tags).
+5. Run the pipeline (step 7) so the tags are scraped and `game_tags` is built. Check:
+   `select count(*) from steam_marts.game_tags;` (most catalog games).
+6. *training CD* (`USE_GAME_TAGS=true` by default), then promote (step 9). Promotion compares it
+   with the current champion on the same rows.
 
 ## Order for a fresh account (summary)
 

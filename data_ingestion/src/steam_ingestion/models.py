@@ -6,7 +6,7 @@ import re
 from datetime import date
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 RUN_ID_PATTERN = r"^[A-Za-z0-9_\-:.]{1,80}$"
 
@@ -98,6 +98,23 @@ class GameRecord(_Strict):
     review_score: int | None
     review_score_desc: str | None
     scrape_date: date
+
+
+class GameTagsRecord(_Strict):
+    """User tags of one game, aligned lists by weight descending."""
+
+    appid: int
+    tag_ids: list[int] = Field(min_length=1)
+    tag_names: list[str] = Field(min_length=1)
+    tag_weights: list[int] = Field(min_length=1)
+    scraped_at: int  # unix seconds
+    scrape_date: date
+
+    @model_validator(mode="after")
+    def _aligned(self) -> GameTagsRecord:
+        if not len(self.tag_ids) == len(self.tag_names) == len(self.tag_weights):
+            raise ValueError("tag_ids, tag_names and tag_weights must have the same length")
+        return self
 
 
 class ReviewRecord(_Strict):

@@ -5,7 +5,7 @@ import boto3
 import numpy as np
 import pyarrow as pa
 import pytest
-from conftest import BUCKET, FIRST_GAME, TABLE, FakeSource
+from conftest import BUCKET, FIRST_GAME, TABLE, FakeSource, add_tags
 
 from steam_inference.adult import adult_mask, is_adult
 from steam_inference.contracts import POPULAR_USER_ID, SearchIndex
@@ -138,3 +138,19 @@ def test_filter_catalog_keeps_names_aligned():
     got = out["item_name_utf8"].tobytes()
     o = out["item_name_offsets"]
     assert [got[o[i] : o[i + 1]].decode() for i in range(2)] == ["A", "Ç"]
+
+
+def test_mask_by_tags(marts):
+    # Tag 0 = "NSFW" anywhere; Tag 1 = "Nudity" only among the top 5 tags
+    tags_by_game = {
+        4: [FIRST_GAME + 5, FIRST_GAME + 6, FIRST_GAME + 0],  # NSFW, 3rd tag
+        5: [FIRST_GAME + 1],  # Nudity, top tag
+        6: [FIRST_GAME + t for t in (2, 3, 4, 5, 6, 7, 1)],  # Nudity, 7th tag: mainstream
+    }
+    tagged = add_tags(marts, tags_of=lambda g: tags_by_game.get(g, [FIRST_GAME + 7]))
+    names = tagged["lkp_tags"].to_pylist()
+    names[0]["name"], names[1]["name"] = "NSFW", "Nudity"
+    tagged["lkp_tags"] = pa.Table.from_pylist(names)
+    data = load_inference_data(FakeSource(tagged))
+    flagged = {int(g) for g in data.games.catalog.items.game_idx[adult_mask(data.games)]}
+    assert flagged == {4, 5}  # 6 has "Nudity" only as its 7th tag

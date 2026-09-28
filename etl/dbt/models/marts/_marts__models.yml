@@ -32,6 +32,28 @@ models:
           (pos + a) / (pos + neg + 2a), a = var reviews_ratio_prior; 0.5 without reviews.
         data_tests: [not_null]
 
+  - name: game_tags
+    description: >
+      Current Steam user tags of every catalog game (latest tags scrape, spec 8). A static
+      feature like the genres, joined by game_idx. Games without tags have no row.
+    data_tests:
+      - expression_is_true:
+          arguments:
+            expression: cardinality(game_tags) = cardinality(game_tag_weights) and cardinality(game_tags) > 0
+    columns:
+      - name: game_id
+        description: Steam appid.
+        data_tests: [unique, not_null]
+      - name: game_idx
+        description: Dense id from lkp_games.
+        data_tests: [unique, not_null]
+      - name: game_tags
+        description: Ids from lkp_tags, by weight descending.
+      - name: game_tag_weights
+        description: Steam's tag weights (relative votes), aligned with game_tags.
+      - name: scraped_at
+        description: Unix seconds of the scrape the tags come from.
+
   - name: game_details
     description: >
       Human-readable details of every current catalog game (same rows as

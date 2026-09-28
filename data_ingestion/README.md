@@ -8,8 +8,9 @@ EventBridge Scheduler ─► Step Functions
    1. Lambda list-partition-game-ids ─► s3://game-partitions-<acct>/{games,reviews}/<run_id>/*.json
    2. Parallel
       ├─ Distributed Map over games/<run_id>/appids-*.json  ─► ECS games-scraping   (1 task / ≤8k ids)
-      └─ Distributed Map over reviews/<run_id>/part-*.json  ─► ECS reviews-scraping (1 task / worker,
-                                                                own public IP each)
+      ├─ Distributed Map over reviews/<run_id>/part-*.json  ─► ECS reviews-scraping (1 task / worker,
+      │                                                         own public IP each)
+      └─ one task, every known game                         ─► ECS tags-scraping    (best effort)
 ```
 
 | Piece | Entry point | What it does |
@@ -18,12 +19,16 @@ EventBridge Scheduler ─► Step Functions
 | ECS `games-scraping` | `python -m steam_ingestion.games_scraping` | `appdetails` + review summary for each appid → `games/<scrape-date>-<n>-<part>.parquet`; marks appids `scraped` / `unavailable` / retries up to `MAX_GAME_ATTEMPTS`. |
 | ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor (uncapped by default: `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. |
 
-Output schemas: `src/steam_ingestion/schemas.py` (`GAMES_SCHEMA`, `REVIEWS_SCHEMA`).
+| ECS `tags-scraping` | `python -m steam_ingestion.tags_scraping` | Steam **user tags** of every `scraped` / `pending` appid (spec 8): `IStoreBrowseService/GetItems` in batches of `TAGS_BATCH_SIZE` (100), top `TAGS_PER_GAME` (20) tags with their weights, names from `IStoreService/GetTagList` → `game_tags/<scrape-date>-<part>.parquet`. The whole catalog every run (~20 min: votes change); no API key. A failure never stops the pipeline (the `Scrape` branch catches it). |
+
+Output schemas: `src/steam_ingestion/schemas.py` (`GAMES_SCHEMA`, `REVIEWS_SCHEMA`,
+`GAME_TAGS_SCHEMA`).
 
 **Downstream note:** a crashed/retried reviews task can re-emit rows for the game it was on;
-deduplicate on `rec_id` (games on `appid` + latest `scrape_date`).
+deduplicate on `rec_id` (games on `appid` + latest `scrape_date`, tags on `appid` + latest
+`scraped_at`).
 
-**Fargate Spot.** Both scraping tasks run on `FARGATE_SPOT` (Terraform
+**Fargate Spot.** The scraping tasks run on `FARGATE_SPOT` (Terraform
 `scraping_capacity_provider`, ~70% cheaper). On an interruption ECS sends SIGTERM with a 2 min
 warning (`stopTimeout = 120`): the scraper stops at the next page / request (sleeps, including a
 throttle cooldown, end at once), flushes its buffer, commits the finished games (a reviews game in

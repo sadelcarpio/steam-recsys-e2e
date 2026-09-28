@@ -67,6 +67,7 @@ def run_inference(
         max_users=settings.max_users,
         popular_window_days=settings.popular_window_days,
         description_chars=settings.rerank_description_chars if settings.rerank_enabled else 0,
+        require_tags=metadata.config.vocab.tags is not None,
     )
     # adult games: never recommended, published or searchable
     excluded = adult_mask(data.games) if settings.exclude_adult else None

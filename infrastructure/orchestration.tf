@@ -1,5 +1,5 @@
 # Step Functions pipeline (EventBridge Scheduler -> state machine):
-# ListPartitionGameIds -> Scrape (parallel Distributed Maps) -> Transform (dbt)
+# ListPartitionGameIds -> Scrape (parallel Distributed Maps + the tags task) -> Transform (dbt)
 #   -> CheckChampion -> Infer (SageMaker Processing job), or NoChampion (skip) while no model is
 #   promoted.
 #
@@ -136,6 +136,55 @@ locals {
     }
   }]
 
+  # User tags of the whole catalog: one task, no partitions (spec 8). Best effort: a final failure
+  # is caught, so the ETL goes on with the previous run's tags.
+  tags_branch = {
+    StartAt = "ScrapeTags"
+    States = {
+      ScrapeTags = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::ecs:runTask.sync"
+        Parameters = {
+          CapacityProviderStrategy = [
+            { CapacityProvider = var.scraping_capacity_provider, Weight = 1 }
+          ]
+          Cluster        = aws_ecs_cluster.main.arn
+          TaskDefinition = aws_ecs_task_definition.scraping["tags"].arn_without_revision
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              Subnets        = aws_subnet.public[*].id
+              SecurityGroups = [aws_security_group.egress_only.id]
+              AssignPublicIp = "ENABLED"
+            }
+          }
+          PropagateTags = "TASK_DEFINITION"
+        }
+        # Spot interruption: exit 143 after a flush, the retry re-scrapes (the ETL dedupes).
+        Retry = [
+          {
+            ErrorEquals     = ["ECS.AmazonECSException", "ECS.AccessDeniedException"]
+            IntervalSeconds = 30
+            MaxAttempts     = 3
+            BackoffRate     = 2
+          },
+          {
+            ErrorEquals     = ["States.TaskFailed"]
+            IntervalSeconds = 120
+            MaxAttempts     = 2
+          },
+        ]
+        Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = null, Next = "TagsSkipped" }]
+        ResultPath = null
+        End        = true
+      }
+      TagsSkipped = {
+        Type    = "Pass"
+        Comment = "Tags scrape failed: the ETL keeps the previous tags"
+        End     = true
+      }
+    }
+  }
+
   pipeline_definition = {
     Comment = "Steam RecSys batch pipeline: ingestion -> transformation -> recommendations"
     StartAt = "ResolveRunId"
@@ -169,7 +218,7 @@ locals {
       }
       Scrape = {
         Type       = "Parallel"
-        Branches   = local.scrape_branches
+        Branches   = concat(local.scrape_branches, [local.tags_branch])
         ResultPath = null
         Next       = "Transform"
       }

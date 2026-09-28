@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from steam_etl.contracts import OOV_ID, PADDING_ID, InteractionRow, LookupRow
+from steam_etl.contracts import OOV_ID, PADDING_ID, GameTagsRow, InteractionRow, LookupRow
 
 NOW = datetime(2026, 1, 1)
 
@@ -56,3 +56,34 @@ def test_lookup_ids_start_after_reserved():
     with pytest.raises(ValidationError):
         LookupRow.model_validate({"_batch_at": NOW, "id": OOV_ID, "name": "x"})
     assert LookupRow.model_validate({"_batch_at": NOW, "id": 2, "name": "x"}).id == 2
+
+
+def game_tags(**overrides):
+    row = {
+        "_batch_at": NOW,
+        "game_id": 10,
+        "game_idx": 2,
+        "game_tags": [4, OOV_ID],
+        "game_tag_weights": [950.0, 500.0],
+        "scraped_at": 1_700_000_000,
+        "scrape_date": NOW.date(),
+    }
+    return GameTagsRow.model_validate(row | overrides)
+
+
+def test_game_tags_row():
+    assert game_tags().game_tags == [4, OOV_ID]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"game_tags": [4]},  # not aligned with the weights
+        {"game_tags": [], "game_tag_weights": []},  # games without tags have no row
+        {"game_tags": [PADDING_ID, 4]},
+        {"game_tag_weights": [950.0, -1.0]},
+    ],
+)
+def test_game_tags_rejects(overrides):
+    with pytest.raises(ValidationError):
+        game_tags(**overrides)

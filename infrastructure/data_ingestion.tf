@@ -15,6 +15,7 @@ locals {
   scraping_tasks = {
     games   = { name = "games-scraping", module = "steam_ingestion.games_scraping" }
     reviews = { name = "reviews-scraping", module = "steam_ingestion.reviews_scraping" }
+    tags    = { name = "tags-scraping", module = "steam_ingestion.tags_scraping" }
   }
 }
 
@@ -244,6 +245,7 @@ data "aws_iam_policy_document" "scraping_task" {
     actions = [
       "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
       "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem",
+      "dynamodb:Scan", # tags-scraping lists every known game
     ]
     resources = local.ingestion_state_tables
   }

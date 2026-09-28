@@ -1,6 +1,7 @@
 import numpy as np
 import pyarrow as pa
-from conftest import FIRST_GAME, N_GAMES, REVIEWS, FakeSource
+import pytest
+from conftest import FIRST_GAME, N_GAMES, REVIEWS, FakeSource, add_tags
 
 from steam_inference import features
 from steam_inference.features import load_inference_data, truncate
@@ -107,3 +108,24 @@ def test_truncate_cuts_at_a_word_boundary():
     short = truncate(text, 30)
     assert short == "A roguelike deck builder…" and len(short) <= 30
     assert truncate("x" * 50, 10) == "x" * 9 + "…"  # no space to cut at
+
+
+def test_games_get_their_tags_when_the_marts_exist(marts):
+    games = load_inference_data(FakeSource(add_tags(marts))).games
+    items = games.catalog.items
+    first = int(np.flatnonzero(items.game_idx == FIRST_GAME)[0])
+    last = int(np.flatnonzero(items.game_idx == FIRST_GAME + N_GAMES - 1)[0])
+    assert items.tags.row(first) == [FIRST_GAME + 2, FIRST_GAME + 3]
+    assert items.tags.weights[items.tags.offsets[first] : items.tags.offsets[first + 1]].tolist() \
+        == pytest.approx([2 / 3, 1 / 3])  # fmt: skip
+    assert items.tags.row(last) == []
+    assert "tags: Tag 2, Tag 3" in games.describe(first)
+    assert "tags:" not in games.describe(last)
+
+
+def test_tags_are_optional_unless_the_model_needs_them(source):
+    games = load_inference_data(source).games
+    assert len(games.catalog.items.tags.values) == 0 and len(games.tag_names) == 0
+    assert "tags:" not in games.describe(0)
+    with pytest.raises(RuntimeError, match="tags"):
+        load_inference_data(source, require_tags=True)

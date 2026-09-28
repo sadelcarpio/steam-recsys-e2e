@@ -1,12 +1,12 @@
 # ETL
 
-dbt on Athena that turns the raw scraper parquet (`s3://raw-steam-data-<acct>/{games,reviews}/`)
+dbt on Athena that turns the raw scraper parquet (`s3://raw-steam-data-<acct>/{games,reviews,game_tags}/`)
 into Iceberg feature tables for the two-tower model. It runs as the ECS task `dbt`, the
 `Transform` step of the `steam-recsys-pipeline` Step Function (after `Scrape`).
 
 ```
 steam_raw (Glue external, Terraform)  ─► steam_staging (views)
-   games, reviews                          stg_steam__games, stg_steam__reviews
+   games, reviews, game_tags               stg_steam__games, stg_steam__reviews, stg_steam__game_tags
                                       ─► steam_intermediate (Iceberg)
                                            int_games__deduplicated   one game per name
                                            int_reviews__deduplicated one row per review_id
@@ -14,10 +14,12 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
                                            int_game_review_counts    cumulative +/- counts per game and second
                                       ─► steam_marts (Iceberg)
                                            lkp_games, lkp_developers, lkp_publishers,
-                                           lkp_genres, lkp_categories  dense id vocabularies
+                                           lkp_genres, lkp_categories,
+                                           lkp_tags                    dense id vocabularies
                                            game_features, user_features  time-versioned features
                                            interactions                  training examples (ASOF join)
                                            game_details                  human-readable details (serving)
+                                           game_tags                     current Steam user tags per game
 ```
 
 ## Marts
@@ -28,6 +30,7 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
 | `game_features` | (`game_id`, `timestamp`): a 1970-01-01 row (no reviews yet), then one row per second in which the game got reviews | `game_idx`, `game_name`, `game_is_free`, `game_developers` / `_publishers` / `_genres` / `_categories` (id arrays), `game_reviews_ratio` = Laplace-smoothed (pos + α) / (pos + neg + 2α), α = var `reviews_ratio_prior` (1), 0.5 without reviews |
 | `user_features` | (`user_id`, `timestamp`) of each positive review | `games_reviewed_positive`: last 5 positively reviewed `game_idx`, most recent first, right-padded with 0 |
 | `game_details` | one current catalog game (the same rows as `int_games__deduplicated`) | `game_id`, `game_name_key`, `game_name`, `game_short_description`, `game_header_image` (URL), `game_release_date` (text as shown on Steam), `game_is_free`, `game_price`, `game_developers` / `_publishers` / `_genres` / `_categories` (**names**). Not a model feature: inference loads it into DynamoDB `game-details` for serving. |
+| `game_tags` | one catalog game with tags (spec 8) | `game_idx`, `game_tags` (`lkp_tags` ids, weight descending), `game_tag_weights` (Steam's weights, same order), `scraped_at`, `scrape_date`. The latest tags scrape: a static feature like the genres, not time-versioned (later votes leak into older training rows, accepted) |
 | `interactions` | `review_id` | `timestamp`, `user_id`, `game_id`, `is_positive` (label) + all user and game features **as of strictly before** the review |
 
 The latest `game_features` / `user_features` row per key is the current state (for inference).

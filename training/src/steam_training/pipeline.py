@@ -74,7 +74,7 @@ def run_training(
     device = resolve_device(settings.device)
 
     # 1. dataset + temporal split (streamed, filtered)
-    data = _load(settings, source)
+    data = _load(settings, source, with_tags=settings.use_game_tags)
     assert data.train is not None
 
     # 2. training examples (the DataLoader / collate is built in train_model)
@@ -195,7 +195,11 @@ def run_promotion(
     if champion is not None and champion_meta is not None:
         cutoffs.append(champion_meta.split.cutoff)
     device = resolve_device(settings.device)
-    data = _load(settings, source, cutoff=max(cutoffs), with_train_rows=False)
+    # tags in the catalog when either model uses them (a model without tags ignores them)
+    with_tags = any(
+        m is not None and m.config.vocab.tags is not None for m in (candidate, champion)
+    )
+    data = _load(settings, source, cutoff=max(cutoffs), with_train_rows=False, with_tags=with_tags)
     if len(data.validation) == 0:
         raise ValueError(f"no positive interactions after {max(cutoffs)} to evaluate on")
 

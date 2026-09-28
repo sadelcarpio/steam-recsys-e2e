@@ -8,10 +8,10 @@ Keep in sync with dbt/models/marts/*.sql (checked by the Athena integration test
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 PADDING_ID = 0
 OOV_ID = 1
@@ -44,7 +44,7 @@ class _Row(BaseModel):
 
 
 class LookupRow(_Row):
-    """lkp_developers / lkp_publishers / lkp_genres / lkp_categories."""
+    """lkp_developers / lkp_publishers / lkp_genres / lkp_categories / lkp_tags."""
 
     id: Id
     name: str
@@ -93,6 +93,24 @@ class GameDetailsRow(_Row):
     game_categories: list[str]
 
 
+class GameTagsRow(_Row):
+    """game_tags: current Steam user tags of a catalog game (static, like its genres)."""
+
+    game_id: int
+    game_idx: Id
+    # lkp_tags ids by weight descending, aligned with game_tag_weights
+    game_tags: list[EncodedId] = Field(min_length=1)
+    game_tag_weights: list[Annotated[float, Field(ge=0)]] = Field(min_length=1)
+    scraped_at: int
+    scrape_date: date
+
+    @model_validator(mode="after")
+    def _aligned(self) -> GameTagsRow:
+        if len(self.game_tags) != len(self.game_tag_weights):
+            raise ValueError("game_tags and game_tag_weights must have the same length")
+        return self
+
+
 class UserFeaturesRow(_Row):
     """user_features: state of a user through `timestamp`."""
 
@@ -118,9 +136,11 @@ MART_CONTRACTS: dict[str, type[_Row]] = {
     "lkp_publishers": LookupRow,
     "lkp_genres": LookupRow,
     "lkp_categories": LookupRow,
+    "lkp_tags": LookupRow,
     "lkp_games": GameLookupRow,
     "game_features": GameFeaturesRow,
     "game_details": GameDetailsRow,
+    "game_tags": GameTagsRow,
     "user_features": UserFeaturesRow,
     "interactions": InteractionRow,
 }

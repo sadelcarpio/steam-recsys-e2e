@@ -11,6 +11,18 @@ models:
         description: Trimmed, non-empty, distinct developer names (same for publishers / genres / categories).
       - name: game_review_score
         description: Steam review summary score (0-9) at scrape time.
+  - name: stg_steam__game_tags
+    description: Typed tags scrapes (one row per scrape and game; a game repeats every run).
+    columns:
+      - name: game_id
+        description: Steam appid.
+        data_tests: [not_null]
+      - name: game_tags
+        description: Tag names, weight descending. Pairs without a name are dropped.
+      - name: game_tag_weights
+        description: Steam's tag weights, aligned with game_tags.
+      - name: scraped_at
+        description: Unix seconds of the scrape (orders scrapes of the same day).
   - name: stg_steam__reviews
     description: Typed reviews. Still has duplicate review_ids.
     columns:

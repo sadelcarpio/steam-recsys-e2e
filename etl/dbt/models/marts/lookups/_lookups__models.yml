@@ -18,6 +18,9 @@ models:
   - name: lkp_categories
     description: Category name -> id. Append-only.
     columns: *lookup_columns
+  - name: lkp_tags
+    description: Steam user tag name -> id (spec 8). Append-only.
+    columns: *lookup_columns
   - name: lkp_games
     description: Steam appid -> dense game_idx (embedding row). Append-only.
     columns:

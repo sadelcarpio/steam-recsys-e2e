@@ -80,7 +80,10 @@ def target_log_probs(target: np.ndarray, num_games: int) -> np.ndarray:
 
 
 def to_bag(ragged: Ragged) -> Bag:
-    return Bag(torch.from_numpy(ragged.values), torch.from_numpy(ragged.offsets[:-1].copy()))
+    weights = torch.from_numpy(ragged.weights) if ragged.weights is not None else None
+    return Bag(
+        torch.from_numpy(ragged.values), torch.from_numpy(ragged.offsets[:-1].copy()), weights
+    )
 
 
 def to_item_batch(
@@ -95,6 +98,7 @@ def to_item_batch(
         publishers=to_bag(items.publishers),
         genres=to_bag(items.genres),
         categories=to_bag(items.categories),
+        tags=to_bag(items.tags),
     )
 
 

@@ -33,6 +33,9 @@ Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
 - Features in `interactions` are strictly before the review (ASOF with events sorted before
   feature rows at equal timestamps).
 - Raw review counts stay in `int_game_review_counts`; marts expose only the Laplace-smoothed ratio.
+- `game_tags` (spec 8) is one row per catalog game with tags, merged on `game_id` only when a
+  newer scrape (`scraped_at`) arrives, so a rerun writes nothing. `lkp_tags` covers the tags
+  of `int_games__deduplicated` games only.
 - `game_details` is display data, never a model feature. Its rows are the rows of
   `int_games__deduplicated` (merge key `game_name_key`, watermark `_batch_at`), with the text
   taken from the winning scrape. A re-scrape of a game that already wins its name does not

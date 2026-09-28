@@ -9,3 +9,5 @@ sources:
         description: One row per appdetails scrape (an appid can repeat across retries).
       - name: reviews
         description: One row per scraped review (rec_id can repeat across retries and runs).
+      - name: game_tags
+        description: One row per tags scrape of a game (tags-scraping, spec 8); repeats every run.
