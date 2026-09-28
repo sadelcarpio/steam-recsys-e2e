@@ -442,10 +442,11 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
 
 **Release with Steam user tags (spec 8):**
 1. Merge to `main`.
-2. *data-ingestion CD* first: the image with `steam_ingestion.tags_scraping`, which the new task
-   definition runs.
-3. *infrastructure CD* `apply`: task definition `tags-scraping`, the `Scrape` branch, `Scan` on
+2. *infrastructure CD* `apply`: task definition `tags-scraping`, the `Scrape` branch, `Scan` on
    `game-ids-state` for the scraping role, Glue table `steam_raw.game_tags`.
+3. *data-ingestion CD*: the image with `steam_ingestion.tags_scraping` (the task definition runs
+   `:latest`). Do steps 2-4 before the next pipeline run; a run in between only skips the tags
+   (the failed `ScrapeTags` is caught).
 4. *etl CD* (`stg_steam__game_tags`, `lkp_tags`, `game_tags`), then *inference CD*. Inference
    must be updated **before** a model with tags is promoted: older images reject its metadata.
    The new image keeps serving the current champion (trained without tags).
