@@ -30,7 +30,7 @@ variable "scraping_image_tag" {
 variable "num_review_workers" {
   description = "Review partitions written by the Lambda = reviews tasks run in parallel."
   type        = number
-  default     = 10
+  default     = 29
 }
 
 variable "games_per_task" {
@@ -42,7 +42,7 @@ variable "games_per_task" {
 variable "max_games_tasks" {
   description = "Max concurrent games-scraping tasks (only matters for the initial backfill)."
   type        = number
-  default     = 20
+  default     = 1
 }
 
 variable "max_reviews_per_game" {

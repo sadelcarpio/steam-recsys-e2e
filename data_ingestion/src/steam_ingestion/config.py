@@ -67,7 +67,7 @@ class IngestionSettings(BaseSettings):
     # Local-dev / test fallback: when set, Secrets Manager is never called.
     steam_api_key: SecretStr | None = None
 
-    num_review_workers: int = Field(10, ge=1)
+    num_review_workers: int = Field(29, ge=1)
     games_per_task: int = Field(8000, ge=1)
 
     # Steam store endpoints throttle at roughly 200 requests / 5 min per IP.
