@@ -56,12 +56,12 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `GAME_IDS_TABLE` / `REVIEWS_CURSOR_TABLE` | `game-ids-state` / `reviews-state-cursor` | |
 | `STEAM_API_KEY_SECRET_ID` | `data-ingestion/steam-api-key` | Secrets Manager (plain string or `{"api_key": ...}`) |
 | `STEAM_API_KEY` | unset | Local fallback, skips Secrets Manager |
-| `NUM_REVIEW_WORKERS` | 29 | Reviews tasks per run (Terraform `num_review_workers`; each has its own egress IP) |
+| `NUM_REVIEW_WORKERS` | 10 | |
 | `GAMES_PER_TASK` | 8000 | ~7 h per task at the store rate limit (2 requests per game) |
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
 | `THROTTLE_COOLDOWN_SECONDS` | 60 | Minimum wait after an HTTP 429 (or `Retry-After` if longer), so retries outlast the throttle window |
 | `MAX_REVIEWS_PER_GAME` | 0 | Newest reviews per game per run (forward pass); `0` = no cap. With a cap, more new reviews than this in one run leave a gap that is not backfilled |
-| `BACKFILL_REVIEWS_PER_RUN` | 20000 | Older reviews per game per run (backfill); `0` = off |
+| `BACKFILL_REVIEWS_PER_RUN` | 100000 | Older reviews per game per run (backfill); `0` = off |
 | `MAX_GAME_ATTEMPTS` | 3 | |
 | `MAX_FAILURE_RATIO` | 0.2 | Task exits 1 above this share of failed games |
 | `PARTITION_KEY` | – | Per-task, injected by the Distributed Map |

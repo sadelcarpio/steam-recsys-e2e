@@ -54,7 +54,7 @@ variable "max_reviews_per_game" {
 variable "backfill_reviews_per_run" {
   description = "Older reviews backfilled per game per run past the ones already scraped; 0 = off. While any backfill is pending the pipeline's Transform runs dbt with FULL_REFRESH."
   type        = number
-  default     = 20000
+  default     = 100000
 }
 
 variable "request_interval_seconds" {

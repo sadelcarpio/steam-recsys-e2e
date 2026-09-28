@@ -421,7 +421,7 @@ check).
 reads `etl_full_refresh` from the Lambda's result:
 1. Merge to `main`.
 2. *data-ingestion CD* first (new Lambda code and scraper image). The new setting defaults to
-   20000 in the code, so the old infrastructure keeps working.
+   100000 in the code, so the old infrastructure keeps working.
 3. *infrastructure CD* `apply` (SSM `BACKFILL_REVIEWS_PER_RUN`, `MAX_REVIEWS_PER_GAME` 2000 → 0 so
    every run fetches all new reviews, the `Transform` override).
 4. With no pipeline execution running, seed the existing cursors once (otherwise only games

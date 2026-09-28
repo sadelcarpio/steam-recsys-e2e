@@ -52,9 +52,9 @@ variables or a CD workflow.
 
 1. Lambda `list-partition-game-ids`: pulls game IDs from Steam API, emits game ID partitions
 2. Parallel (Distributed Maps over the partition files in S3):
-    - ECS Fargate `games-scraping` (Distributed Map, 1 task per ≤8k new game ids, at most 1 at a time:
-      `max_games_tasks`)
-    - ECS Fargate `reviews-scraping` (×29 tasks, `num_review_workers`, one per partition; public subnet,
+    - ECS Fargate `games-scraping` (Distributed Map, 1 task per ≤8k new game ids: 1 task normally, ~17 on the initial
+      backfill)
+    - ECS Fargate `reviews-scraping` (×N tasks, one per partition; public subnet,
       assignPublicIp=ENABLED, so each task has a distinct egress IP to avoid per-IP throttling)
 3. ECS Fargate `dbt`: runs models through Athena (a full refresh while a reviews backfill is
    pending: the Lambda's `etl_full_refresh`)

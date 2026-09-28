@@ -23,7 +23,7 @@ not when `total_reviews` is reached.
 Per game and run, after the existing forward pass (new reviews since `last_review_ts`):
 
 - **Backward pass**: pages `[1, oldest_review_ts]` newest-first, up to `BACKFILL_REVIEWS_PER_RUN`
-  reviews (default 20000, `0` disables), then moves `oldest_review_ts` back to the oldest review
+  reviews (default 100000, `0` disables), then moves `oldest_review_ts` back to the oldest review
   fetched. An empty page / repeated cursor marks the game `backfill_complete`. Reviews at the
   boundary second may be fetched twice (the ETL dedupes on `review_id`).
 - A returned review newer than `end_date` means Steam ignored the range: the backward pass stops
