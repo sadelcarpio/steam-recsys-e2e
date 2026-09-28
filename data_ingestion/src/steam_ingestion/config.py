@@ -79,9 +79,10 @@ class IngestionSettings(BaseSettings):
 
     games_flush_every: int = Field(500, ge=1)
     reviews_flush_rows: int = Field(50_000, ge=1)
-    # 0 = unlimited. Caps the newest-first reviews fetched per game per run (forward pass); the
-    # older ones come from the backfill below.
-    max_reviews_per_game: int = Field(2000, ge=0)
+    # 0 = unlimited (default). Caps the newest-first reviews fetched per game per run (forward
+    # pass). A cap truncates a game's first scrape (the backfill below fetches the rest) but also
+    # drops the new reviews of a scraped game past it: a gap that is never backfilled.
+    max_reviews_per_game: int = Field(0, ge=0)
     # Older reviews fetched per game per run past the ones already scraped (backfill); 0 = off.
     backfill_reviews_per_run: int = Field(20_000, ge=0)
     max_game_attempts: int = Field(3, ge=1)

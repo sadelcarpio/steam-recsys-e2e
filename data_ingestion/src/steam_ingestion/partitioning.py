@@ -34,12 +34,22 @@ def balance_by_weight(
     return [sorted(b) for b in bins if b]
 
 
+# New reviews of an already scraped game in one weekly run, assumed for its weight when the
+# forward pass is uncapped (its lifetime total would overweight it: it only fetches the new ones).
+SCRAPED_GAME_NEW_REVIEWS = 2000
+
+
 def estimated_review_requests(
-    total_reviews: int | None, max_reviews_per_game: int, backfill_reviews: int = 0
+    total_reviews: int | None,
+    max_reviews_per_game: int,
+    backfill_reviews: int = 0,
+    scraped: bool = False,
 ) -> float:
     """Rough request count to scrape a game's reviews: 1 + pages of (capped) reviews, plus the
-    pages of this run's backfill budget when older reviews are pending."""
+    pages of this run's backfill budget when older reviews are pending. A `scraped` game only
+    fetches its new reviews, estimated as at most `SCRAPED_GAME_NEW_REVIEWS`."""
     total = total_reviews or 0
-    if max_reviews_per_game:
-        total = min(total, max_reviews_per_game)
+    cap = max_reviews_per_game or (SCRAPED_GAME_NEW_REVIEWS if scraped else 0)
+    if cap:
+        total = min(total, cap)
     return 1.0 + (total + backfill_reviews) / 100

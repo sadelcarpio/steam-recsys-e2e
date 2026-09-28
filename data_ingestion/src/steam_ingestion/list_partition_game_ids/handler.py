@@ -92,7 +92,9 @@ def run(
         # a first scrape truncated by the cap starts its backfill in the same run
         backfill = cursor.backfill_pending if cursor else bool(cap and (total or 0) > cap)
         backfill_ids += bool(backfill and budget)
-        weights[a] = estimated_review_requests(total, cap, budget if backfill else 0)
+        weights[a] = estimated_review_requests(
+            total, cap, budget if backfill else 0, scraped=cursor is not None
+        )
     reviews_keys = []
     delete_prefix(s3, settings.partitions_bucket, f"reviews/{run_id}/")
     for n, part in enumerate(balance_by_weight(review_ids, weights, settings.num_review_workers)):

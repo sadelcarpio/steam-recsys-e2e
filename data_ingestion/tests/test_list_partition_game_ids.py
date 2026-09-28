@@ -130,6 +130,28 @@ def test_review_partitions_are_weighted_by_known_totals(
 
 
 @responses.activate
+def test_uncapped_scraped_games_weigh_their_new_reviews_only(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    for appid in range(1, 7):
+        aws.games.put_item(Item={"appid": appid, "status": "scraped", "attempts": 0})
+    for appid in (1, 2):  # huge lifetime totals, but only a week of new reviews to fetch
+        aws.cursors.put_item(Item={"appid": appid, "last_review_ts": 0, "total_reviews": 1_000_000})
+    aws.games.put_item(Item={"appid": 9, "status": "pending", "attempts": 0})
+    aws.games.update_item(
+        Key={"appid": 9},
+        UpdateExpression="SET recommendations = :r",
+        ExpressionAttributeValues={":r": 100_000},
+    )
+    _mock_app_list([])
+    run("run-7", settings, client, aws.s3, aws.dynamodb)
+    parts = _partitions(aws, "reviews/run-7/")
+    assert [9] in parts.values()  # the new game's full history outweighs both scraped games
+    # weighted by their lifetime totals, 1 and 2 would each get a worker to themselves
+    assert [1] not in parts.values() and [2] not in parts.values()
+
+
+@responses.activate
 def test_pending_backfills_weigh_more_and_request_an_etl_full_refresh(
     aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
 ) -> None:

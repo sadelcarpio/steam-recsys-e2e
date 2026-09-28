@@ -38,6 +38,9 @@ reviews). Human docs: `README.md`.
   cursor); `backfill_complete` only when a range walk ended before the budget. A failed backfill
   never fails the game. The Lambda's `etl_full_refresh` (Step Functions `Transform` override)
   must stay true while any backfill is pending.
+- `MAX_REVIEWS_PER_GAME` stays `0` (default): a forward cap drops a scraped game's new reviews
+  past it, a gap the backfill never reaches. Partition weights therefore count a scraped game's
+  new reviews (`SCRAPED_GAME_NEW_REVIEWS`), not its lifetime `total_reviews`.
 - Partition keys: `games/<run_id>/appids-NNN.json`, `reviews/<run_id>/part-NNN.json`.
   The worker id in the output names comes from `NNN`.
 - Steam API key only in Secrets Manager (`data-ingestion/steam-api-key`) or the local

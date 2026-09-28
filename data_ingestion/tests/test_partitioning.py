@@ -27,3 +27,7 @@ def test_estimated_review_requests_caps_totals() -> None:
     assert estimated_review_requests(10_000, 0) == 101.0
     assert estimated_review_requests(10_000, 2000) == 21.0
     assert estimated_review_requests(10_000, 2000, backfill_reviews=20_000) == 221.0
+    # uncapped: a scraped game only fetches its new reviews, a new game its whole history
+    assert estimated_review_requests(1_000_000, 0, scraped=True) == 21.0
+    assert estimated_review_requests(1_000_000, 0) == 10_001.0
+    assert estimated_review_requests(1_000_000, 500, scraped=True) == 6.0

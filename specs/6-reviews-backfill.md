@@ -54,10 +54,21 @@ totals) and the as-of histories in `interactions` assume new reviews are newer, 
 backfill is pending the pipeline's `Transform` runs dbt with `FULL_REFRESH=true` (Step Functions
 container override from `etl_full_refresh`). Lookups are append-only and never rebuilt.
 
-### Known limitation
+### Forward cap off by default
 
-The forward pass of an already scraped game is still capped by `MAX_REVIEWS_PER_GAME`: a game
-with more new reviews than the cap in one week leaves a gap that is not backfilled.
+A capped forward pass of an already scraped game drops its new reviews past the cap: a game with
+more new reviews than the cap in one week would leave a gap the backfill never reaches (it only
+walks back from `oldest_review_ts`). `MAX_REVIEWS_PER_GAME` therefore defaults to `0` (code and
+Terraform): every run fetches all new reviews, and a game new to the catalog is scraped in full
+on its first run (`backfill_complete`). The cap only served the initial load (tens of thousands of
+first scrapes); the games it truncated are finished by the backfill in resumable chunks.
+
+The Lambda weighs an already scraped game by at most 2000 new reviews per run
+(`SCRAPED_GAME_NEW_REVIEWS`) instead of its lifetime `total_reviews`, and a new game by its full
+history.
+
+Remaining limitation: a game that joins the catalog with a very large history is scraped in one
+long first pass (about 15 s per 1000 reviews); a task failure mid-game restarts that game.
 
 ### Tests / docs / infra
 
