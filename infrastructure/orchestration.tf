@@ -90,7 +90,9 @@ locals {
               Type     = "Task"
               Resource = "arn:aws:states:::ecs:runTask.sync"
               Parameters = {
-                LaunchType     = "FARGATE"
+                CapacityProviderStrategy = [
+                  { CapacityProvider = var.scraping_capacity_provider, Weight = 1 }
+                ]
                 Cluster        = aws_ecs_cluster.main.arn
                 TaskDefinition = aws_ecs_task_definition.scraping[kind].arn_without_revision
                 NetworkConfiguration = {
@@ -109,7 +111,8 @@ locals {
                 PropagateTags = "TASK_DEFINITION"
               }
               # Re-running a partition is safe: output parts never overwrite and cursors only
-              # move forward. Wait out a possible Steam IP throttle before retrying.
+              # move forward. Wait out a possible Steam IP throttle before retrying. A Spot
+              # interruption fails the task too (exit 143 after a graceful flush): 3 retries.
               Retry = [
                 {
                   ErrorEquals     = ["ECS.AmazonECSException", "ECS.AccessDeniedException"]
@@ -120,7 +123,7 @@ locals {
                 {
                   ErrorEquals     = ["States.TaskFailed"]
                   IntervalSeconds = 300
-                  MaxAttempts     = 1
+                  MaxAttempts     = 3
                 },
               ]
               ResultPath = null
@@ -382,7 +385,7 @@ resource "aws_sfn_state_machine" "pipeline" {
     level                  = "ERROR"
   }
 
-  depends_on = [aws_iam_role_policy.pipeline]
+  depends_on = [aws_iam_role_policy.pipeline, aws_ecs_cluster_capacity_providers.main]
 }
 
 # ---- EventBridge Scheduler -----------------------------------------------------------------

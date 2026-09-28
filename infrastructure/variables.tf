@@ -33,6 +33,17 @@ variable "num_review_workers" {
   default     = 29
 }
 
+variable "scraping_capacity_provider" {
+  description = "Capacity provider of the games / reviews scraping tasks. FARGATE_SPOT is ~70% cheaper; an interrupted task flushes, commits and is retried."
+  type        = string
+  default     = "FARGATE_SPOT"
+
+  validation {
+    condition     = contains(["FARGATE", "FARGATE_SPOT"], var.scraping_capacity_provider)
+    error_message = "scraping_capacity_provider must be FARGATE or FARGATE_SPOT."
+  }
+}
+
 variable "games_per_task" {
   description = "Max new appids per games-scraping task (2 req/game at ~200 req / 5 min per IP => ~7 h)."
   type        = number

@@ -181,6 +181,18 @@ resource "aws_ecs_cluster" "main" {
   name = var.project
 }
 
+# The scraping Maps run on `var.scraping_capacity_provider` (Spot by default); dbt keeps its
+# explicit FARGATE launch type.
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  cluster_name       = aws_ecs_cluster.main.name
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    capacity_provider = "FARGATE"
+    weight            = 1
+  }
+}
+
 resource "aws_cloudwatch_log_group" "scraping" {
   name              = "/ecs/data-ingestion"
   retention_in_days = var.log_retention_days
@@ -267,6 +279,8 @@ resource "aws_ecs_task_definition" "scraping" {
     image     = "${aws_ecr_repository.data_ingestion.repository_url}:${var.scraping_image_tag}"
     essential = true
     command   = ["python", "-m", each.value.module]
+    # SIGTERM (Spot interruption: 2 min warning) -> the scraper flushes, commits and exits 143.
+    stopTimeout = 120
     # PARTITION_KEY is injected per task by the Step Functions Distributed Map.
     environment = [{ name = "USE_SSM", value = "true" }]
     logConfiguration = {

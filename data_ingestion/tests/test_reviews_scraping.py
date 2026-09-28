@@ -5,6 +5,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import polars as pl
+import pytest
 import responses
 from responses import matchers
 
@@ -12,7 +13,9 @@ from steam_ingestion.config import IngestionSettings
 from steam_ingestion.models import PartitionFile
 from steam_ingestion.reviews_scraping.scraper import build_review_record, scrape_partition
 from steam_ingestion.schemas import REVIEWS_SCHEMA
+from steam_ingestion.shutdown import Shutdown, ShutdownRequested
 from steam_ingestion.state import ReviewCursor, ReviewsCursorState
+from steam_ingestion.steam_api import SteamClient
 from steam_ingestion.storage import list_keys, write_partition
 
 from .conftest import PARTITIONS_BUCKET, RAW_BUCKET
@@ -337,6 +340,68 @@ def test_backfill_disabled_with_a_zero_budget(
     off = settings.model_copy(update={"backfill_reviews_per_run": 0})
     assert scrape_partition(KEY, off, client, aws.s3, aws.dynamodb, today=TODAY)
     assert len(responses.calls) == 1
+
+
+def _stop_after_pages(client: SteamClient, shutdown: Shutdown, n: int) -> None:
+    """Request a stop (SIGTERM) while the `n`-th review page overall is being processed."""
+    real, seen = client.iter_review_pages, 0
+
+    def pages(*args, **kwargs):  # noqa: ANN002, ANN003
+        nonlocal seen
+        for page in real(*args, **kwargs):
+            seen += 1
+            if seen == n:
+                shutdown.request()
+            yield page
+
+    client.iter_review_pages = pages  # type: ignore[method-assign]
+
+
+@responses.activate
+def test_stop_during_a_forward_pass_flushes_finished_games_only(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    _seed(aws, [10, 20, 30])
+    _mock_reviews(10, [[_review(1, 100)]])
+    _mock_reviews(20, [[_review(3, 300)], [_review(2, 200)]])
+    shutdown = Shutdown()
+    _stop_after_pages(client, shutdown, 2)  # game 20's first page
+
+    with pytest.raises(ShutdownRequested):
+        scrape_partition(
+            KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY, shutdown=shutdown
+        )
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [1, 3]  # the buffer is written
+    assert int(_cursor(aws, 10)["last_review_ts"]) == 100
+    assert _cursor(aws, 20) is None  # forward walk unfinished: re-scraped by the retry
+    assert _cursor(aws, 30) is None
+    assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_stop_during_a_backfill_commits_what_was_fetched(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    _seed(aws, [10, 20])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=9, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(6, 600)]])
+    _mock_reviews(10, [[_review(3, 300), _review(2, 200)], [_review(1, 100)]], until=300)
+    shutdown = Shutdown()
+    _stop_after_pages(client, shutdown, 2)  # the backfill's first page
+
+    with pytest.raises(ShutdownRequested):
+        scrape_partition(
+            KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY, shutdown=shutdown
+        )
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 3, 6]
+    cursor = _cursor(aws, 10)
+    assert int(cursor["last_review_ts"]) == 600
+    assert _backfill_state(cursor) == (200, False)  # moved back as far as it got
+    assert _cursor(aws, 20) is None
 
 
 def test_cursor_backfill_fields_roundtrip(aws: SimpleNamespace) -> None:
