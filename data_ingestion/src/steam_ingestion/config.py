@@ -84,7 +84,7 @@ class IngestionSettings(BaseSettings):
     # drops the new reviews of a scraped game past it: a gap that is never backfilled.
     max_reviews_per_game: int = Field(0, ge=0)
     # Older reviews fetched per game per run past the ones already scraped (backfill); 0 = off.
-    backfill_reviews_per_run: int = Field(20_000, ge=0)
+    backfill_reviews_per_run: int = Field(100_000, ge=0)
     max_game_attempts: int = Field(3, ge=1)
     # A task exits non-zero when more than this share of its games hit exhausted retries.
     max_failure_ratio: float = Field(0.2, ge=0, le=1)

@@ -30,7 +30,7 @@ variable "scraping_image_tag" {
 variable "num_review_workers" {
   description = "Review partitions written by the Lambda = reviews tasks run in parallel."
   type        = number
-  default     = 10
+  default     = 29
 }
 
 variable "games_per_task" {
@@ -42,7 +42,7 @@ variable "games_per_task" {
 variable "max_games_tasks" {
   description = "Max concurrent games-scraping tasks (only matters for the initial backfill)."
   type        = number
-  default     = 20
+  default     = 1
 }
 
 variable "max_reviews_per_game" {
@@ -54,7 +54,7 @@ variable "max_reviews_per_game" {
 variable "backfill_reviews_per_run" {
   description = "Older reviews backfilled per game per run past the ones already scraped; 0 = off. While any backfill is pending the pipeline's Transform runs dbt with FULL_REFRESH."
   type        = number
-  default     = 20000
+  default     = 100000
 }
 
 variable "request_interval_seconds" {

@@ -61,7 +61,7 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
 | `THROTTLE_COOLDOWN_SECONDS` | 60 | Minimum wait after an HTTP 429 (or `Retry-After` if longer), so retries outlast the throttle window |
 | `MAX_REVIEWS_PER_GAME` | 0 | Newest reviews per game per run (forward pass); `0` = no cap. With a cap, more new reviews than this in one run leave a gap that is not backfilled |
-| `BACKFILL_REVIEWS_PER_RUN` | 20000 | Older reviews per game per run (backfill); `0` = off |
+| `BACKFILL_REVIEWS_PER_RUN` | 100000 | Older reviews per game per run (backfill); `0` = off |
 | `MAX_GAME_ATTEMPTS` | 3 | |
 | `MAX_FAILURE_RATIO` | 0.2 | Task exits 1 above this share of failed games |
 | `PARTITION_KEY` | – | Per-task, injected by the Distributed Map |
