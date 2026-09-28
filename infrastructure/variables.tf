@@ -46,9 +46,9 @@ variable "max_games_tasks" {
 }
 
 variable "max_reviews_per_game" {
-  description = "Newest reviews fetched per game per run (forward pass); 0 = no cap."
+  description = "Newest reviews fetched per game per run (forward pass); 0 = no cap. A cap drops the new reviews of a scraped game past it (a gap never backfilled)."
   type        = number
-  default     = 2000
+  default     = 0
 }
 
 variable "backfill_reviews_per_run" {

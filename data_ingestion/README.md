@@ -16,7 +16,7 @@ EventBridge Scheduler ─► Step Functions
 |---|---|---|
 | Lambda `list-partition-game-ids` | `steam_ingestion.list_partition_game_ids.handler.handler` | GetAppList (games only, `if_modified_since` = stored catalog cursor), registers new appids as `pending` in `game-ids-state`, writes game partitions (pending appids, ≤ `GAMES_PER_TASK` each) and review partitions (all known games, balanced by estimated request count across `NUM_REVIEW_WORKERS`). |
 | ECS `games-scraping` | `python -m steam_ingestion.games_scraping` | `appdetails` + review summary for each appid → `games/<scrape-date>-<n>-<part>.parquet`; marks appids `scraped` / `unavailable` / retries up to `MAX_GAME_ATTEMPTS`. |
-| ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor (at most `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. |
+| ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor (uncapped by default: `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. |
 
 Output schemas: `src/steam_ingestion/schemas.py` (`GAMES_SCHEMA`, `REVIEWS_SCHEMA`).
 
@@ -25,8 +25,9 @@ deduplicate on `rec_id` (games on `appid` + latest `scrape_date`).
 
 ### Reviews backfill (spec 6)
 
-The first scrape of a game keeps its newest `MAX_REVIEWS_PER_GAME` reviews. Each later run then
-fetches up to `BACKFILL_REVIEWS_PER_RUN` **older** reviews per game with Steam's undocumented
+With the default `MAX_REVIEWS_PER_GAME=0` a new game's first scrape fetches its whole history and
+each later run every review since the last one. Games whose first scrape was capped (the initial
+load ran with a 2000 cap) get the rest from the backfill: each run fetches up to `BACKFILL_REVIEWS_PER_RUN` **older** reviews per game with Steam's undocumented
 `start_date=1&end_date=<oldest_review_ts>&date_range_type=include` range (newest-first inside
 the range, `end_date` inclusive), and moves the cursor's `oldest_review_ts` back. When the range
 runs out (Steam stops returning pages, for the biggest games after a few hundred thousand
@@ -59,7 +60,7 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `GAMES_PER_TASK` | 8000 | ~7 h per task at the store rate limit (2 requests per game) |
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
 | `THROTTLE_COOLDOWN_SECONDS` | 60 | Minimum wait after an HTTP 429 (or `Retry-After` if longer), so retries outlast the throttle window |
-| `MAX_REVIEWS_PER_GAME` | 2000 | Newest reviews per game per run (forward pass); `0` = no cap. More new reviews than this in one run leave a gap that is not backfilled |
+| `MAX_REVIEWS_PER_GAME` | 0 | Newest reviews per game per run (forward pass); `0` = no cap. With a cap, more new reviews than this in one run leave a gap that is not backfilled |
 | `BACKFILL_REVIEWS_PER_RUN` | 20000 | Older reviews per game per run (backfill); `0` = off |
 | `MAX_GAME_ATTEMPTS` | 3 | |
 | `MAX_FAILURE_RATIO` | 0.2 | Task exits 1 above this share of failed games |
