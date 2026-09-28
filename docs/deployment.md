@@ -423,7 +423,8 @@ reads `etl_full_refresh` from the Lambda's result:
 2. *data-ingestion CD* first (new Lambda code and scraper image). The new setting defaults to
    100000 in the code, so the old infrastructure keeps working.
 3. *infrastructure CD* `apply` (SSM `BACKFILL_REVIEWS_PER_RUN`, `MAX_REVIEWS_PER_GAME` 2000 → 0 so
-   every run fetches all new reviews, the `Transform` override).
+   every run fetches all new reviews, the `Transform` override, the scraping tasks on Fargate
+   Spot). The image of step 2 handles the Spot interruptions (SIGTERM), so keep this order.
 4. With no pipeline execution running, seed the existing cursors once (otherwise only games
    scraped from now on are backfilled):
    `cd data_ingestion && AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_backfill`

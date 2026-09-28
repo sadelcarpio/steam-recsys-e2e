@@ -1,7 +1,8 @@
 """ECS task `games-scraping`: game details for one `games/<run_id>/appids-<n>.json` partition.
 
 Output: `s3://raw-steam-data-*/games/<scrape-date>-<n>-<part>.parquet`, flushed every
-`games_flush_every` games; an appid is only marked `scraped` after its row is in S3.
+`games_flush_every` games; an appid is only marked `scraped` after its row is in S3. On SIGTERM
+(Spot interruption) it stops at the next request, flushes the finished games and exits non-zero.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import polars as pl
 from steam_ingestion.config import IngestionSettings, ScrapeTaskSettings, configure_logging
 from steam_ingestion.models import GAMES_PARTITION_RE, GameRecord
 from steam_ingestion.schemas import GAMES_SCHEMA
+from steam_ingestion.shutdown import EXIT_CODE, Shutdown, ShutdownRequested
 from steam_ingestion.state import GameIdsState
 from steam_ingestion.steam_api import SteamApiError, SteamClient
 from steam_ingestion.storage import next_part_number, put_parquet, read_partition
@@ -99,8 +101,11 @@ def scrape_partition(
     s3: Any,
     dynamodb: Any,
     today: date | None = None,
+    shutdown: Shutdown | None = None,
 ) -> bool:
-    """Returns False when the failure ratio exceeded `max_failure_ratio`."""
+    """Returns False when the failure ratio exceeded `max_failure_ratio`. Raises
+    `ShutdownRequested` (after flushing) when `shutdown` was requested."""
+    shutdown = shutdown or Shutdown()
     match = GAMES_PARTITION_RE.match(partition_key)
     if not match:
         raise ValueError(f"not a games partition key: {partition_key}")
@@ -114,6 +119,7 @@ def scrape_partition(
 
     buffer: list[GameRecord] = []
     failures = unavailable = written = 0
+    stopped = False
 
     def flush() -> None:
         nonlocal part, written
@@ -131,6 +137,7 @@ def scrape_partition(
 
     for i, appid in enumerate(appids, 1):
         try:
+            shutdown.check()
             data = client.get_app_details(appid)
             if data is None:
                 state.mark_unavailable(appid)
@@ -138,6 +145,9 @@ def scrape_partition(
             else:
                 summary = client.get_review_summary(appid)
                 buffer.append(build_game_record(appid, data, summary, today))
+        except ShutdownRequested:
+            stopped = True  # this game stays pending for the retry
+            break
         except SteamApiError as exc:
             failures += 1
             status = state.record_failure(appid, settings.max_game_attempts)
@@ -149,12 +159,15 @@ def scrape_partition(
     flush()
 
     logger.info(
-        "done: %d written, %d unavailable, %d failed of %d",
+        "%s: %d written, %d unavailable, %d failed of %d",
+        "stopped" if stopped else "done",
         written,
         unavailable,
         failures,
         len(appids),
     )
+    if stopped:
+        raise ShutdownRequested
     return not appids or failures / len(appids) <= settings.max_failure_ratio
 
 
@@ -162,13 +175,24 @@ def main() -> int:
     settings = IngestionSettings()
     task = ScrapeTaskSettings()
     configure_logging(settings.log_level)
+    shutdown = Shutdown()
+    shutdown.install()
     client = SteamClient(
         request_interval=settings.request_interval_seconds,
         max_retries=settings.max_retries,
         max_backoff=settings.max_backoff_seconds,
         throttle_cooldown=settings.throttle_cooldown_seconds,
+        sleep=shutdown.sleep,
     )
-    ok = scrape_partition(
-        task.partition_key, settings, client, boto3.client("s3"), boto3.resource("dynamodb")
-    )
+    try:
+        ok = scrape_partition(
+            task.partition_key,
+            settings,
+            client,
+            boto3.client("s3"),
+            boto3.resource("dynamodb"),
+            shutdown=shutdown,
+        )
+    except ShutdownRequested:
+        return EXIT_CODE
     return 0 if ok else 1

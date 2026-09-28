@@ -23,6 +23,14 @@ Output schemas: `src/steam_ingestion/schemas.py` (`GAMES_SCHEMA`, `REVIEWS_SCHEM
 **Downstream note:** a crashed/retried reviews task can re-emit rows for the game it was on;
 deduplicate on `rec_id` (games on `appid` + latest `scrape_date`).
 
+**Fargate Spot.** Both scraping tasks run on `FARGATE_SPOT` (Terraform
+`scraping_capacity_provider`, ~70% cheaper). On an interruption ECS sends SIGTERM with a 2 min
+warning (`stopTimeout = 120`): the scraper stops at the next page / request (sleeps, including a
+throttle cooldown, end at once), flushes its buffer, commits the finished games (a reviews game in
+its backfill keeps what was fetched) and exits 143. Step Functions retries the partition (3
+times, 5 min apart), which resumes from the committed state. Set the variable to `FARGATE` to go
+back to on-demand.
+
 ### Reviews backfill (spec 6)
 
 With the default `MAX_REVIEWS_PER_GAME=0` a new game's first scrape fetches its whole history and

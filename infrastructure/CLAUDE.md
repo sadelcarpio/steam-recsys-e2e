@@ -15,6 +15,9 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
   (`list-partition-game-ids`, `recsys-serving`) use a placeholder zip plus
   `ignore_changes = [filename, source_code_hash]`, and ECS task definitions use
   `:${var.scraping_image_tag}` (default `latest`).
+- The scraping Maps run on `CapacityProviderStrategy` = `var.scraping_capacity_provider`
+  (default `FARGATE_SPOT`, cluster providers in `aws_ecs_cluster_capacity_providers.main`);
+  dbt keeps `LaunchType = "FARGATE"`. Their `States.TaskFailed` retries cover interruptions.
 - The deploy role has no `iam:CreatePolicy`: use inline role policies
   (`aws_iam_role_policy`), not managed policies.
 - `var.serving_auth_type` comes from the infrastructure CD input (`TF_VAR_serving_auth_type`),

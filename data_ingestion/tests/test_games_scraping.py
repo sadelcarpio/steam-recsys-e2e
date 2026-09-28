@@ -16,6 +16,7 @@ from steam_ingestion.games_scraping.scraper import (
 )
 from steam_ingestion.models import PartitionFile
 from steam_ingestion.schemas import GAMES_SCHEMA
+from steam_ingestion.shutdown import Shutdown, ShutdownRequested
 from steam_ingestion.steam_api import APP_DETAILS_URL, SteamClient
 from steam_ingestion.storage import list_keys, write_partition
 
@@ -181,6 +182,34 @@ def test_game_fails_permanently_after_max_attempts(
     responses.get(APP_DETAILS_URL, status=503)
     scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
     assert aws.games.get_item(Key={"appid": 1})["Item"]["status"] == "failed"
+
+
+@responses.activate
+def test_stop_flushes_finished_games_and_leaves_the_rest_pending(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    _seed(aws, [1, 2, 3])
+    for a in (1, 2, 3):
+        _mock_details(a, data=APP_DATA)
+    shutdown = Shutdown()
+    real = client.get_review_summary
+
+    def summary_then_stop(appid: int) -> dict:
+        if appid == 1:
+            shutdown.request()  # SIGTERM while game 1 is being scraped
+        return real(appid)
+
+    client.get_review_summary = summary_then_stop  # type: ignore[method-assign]
+
+    with pytest.raises(ShutdownRequested):
+        scrape_partition(
+            KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY, shutdown=shutdown
+        )
+
+    assert _read_all(aws, "games/2026-09-24-000-")["appid"].to_list() == [1]
+    status = {a: aws.games.get_item(Key={"appid": a})["Item"]["status"] for a in (1, 2, 3)}
+    assert status == {1: "scraped", 2: "pending", 3: "pending"}
+    assert int(aws.games.get_item(Key={"appid": 2})["Item"]["attempts"]) == 0  # not a failure
 
 
 def test_rejects_foreign_partition_key(

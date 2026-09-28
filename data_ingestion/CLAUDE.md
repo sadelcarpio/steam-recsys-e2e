@@ -22,6 +22,7 @@ reviews). Human docs: `README.md`.
   - `list_partition_game_ids/handler.py`, `games_scraping/scraper.py`,
     `reviews_scraping/scraper.py` (+ `__main__.py` for `python -m`): forward pass, then the
     backward (backfill) pass through `SteamClient.iter_review_pages(until_ts=...)`
+  - `shutdown.py`: SIGTERM flag + interruptible sleep (Fargate Spot interruptions)
   - `seed_backfill.py`: one-off, seeds the backfill fields of older cursors from Athena
 - `scraping.Dockerfile`: one image for both ECS tasks
 - `scripts/build_lambda.sh`: Lambda zip with base deps only (no `scraping` extra)
@@ -41,6 +42,10 @@ reviews). Human docs: `README.md`.
 - `MAX_REVIEWS_PER_GAME` stays `0` (default): a forward cap drops a scraped game's new reviews
   past it, a gap the backfill never reaches. Partition weights therefore count a scraped game's
   new reviews (`SCRAPED_GAME_NEW_REVIEWS`), not its lifetime `total_reviews`.
+- SIGTERM (Fargate Spot interruption): `shutdown.Shutdown` only sets a flag; the scrapers poll it
+  and the Steam client's sleeps raise `ShutdownRequested`. They then flush, commit what the
+  invariants above allow (never a half-walked forward pass) and exit `EXIT_CODE` (143,
+  non-zero so Step Functions retries). Never exit 0 on a stop: the partition would count as done.
 - Partition keys: `games/<run_id>/appids-NNN.json`, `reviews/<run_id>/part-NNN.json`.
   The worker id in the output names comes from `NNN`.
 - Steam API key only in Secrets Manager (`data-ingestion/steam-api-key`) or the local

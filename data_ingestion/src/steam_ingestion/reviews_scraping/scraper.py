@@ -8,7 +8,8 @@ exhausted range marks the game `backfill_complete`. Rows are buffered and flushe
 `s3://raw-steam-data-*/reviews/<scrape-date>-<worker-id>-<part>.parquet`; after each flush the
 cursors of games whose reviews are *fully* written are committed. A game split across a flush
 keeps its old cursor, so a crash can only re-emit rows (dedupe on `rec_id` downstream), never
-skip them.
+skip them. On SIGTERM (Spot interruption) it stops at the next page, flushes, commits the
+finished games (and the one in its backward pass, as far as it got) and exits non-zero.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import polars as pl
 from steam_ingestion.config import IngestionSettings, ScrapeTaskSettings, configure_logging
 from steam_ingestion.models import REVIEWS_PARTITION_RE, ReviewRecord
 from steam_ingestion.schemas import REVIEWS_SCHEMA
+from steam_ingestion.shutdown import EXIT_CODE, Shutdown, ShutdownRequested
 from steam_ingestion.state import ReviewCursor, ReviewsCursorState
 from steam_ingestion.steam_api import ReviewPage, SteamApiError, SteamClient
 from steam_ingestion.storage import next_part_number, put_parquet, read_partition
@@ -91,8 +93,11 @@ def scrape_partition(
     s3: Any,
     dynamodb: Any,
     today: date | None = None,
+    shutdown: Shutdown | None = None,
 ) -> bool:
-    """Returns False when the failure ratio exceeded `max_failure_ratio`."""
+    """Returns False when the failure ratio exceeded `max_failure_ratio`. Raises
+    `ShutdownRequested` (after flushing) when `shutdown` was requested."""
+    shutdown = shutdown or Shutdown()
     match = REVIEWS_PARTITION_RE.match(partition_key)
     if not match:
         raise ValueError(f"not a reviews partition key: {partition_key}")
@@ -108,6 +113,7 @@ def scrape_partition(
     buffer: list[ReviewRecord] = []
     completed: dict[int, ReviewCursor] = {}  # finished games whose rows are all in `buffer`/S3
     failures = backfill_failures = backfill_rows = total_rows = 0
+    stopped = False
 
     def flush() -> None:
         nonlocal part, total_rows
@@ -135,9 +141,13 @@ def scrape_partition(
                 walk.add(record.timestamp_created)
             if len(buffer) >= settings.reviews_flush_rows:
                 flush()  # current game is not in `completed`: its cursor stays put
+            shutdown.check()
 
     cap, budget = settings.max_reviews_per_game, settings.backfill_reviews_per_run
     for i, appid in enumerate(appids, 1):
+        if shutdown.requested:
+            stopped = True
+            break
         previous = cursors.get(appid)
         since = previous.last_review_ts if previous else 0
         total = previous.total_reviews if previous else None
@@ -148,6 +158,9 @@ def scrape_partition(
         forward = _Walk()
         try:
             collect(appid, client.iter_review_pages(appid, since, cap), forward)
+        except ShutdownRequested:
+            stopped = True  # forward walk unfinished: the game keeps its cursor
+            break
         except SteamApiError as exc:
             failures += 1
             logger.warning("appid %d failed: %s", appid, exc)
@@ -165,6 +178,8 @@ def scrape_partition(
                 try:
                     collect(appid, client.iter_review_pages(appid, 0, budget, oldest), backward)
                     complete = backward.count < budget  # the range ran out before the budget
+                except ShutdownRequested:
+                    stopped = True  # keep what was buffered, like a failed backfill
                 except SteamApiError as exc:
                     # keep what was buffered (the cursor moves back to it); the rest is next run's
                     backfill_failures += 1
@@ -181,6 +196,8 @@ def scrape_partition(
             )
             if cursor != previous:
                 completed[appid] = cursor
+            if stopped:
+                break
         if i % 500 == 0:
             logger.info(
                 "progress %d/%d (rows=%d, failures=%d)",
@@ -192,13 +209,16 @@ def scrape_partition(
     flush()
 
     logger.info(
-        "done: %d reviews (%d backfilled), %d failed games, %d failed backfills of %d",
+        "%s: %d reviews (%d backfilled), %d failed games, %d failed backfills of %d",
+        "stopped" if stopped else "done",
         total_rows,
         backfill_rows,
         failures,
         backfill_failures,
         len(appids),
     )
+    if stopped:
+        raise ShutdownRequested
     return not appids or failures / len(appids) <= settings.max_failure_ratio
 
 
@@ -206,13 +226,24 @@ def main() -> int:
     settings = IngestionSettings()
     task = ScrapeTaskSettings()
     configure_logging(settings.log_level)
+    shutdown = Shutdown()
+    shutdown.install()
     client = SteamClient(
         request_interval=settings.request_interval_seconds,
         max_retries=settings.max_retries,
         max_backoff=settings.max_backoff_seconds,
         throttle_cooldown=settings.throttle_cooldown_seconds,
+        sleep=shutdown.sleep,
     )
-    ok = scrape_partition(
-        task.partition_key, settings, client, boto3.client("s3"), boto3.resource("dynamodb")
-    )
+    try:
+        ok = scrape_partition(
+            task.partition_key,
+            settings,
+            client,
+            boto3.client("s3"),
+            boto3.resource("dynamodb"),
+            shutdown=shutdown,
+        )
+    except ShutdownRequested:
+        return EXIT_CODE
     return 0 if ok else 1
