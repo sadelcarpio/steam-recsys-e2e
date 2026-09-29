@@ -7,8 +7,12 @@ models:
       (or unknown type) with a non-empty name.
     columns:
       - name: game_name_key
-        description: lower(game_name), the merge key.
+        description: >
+          lower(game_name) of the game's first scrape, the merge key (stable when a game is
+          renamed, e.g. on release).
         data_tests: [unique, not_null]
+      - name: game_coming_soon
+        description: Unreleased at its latest scrape (spec 10). Null when Steam did not say.
       - name: game_id
         data_tests: [unique, not_null]
   - name: int_reviews__deduplicated

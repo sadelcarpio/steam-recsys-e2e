@@ -2,7 +2,9 @@
 
 -- Human-readable details of every current catalog game (one row per int_games__deduplicated
 -- row, same key), for serving / a frontend. Details are static: they come from the scrape that
--- made the game its name's winner and are only replaced when another appid wins the name.
+-- made the game its name's winner and are only replaced when another appid wins the name, or
+-- when the game's release status changes (spec 10: game_coming_soon, unreleased games are
+-- excluded from recommendations and search by inference).
 -- Incremental: winners merged into int_games__deduplicated since the last load.
 
 with winners as (
@@ -42,6 +44,7 @@ select
     w.game_publishers,
     w.game_genres,
     w.game_categories,
+    coalesce(w.game_coming_soon, false) as game_coming_soon,
     w._batch_at
 from winners as w
 left join scrapes as s on s.game_id = w.game_id and s.copy_rank = 1

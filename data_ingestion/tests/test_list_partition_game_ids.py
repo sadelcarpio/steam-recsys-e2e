@@ -88,6 +88,34 @@ def test_incremental_run_only_scrapes_new_and_pending(
 
 
 @responses.activate
+def test_changed_coming_soon_games_are_rescraped_and_never_review_scraped(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    states = [
+        (1, "scraped", True),  # coming soon, changed -> re-scraped
+        (2, "scraped", True),  # coming soon, unchanged -> left alone
+        (3, "scraped", False),  # released, changed -> no re-scrape (prices are out of scope)
+        (4, "failed", True),  # not scraped -> not re-queued
+    ]
+    for appid, status, coming_soon in states:
+        aws.games.put_item(
+            Item={"appid": appid, "status": status, "attempts": 3, "coming_soon": coming_soon}
+        )
+    aws.games.put_item(Item={"appid": CATALOG_CURSOR_APPID, "last_modified": 500})
+    _mock_app_list([(1, 600), (3, 610), (4, 620), (9, 700)], modified_since=500)
+
+    result = run("run-8", settings, client, aws.s3, aws.dynamodb)
+
+    assert result.rescrape_game_ids == 1 and result.games_to_scrape == 2
+    assert sum(_partitions(aws, "games/run-8/").values(), []) == [1, 9]
+    item = aws.games.get_item(Key={"appid": 1})["Item"]
+    assert item["status"] == "pending" and int(item["attempts"]) == 0
+    assert aws.games.get_item(Key={"appid": 4})["Item"]["status"] == "failed"
+    # unreleased games have no reviews to scrape (the new game 9 is not known to be unreleased)
+    assert sorted(sum(_partitions(aws, "reviews/run-8/").values(), [])) == [3, 9]
+
+
+@responses.activate
 def test_no_new_games_writes_no_game_partitions(
     aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
 ) -> None:

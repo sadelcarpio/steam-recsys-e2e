@@ -115,7 +115,8 @@ def test_scrapes_partition_writes_parquet_and_marks_state(
     _seed(aws, [1, 2, 3])
     _mock_details(1, data=APP_DATA)
     _mock_details(2, success=False)
-    _mock_details(3, data={**APP_DATA, "name": "Portal 2"})
+    unreleased = {"coming_soon": True, "date": "2027"}
+    _mock_details(3, data={**APP_DATA, "name": "Portal 3", "release_date": unreleased})
 
     assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
 
@@ -125,6 +126,9 @@ def test_scrapes_partition_writes_parquet_and_marks_state(
     assert aws.games.get_item(Key={"appid": 1})["Item"]["status"] == "scraped"
     assert int(aws.games.get_item(Key={"appid": 1})["Item"]["recommendations"]) == 12345
     assert aws.games.get_item(Key={"appid": 2})["Item"]["status"] == "unavailable"
+    # spec 10: the release status is kept with the state
+    assert aws.games.get_item(Key={"appid": 1})["Item"]["coming_soon"] is False
+    assert aws.games.get_item(Key={"appid": 3})["Item"]["coming_soon"] is True
 
 
 @responses.activate

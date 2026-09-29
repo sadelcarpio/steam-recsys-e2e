@@ -34,10 +34,18 @@ games as (
 ),
 
 counts as (
+    -- new count rows, plus every row of a game whose int_games__deduplicated row changed since
+    -- the last load (spec 10: a coming-soon game re-scraped after its release), so its static
+    -- features match a full refresh without waiting for its next review
     select *
     from {{ ref('int_game_review_counts') }}
     {% if is_incremental() %}
     where _batch_at > {{ incremental_max('_batch_at', "timestamp '1970-01-01 00:00:00'") }}
+        or game_id in (
+            select game_id
+            from {{ ref('int_games__deduplicated') }}
+            where _batch_at > {{ incremental_max('_batch_at', "timestamp '1970-01-01 00:00:00'") }}
+        )
     {% endif %}
 )
 

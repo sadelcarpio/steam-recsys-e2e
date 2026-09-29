@@ -1,8 +1,9 @@
 """ECS task `games-scraping`: game details for one `games/<run_id>/appids-<n>.json` partition.
 
 Output: `s3://raw-steam-data-*/games/<scrape-date>-<n>-<part>.parquet`, flushed every
-`games_flush_every` games; an appid is only marked `scraped` after its row is in S3. On SIGTERM
-(Spot interruption) it stops at the next request, flushes the finished games and exits non-zero.
+`games_flush_every` games; an appid is only marked `scraped` (with its `coming_soon` flag) after
+its row is in S3. On SIGTERM (Spot interruption) it stops at the next request, flushes the
+finished games and exits non-zero.
 """
 
 from __future__ import annotations
@@ -129,7 +130,7 @@ def scrape_partition(
         key = f"{prefix}{part:04d}.parquet"
         put_parquet(s3, settings.raw_bucket, key, df)
         for record in buffer:
-            state.mark_scraped(record.appid, record.recommendations)
+            state.mark_scraped(record.appid, record.recommendations, record.coming_soon is True)
         written += len(buffer)
         logger.info("wrote %d games to s3://%s/%s", len(buffer), settings.raw_bucket, key)
         buffer.clear()

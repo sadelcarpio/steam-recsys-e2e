@@ -46,7 +46,7 @@ def test_item_has_no_nulls_and_decimal_price():
 
 
 def test_sync_is_insert_only(aws, marts):
-    assert sync_game_details(FakeSource(marts), _writer()) == (N_GAMES, 7)
+    assert sync_game_details(FakeSource(marts), _writer()) == (N_GAMES, 0, 7)
     items = _items()
     assert len(items) == N_GAMES
     assert items[1000 + FIRST_GAME]["header_image"] == f"https://cdn/{1000 + FIRST_GAME}.jpg"
@@ -60,12 +60,35 @@ def test_sync_is_insert_only(aws, marts):
         ExpressionAttributeValues={":n": "kept"},
     )
     grown = {**marts, "game_details": details_table(range(FIRST_GAME, FIRST_GAME + N_GAMES + 1))}
-    assert sync_game_details(FakeSource(grown), _writer()) == (1, 7)
+    assert sync_game_details(FakeSource(grown), _writer()) == (1, 0, 7)
     items = _items()
     assert len(items) == N_GAMES + 1 and items[1000 + FIRST_GAME]["name"] == "kept"
 
 
 def test_missing_mart_skips(aws, marts):
     without = {k: v for k, v in marts.items() if k != "game_details"}
-    assert sync_game_details(FakeSource(without), _writer()) == (0, None)
+    assert sync_game_details(FakeSource(without), _writer()) == (0, 0, None)
     assert _items() == {}
+
+
+def test_unreleased_games_are_deleted_then_inserted_on_release(aws, marts):
+    """spec 10: unreleased games never stay in the table; a release inserts fresh details."""
+    games = range(FIRST_GAME, FIRST_GAME + N_GAMES)
+    first, second = 1000 + FIRST_GAME, 1000 + FIRST_GAME + 1
+    assert sync_game_details(FakeSource(marts), _writer()) == (N_GAMES, 0, 7)  # before spec 10
+
+    unreleased = {**marts, "game_details": details_table(games, coming_soon=[FIRST_GAME])}
+    assert sync_game_details(FakeSource(unreleased), _writer()) == (0, 1, 7)
+    assert first not in _items() and second in _items()
+    assert sync_game_details(FakeSource(unreleased), _writer()) == (0, 0, 7)  # nothing stored
+
+    released = {**marts, "game_details": details_table(games)}
+    assert sync_game_details(FakeSource(released), _writer()) == (1, 0, 7)
+    assert _items()[first]["name"] == f"Game {FIRST_GAME}"
+
+
+def test_read_game_details_skips_unreleased(marts):
+    source = FakeSource({"game_details": details_table([FIRST_GAME, FIRST_GAME + 1], [FIRST_GAME])})
+    unreleased: set[int] = set()
+    assert [d.game_id for d in read_game_details(source, 7, unreleased)] == [1001 + FIRST_GAME]
+    assert unreleased == {1000 + FIRST_GAME}

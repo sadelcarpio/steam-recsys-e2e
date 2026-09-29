@@ -69,10 +69,21 @@ def run_inference(
         description_chars=settings.rerank_description_chars if settings.rerank_enabled else 0,
         require_tags=metadata.config.vocab.tags is not None,
     )
-    # adult games: never recommended, published or searchable
-    excluded = adult_mask(data.games) if settings.exclude_adult else None
-    if excluded is not None:
-        log.info("excluding %d adult games of %d", int(excluded.sum()), len(data.games))
+    # adult and unreleased (spec 10) games: never recommended, published or searchable
+    adult = adult_mask(data.games) if settings.exclude_adult else np.zeros(len(data.games), bool)
+    unreleased = (
+        data.games.coming_soon
+        if data.games.coming_soon is not None
+        else np.zeros(len(data.games), bool)
+    )
+    excluded = adult | unreleased
+    log.info(
+        "excluding %d games of %d (%d adult, %d unreleased)",
+        int(excluded.sum()),
+        len(data.games),
+        int(adult.sum()),
+        int(unreleased.sum()),
+    )
     candidates = retrieve(
         model,
         data.games,
@@ -92,12 +103,12 @@ def run_inference(
                     build_catalog(
                         data.games,
                         candidates.item_embeddings,
-                        keep=~excluded if excluded is not None else None,
+                        keep=~excluded,
                     )
                 ),
                 model_id=metadata.model_id,
                 generated_at=now,
-                catalog_games=len(data.games) - int(excluded.sum() if excluded is not None else 0),
+                catalog_games=len(data.games) - int(excluded.sum()),
                 user_tower_key=store.user_tower_numpy_key(metadata.model_id),
             )
             # the frontend's search covers exactly the games the online model can use
@@ -153,14 +164,18 @@ def run_inference(
     elif gone:
         deleted = writer.delete(sorted(gone))
     details_written, details_snapshot = 0, None
+    details_deleted = 0
     if details_writer is not None:
-        details_written, details_snapshot = sync_game_details(source, details_writer)
+        details_written, details_deleted, details_snapshot = sync_game_details(
+            source, details_writer
+        )
     summary = InferenceSummary(
         model_id=metadata.model_id,
         skipped=False,
         users=len(data.users),
         catalog_games=len(data.games),
-        adult_games=int(excluded.sum()) if excluded is not None else 0,
+        adult_games=int(adult.sum()),
+        unreleased_games=int(unreleased.sum()),
         reranked_users=len(reranked),
         rerank_failures=failures,
         written=written,
@@ -168,6 +183,7 @@ def run_inference(
         deleted=deleted,
         popular_games=len(popular.recommendations) if popular else 0,
         game_details_written=details_written,
+        game_details_deleted=details_deleted,
         online_bundle=online_bundle,
         search_index=search_index,
         snapshots={**data.snapshots, "game_details": details_snapshot},

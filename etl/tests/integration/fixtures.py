@@ -98,9 +98,10 @@ RAW_SCHEMAS = {"games": GAMES_SCHEMA, "reviews": REVIEWS_SCHEMA, "game_tags": GA
 
 
 def _game(appid, name, *, scrape_date, type_="game", devs=(), pubs=(), genres=(), cats=(),
-          score=None, recs=None, is_free=False, details=None):  # fmt: skip
+          score=None, recs=None, is_free=False, details=None, coming_soon=False):  # fmt: skip
     return {
         **(details or {}),
+        "coming_soon": coming_soon,
         "appid": appid,
         "name": name,
         "type": type_,
@@ -166,6 +167,16 @@ BATCH1_GAMES = [
         _game(g, f"Game {g}", devs=["Studio X"], pubs=["Pub X"], genres=["RPG"], score=6, **_d1)
         for g in range(101, 108)
     ],
+    # spec 10: unreleased in batch 1, released (and renamed) in batch 2
+    _game(
+        200,
+        "Project Omega",
+        devs=["Valve"],
+        genres=["Action"],
+        coming_soon=True,
+        details={"release_date": "Coming soon"},
+        **_d1,
+    ),  # fmt: skip
 ]
 
 BATCH1_REVIEWS = [
@@ -193,6 +204,15 @@ BATCH2_GAMES = [
         **_d2,
     ),  # fmt: skip
     _game(60, "ALPHA", devs=["Other"], score=3, **_d2),  # loses to 10
+    _game(
+        200,
+        "Omega",
+        devs=["Valve"],
+        genres=["Action"],
+        score=7,
+        details={"release_date": "8 Jan, 2026", "price": 19.99},
+        **_d2,
+    ),  # fmt: skip
 ]
 
 BATCH2_REVIEWS = [

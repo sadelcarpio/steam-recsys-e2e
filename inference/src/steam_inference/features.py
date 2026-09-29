@@ -10,7 +10,8 @@ as they arrive.
 The catalog covers every current game, including games newer than the model: ids beyond the
 model's vocabularies map to OOV inside the model, so a new game is scored from its content
 features. Each game's Steam user tags (`game_tags`, spec 8) are joined when the mart exists: a
-model trained with tags needs them, and the prompt / adult filter use their names.
+model trained with tags needs them, and the prompt / adult filter use their names. Each game's
+release status comes from `game_details` (spec 10: unreleased games are never published).
 """
 
 from __future__ import annotations
@@ -67,6 +68,8 @@ class Games:
     description: np.ndarray
     # object (str) indexed by tag id; empty when the tags were not loaded
     tag_names: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=object))
+    # bool per catalog row: unreleased at its latest scrape (spec 10); None = all released
+    coming_soon: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.catalog)
@@ -210,14 +213,16 @@ def load_games(
     else:
         log.warning("marts %s not found: games without Steam tags", TAG_TABLES)
     game_id = _int64(latest["game_id"])
+    details = _game_details(source, game_id, description_chars)
     return Games(
         catalog=catalog_from_table(latest, num_games),
         game_id=game_id,
         name=np.asarray(pc.fill_null(latest["game_name"], "").to_pylist(), dtype=object),
         genre_names=_lookup_names(source, "lkp_genres", snapshots["lkp_genres"]),
         developer_names=_lookup_names(source, "lkp_developers", snapshots["lkp_developers"]),
-        description=_short_descriptions(source, game_id, description_chars),
+        description=details.description,
         tag_names=tag_names,
+        coming_soon=details.coming_soon,
     )
 
 
@@ -231,29 +236,43 @@ def _optional_snapshots(source: TableSource, tables: list[str]) -> dict[str, int
     return snapshots
 
 
-def _short_descriptions(source: TableSource, game_id: np.ndarray, max_chars: int) -> np.ndarray:
-    """Short description per catalog row from the mart `game_details` (cleaned, truncated);
-    "" when `max_chars` is 0, the game has none, or the mart is missing."""
-    out = np.full(len(game_id), "", dtype=object)
-    if not max_chars:
-        return out
+@dataclass(frozen=True)
+class _Details:
+    description: np.ndarray  # object (str) per catalog row
+    coming_soon: np.ndarray  # bool per catalog row
+
+
+def _game_details(source: TableSource, game_id: np.ndarray, max_chars: int) -> _Details:
+    """Per catalog row, from the mart `game_details`: the short description (cleaned,
+    truncated; "" when `max_chars` is 0, the game has none, or the mart is missing) and whether
+    the game is unreleased (false when the mart is missing)."""
+    description = np.full(len(game_id), "", dtype=object)
+    coming_soon = np.zeros(len(game_id), dtype=bool)
+    out = _Details(description, coming_soon)
     try:
         snapshot_id = source.snapshot_id("game_details")
     except NoSuchTableError:
-        log.warning("mart game_details not found: no descriptions in the rerank prompt")
+        log.warning("mart game_details not found: no descriptions, every game counted released")
         return out
+    columns = ["game_id", "game_coming_soon"]
+    if max_chars:
+        columns.append("game_short_description")
     row_of = {int(g): i for i, g in enumerate(game_id)}
     found = 0
-    for batch in source.batches("game_details", ["game_id", "game_short_description"], snapshot_id):
-        for gid, text in zip(
-            batch["game_id"].to_pylist(), batch["game_short_description"].to_pylist(), strict=True
-        ):
+    for batch in source.batches("game_details", columns, snapshot_id):
+        texts = batch["game_short_description"].to_pylist() if max_chars else None
+        unreleased = batch["game_coming_soon"].to_pylist()
+        for i, gid in enumerate(batch["game_id"].to_pylist()):
             row = row_of.get(gid)
-            text = clean_text(text)
-            if row is not None and text:
-                out[row] = truncate(text, max_chars)
+            if row is None:
+                continue
+            coming_soon[row] = bool(unreleased[i])
+            if texts is not None and (text := clean_text(texts[i])):
+                description[row] = truncate(text, max_chars)
                 found += 1
-    log.info("short descriptions for %d of %d catalog games", found, len(game_id))
+    if max_chars:
+        log.info("short descriptions for %d of %d catalog games", found, len(game_id))
+    log.info("unreleased games in the catalog: %d", int(coming_soon.sum()))
     return out
 
 

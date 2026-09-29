@@ -455,6 +455,20 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
 6. *training CD* (`USE_GAME_TAGS=true` by default), then promote (step 9). Promotion compares it
    with the current champion on the same rows.
 
+**Release with coming-soon games (spec 10):**
+1. Merge to `main`.
+2. *infrastructure CD* `apply` (`UpdateItem` on `game-ids-state` for the Lambda), then
+   *data-ingestion CD* (Lambda + scraper image).
+3. *etl CD*. The new column `game_coming_soon` needs a full refresh (`on_schema_change: fail`).
+   While a reviews backfill is pending the pipeline's `Transform` already is one; otherwise run
+   step 8 with `FULL_REFRESH`. Then *inference CD* (it reads `game_coming_soon`, so never before
+   the ETL's full refresh has run).
+4. With no pipeline execution running, seed the flag once (`--dry-run` first prints the counts):
+   `cd data_ingestion && AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_coming_soon`
+5. The next run re-scrapes the re-queued games, skips reviews of unreleased games, and its
+   `Infer` excludes unreleased games and deletes them from `game-details` (about 50k deletes,
+   a few cents). Check: `select count_if(game_coming_soon), count(*) from steam_marts.game_details;`
+
 ## Order for a fresh account (summary)
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →

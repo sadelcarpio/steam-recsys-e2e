@@ -136,8 +136,10 @@ def add_tags(marts: dict[str, pa.Table], tags_of=None) -> dict[str, pa.Table]:
     }
 
 
-def details_table(games: Iterable[int]) -> pa.Table:
-    """Mart game_details (strings as scraped: HTML entities, blanks)."""
+def details_table(games: Iterable[int], coming_soon: Iterable[int] = ()) -> pa.Table:
+    """Mart game_details (strings as scraped: HTML entities, blanks); `coming_soon`: game_idx
+    of the unreleased games."""
+    coming_soon = set(coming_soon)
     str_list = pa.list_(pa.string())
     rows = [
         {
@@ -152,6 +154,7 @@ def details_table(games: Iterable[int]) -> pa.Table:
             "game_publishers": [],
             "game_genres": ["Action", "Indie"],
             "game_categories": None,
+            "game_coming_soon": g in coming_soon,
         }
         for g in games
     ]
@@ -168,6 +171,7 @@ def details_table(games: Iterable[int]) -> pa.Table:
             ("game_publishers", str_list),
             ("game_genres", str_list),
             ("game_categories", str_list),
+            ("game_coming_soon", pa.bool_()),
         ]
     )
     return pa.Table.from_pylist(rows, schema=schema)

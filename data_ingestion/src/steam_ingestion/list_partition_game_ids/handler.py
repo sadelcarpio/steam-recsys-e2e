@@ -1,16 +1,17 @@
 """Lambda `list-partition-game-ids`: first step of the ingestion state machine.
 
 1. Fetch game appids from GetAppList (only apps modified since the stored catalog cursor).
-2. Register unseen appids as `pending` in `game-ids-state`.
-3. Write `games/<run_id>/appids-<n>.json`: every pending appid (new + retries), ≤ games_per_task
-   per file, one games-scraping task per file.
-4. Write `reviews/<run_id>/part-<n>.json`: every known scrapable appid, balanced across
+2. Register unseen appids as `pending` in `game-ids-state`, and put known coming-soon games
+   that GetAppList reports as modified (usually their release) back to `pending` (spec 10).
+3. Write `games/<run_id>/appids-<n>.json`: every pending appid (new + retries + re-scrapes),
+   ≤ games_per_task per file, one games-scraping task per file.
+4. Write `reviews/<run_id>/part-<n>.json`: every known scrapable, released appid, balanced across
    num_review_workers by estimated request count (including this run's backfill of older
    reviews). `etl_full_refresh` tells the pipeline to rebuild the marts: backfilled reviews are
    older than rows already loaded.
 
-Re-running the same run_id rewrites the same files: new appids are persisted as pending before
-the cursor moves, and both prefixes are cleared first.
+Re-running the same run_id rewrites the same files: new and re-queued appids are persisted as
+pending before the cursor moves, and both prefixes are cleared first.
 """
 
 from __future__ import annotations
@@ -61,12 +62,28 @@ def run(
         len(new_ids),
     )
 
-    # Persist new ids before advancing the cursor so a crash can never lose them.
+    # Coming-soon games that changed on Steam (usually their release): scrape them again (spec 10).
+    rescrape = sorted(
+        a.appid
+        for a in apps
+        if a.appid in known
+        and known[a.appid].status == GameStatus.SCRAPED
+        and known[a.appid].coming_soon
+    )
+
+    # Persist new ids and re-queued games before advancing the cursor so a crash can never lose
+    # them.
     games_state.add_new(new_ids, run_id)
+    requeued = games_state.requeue(rescrape)
+    logger.info("coming-soon games changed: %d re-queued", requeued)
     if apps:
         games_state.set_catalog_cursor(max(a.last_modified for a in apps))
 
-    pending = sorted(set(new_ids) | {a for a, s in known.items() if s.status == GameStatus.PENDING})
+    pending = sorted(
+        set(new_ids)
+        | set(rescrape)
+        | {a for a, s in known.items() if s.status == GameStatus.PENDING}
+    )
     games_keys = []
     delete_prefix(s3, settings.partitions_bucket, f"games/{run_id}/")
     for n, chunk in enumerate(chunk_by_size(pending, settings.games_per_task)):
@@ -76,8 +93,11 @@ def run(
         )
         games_keys.append(key)
 
+    # Unreleased games have no reviews; once released (re-scraped), their first review scrape
+    # fetches the whole history, so skipping them loses nothing.
     review_ids = sorted(
-        set(new_ids) | {a for a, s in known.items() if s.status != GameStatus.UNAVAILABLE}
+        set(new_ids)
+        | {a for a, s in known.items() if s.status != GameStatus.UNAVAILABLE and not s.coming_soon}
     )
     cursors = cursor_state.load_all()
     cap, budget = settings.max_reviews_per_game, settings.backfill_reviews_per_run
@@ -108,6 +128,7 @@ def run(
         run_id=run_id,
         new_game_ids=len(new_ids),
         games_to_scrape=len(pending),
+        rescrape_game_ids=len(rescrape),
         reviews_game_ids=len(review_ids),
         backfill_game_ids=backfill_ids,
         etl_full_refresh=backfill_ids > 0,

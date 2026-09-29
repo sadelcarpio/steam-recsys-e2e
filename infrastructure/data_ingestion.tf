@@ -104,6 +104,7 @@ data "aws_iam_policy_document" "list_partition_game_ids" {
     sid = "GameIdsState"
     actions = [
       "dynamodb:Scan", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:BatchWriteItem",
+      "dynamodb:UpdateItem", # re-queue changed coming-soon games (spec 10)
     ]
     resources = [aws_dynamodb_table.game_ids_state.arn]
   }

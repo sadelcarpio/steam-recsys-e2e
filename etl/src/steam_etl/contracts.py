@@ -91,6 +91,7 @@ class GameDetailsRow(_Row):
     game_publishers: list[str]
     game_genres: list[str]
     game_categories: list[str]
+    game_coming_soon: bool  # unreleased at its latest scrape (spec 10)
 
 
 class GameTagsRow(_Row):

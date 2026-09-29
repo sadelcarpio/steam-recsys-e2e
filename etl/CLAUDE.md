@@ -26,7 +26,9 @@ Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
   mirrored by `tests/integration/fixtures.py`. Update both when the scraper schema changes.
 - Watermarks: `int_game_review_counts`, `user_features` and `interactions` consume
   `int_review_events` rows, and `game_features` consumes `int_game_review_counts` rows, with
-  `_batch_at > max(_batch_at)` of the consuming model. Every row written must carry the
+  `_batch_at > max(_batch_at)` of the consuming model. `game_features` also re-merges every row
+  of a game whose `int_games__deduplicated` row changed (same watermark), keeping the rows'
+  `_batch_at`. Every row written must carry the
   `_batch_at` of the upstream rows it came from (or the run stamp).
 - Lookups: never rebuild, never reuse ids. 0 = padding, 1 = OOV, first real id = 2. Padding and
   OOV must never be conflated (histories: 0 or >= 2; encoded arrays: >= 1).
@@ -39,7 +41,11 @@ Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
 - `game_details` is display data, never a model feature. Its rows are the rows of
   `int_games__deduplicated` (merge key `game_name_key`, watermark `_batch_at`), with the text
   taken from the winning scrape. A re-scrape of a game that already wins its name does not
-  update it (the details are treated as static; a full refresh takes the latest scrape).
+  update it (the details are treated as static; a full refresh takes the latest scrape),
+  except when its `game_coming_soon` changed (spec 10: the released scrape replaces it).
+- `game_name_key` is lower(name) of a game's **first** scrape (a stored winner keeps its key),
+  so a rename (e.g. on release) never puts one appid under two keys and incremental equals
+  full refresh.
 - Timestamps are `timestamp(6)` in Iceberg tables (Athena requirement), but plain `timestamp` in
   views: Athena stores view columns as Hive types and rejects `timestamp(6)` there. Changing a mart's columns means updating
   `contracts.py` and the integration test (`on_schema_change: fail`).

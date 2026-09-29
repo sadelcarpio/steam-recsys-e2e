@@ -206,6 +206,7 @@ class InferenceSummary(_Frozen):
     users: int = 0
     catalog_games: int = 0
     adult_games: int = 0  # excluded from everything published (adult.py)
+    unreleased_games: int = 0  # coming soon (spec 10): excluded like adult games
     reranked_users: int = 0
     rerank_failures: int = 0
     written: int = 0
@@ -213,6 +214,7 @@ class InferenceSummary(_Frozen):
     deleted: int = 0
     popular_games: int = 0
     game_details_written: int = 0
+    game_details_deleted: int = 0  # unreleased games removed from game-details (spec 10)
     online_bundle: str | None = None
     search_index: str | None = None
     snapshots: dict[str, int | None] = Field(default_factory=dict)
