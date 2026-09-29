@@ -32,8 +32,11 @@ deduplicate on `rec_id` (games on `appid` + latest `scrape_date`, tags on `appid
 `scraping_capacity_provider`, ~70% cheaper). On an interruption ECS sends SIGTERM with a 2 min
 warning (`stopTimeout = 120`): the scraper stops at the next page / request (sleeps, including a
 throttle cooldown, end at once), flushes its buffer, commits the finished games (a reviews game in
-its backfill keeps what was fetched) and exits 143. Step Functions retries the partition (3
-times, 5 min apart), which resumes from the committed state. Set the variable to `FARGATE` to go
+its backfill keeps what was fetched) and exits 143. Step Functions retries the partition (up to
+10 times, waiting 5 min growing to 30 min; the tags task 4 times), which resumes from the
+committed state. Up to `scrape_tolerated_failure_percentage` (Terraform, default 10%) of a Map's
+partitions may still fail without failing the run (dbt and inference still run; the failed
+partitions catch up next run); above that the Map aborts the rest and the run fails. Set the variable to `FARGATE` to go
 back to on-demand.
 
 ### Reviews backfill (spec 6)
