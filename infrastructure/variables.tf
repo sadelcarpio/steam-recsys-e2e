@@ -33,6 +33,17 @@ variable "num_review_workers" {
   default     = 29
 }
 
+variable "scrape_tolerated_failure_percentage" {
+  description = "Percentage of scraping partitions (games / reviews Maps) that may fail after their retries without failing the run, so dbt and inference still run. Safe: failed games stay pending and reviews resume from their cursors next run."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.scrape_tolerated_failure_percentage >= 0 && var.scrape_tolerated_failure_percentage <= 100
+    error_message = "scrape_tolerated_failure_percentage must be between 0 and 100."
+  }
+}
+
 variable "scraping_capacity_provider" {
   description = "Capacity provider of the games / reviews scraping tasks. FARGATE_SPOT is ~70% cheaper; an interrupted task flushes, commits and is retried."
   type        = string

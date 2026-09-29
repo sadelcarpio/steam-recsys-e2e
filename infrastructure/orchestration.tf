@@ -82,6 +82,8 @@ locals {
           "partition_key.$" = "$$.Map.Item.Value.Key"
         }
         MaxConcurrency = m.max_concurrency
+        # A partition that still fails after its retries does not abort the others.
+        ToleratedFailurePercentage = var.scrape_tolerated_failure_percentage
         ItemProcessor = {
           ProcessorConfig = { Mode = "DISTRIBUTED", ExecutionType = "STANDARD" }
           StartAt         = "Run${m.state}Task"
@@ -112,7 +114,9 @@ locals {
               }
               # Re-running a partition is safe: output parts never overwrite and cursors only
               # move forward. Wait out a possible Steam IP throttle before retrying. A Spot
-              # interruption fails the task too (exit 143 after a graceful flush): 3 retries.
+              # interruption fails the task too (exit 143 after a graceful flush). Spot
+              # interruptions come in bursts and a single failed partition aborts the whole Map,
+              # so retry many times, waiting 5 min growing to at most 30 min (worst case ~4 h).
               Retry = [
                 {
                   ErrorEquals     = ["ECS.AmazonECSException", "ECS.AccessDeniedException"]
@@ -123,7 +127,9 @@ locals {
                 {
                   ErrorEquals     = ["States.TaskFailed"]
                   IntervalSeconds = 300
-                  MaxAttempts     = 3
+                  MaxAttempts     = 10
+                  BackoffRate     = 1.5
+                  MaxDelaySeconds = 1800
                 },
               ]
               ResultPath = null
@@ -170,7 +176,8 @@ locals {
           {
             ErrorEquals     = ["States.TaskFailed"]
             IntervalSeconds = 120
-            MaxAttempts     = 2
+            MaxAttempts     = 4
+            BackoffRate     = 2
           },
         ]
         Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = null, Next = "TagsSkipped" }]
