@@ -37,6 +37,8 @@ class ListPartitionResult(_Strict):
     # games whose older reviews are backfilled this run; while > 0 the pipeline's Transform
     # runs dbt with FULL_REFRESH (older rows invalidate the incremental marts)
     backfill_game_ids: int = 0
+    # coming-soon games that changed on Steam since the last run, scraped again (spec 10)
+    rescrape_game_ids: int = 0
     etl_full_refresh: bool = False
     games_partitions: list[str]
     reviews_partitions: list[str]
@@ -64,6 +66,8 @@ class GameState(_Strict):
     status: GameStatus
     attempts: int = 0
     recommendations: int | None = None
+    # unreleased at its last scrape (spec 10): no review scraping, re-scraped when it changes
+    coming_soon: bool = False
 
 
 # ---- Raw parquet records -------------------------------------------------------------------

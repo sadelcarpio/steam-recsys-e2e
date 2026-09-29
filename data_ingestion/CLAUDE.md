@@ -1,7 +1,8 @@
 # data_ingestion
 
 Specs: `specs/1-scraping-implementation.md`, `specs/6-reviews-backfill.md` (backfill of older
-reviews), `specs/8-game-tags.md` (Steam user tags). Human docs: `README.md`.
+reviews), `specs/8-game-tags.md` (Steam user tags), `specs/10-coming-soon-games.md`
+(re-scrape of released coming-soon games). Human docs: `README.md`.
 
 ## Layout
 
@@ -15,9 +16,10 @@ reviews), `specs/8-game-tags.md` (Steam user tags). Human docs: `README.md`.
   - `steam_api.py`: `SteamClient` (pacing, retries on 403/429/5xx/null body; a 429
     waits at least `throttle_cooldown` / `Retry-After`, `SteamApiError`
     never contains the URL because it carries the API key)
-  - `state.py`: DynamoDB access. `game-ids-state` has one item per appid, and `appid=0` is the
-    catalog cursor item. `reviews-state-cursor` holds `last_review_ts`, `total_reviews` and the
-    backfill fields `oldest_review_ts` (absent = unseeded, never backfilled) / `backfill_complete`
+  - `state.py`: DynamoDB access. `game-ids-state` has one item per appid (status, attempts,
+    `coming_soon` of the last scrape), and `appid=0` is the catalog cursor item.
+    `reviews-state-cursor` holds `last_review_ts`, `total_reviews` and the backfill fields
+    `oldest_review_ts` (absent = unseeded, never backfilled) / `backfill_complete`
   - `storage.py` (S3, Lambda-safe), `partitioning.py` (pure)
   - `list_partition_game_ids/handler.py`, `games_scraping/scraper.py`,
     `reviews_scraping/scraper.py` (+ `__main__.py` for `python -m`): forward pass, then the
@@ -27,13 +29,19 @@ reviews), `specs/8-game-tags.md` (Steam user tags). Human docs: `README.md`.
     endpoints are keyless and undocumented; responses are validated (`GameTagsRecord`)
   - `shutdown.py`: SIGTERM flag + interruptible sleep (Fargate Spot interruptions)
   - `seed_backfill.py`: one-off, seeds the backfill fields of older cursors from Athena
+    (`run_query`: Athena rows as strings)
+  - `seed_coming_soon.py`: one-off, seeds `coming_soon` of games scraped before spec 10 and
+    re-queues the ones that already look released
 - `scraping.Dockerfile`: one image for both ECS tasks
 - `scripts/build_lambda.sh`: Lambda zip with base deps only (no `scraping` extra)
 
 ## Invariants (keep them when changing code)
 
-- Lambda: persist new appids as `pending` **before** moving the catalog cursor, and clear
+- Lambda: persist new appids as `pending` and re-queue changed coming-soon games **before**
+  moving the catalog cursor (the modified list is only reported once), and clear
   `games/<run_id>/` and `reviews/<run_id>/` before writing, so re-running a run_id is idempotent.
+- Coming-soon games (`coming_soon` in `game-ids-state`, absent = false) are never in review
+  partitions; only `scraped` coming-soon games are re-queued (attempts reset).
 - Scrapers: never overwrite output. `next_part_number` continues part numbering on retries.
 - Games are marked `scraped` only after their parquet part is written.
 - Review cursors are committed only for games whose rows are fully flushed. A game that was

@@ -1,8 +1,9 @@
 """DynamoDB scrape state.
 
-`game-ids-state`: one item per appid (PK `appid`, N) holding the game scrape status. The item
-with `appid = 0` (not a real app) holds the catalog cursor (`last_modified` of the newest app
-seen), used as `if_modified_since` for the next GetAppList call.
+`game-ids-state`: one item per appid (PK `appid`, N) holding the game scrape status and whether
+the game was unreleased at its last scrape (`coming_soon`, spec 10). The item with `appid = 0`
+(not a real app) holds the catalog cursor (`last_modified` of the newest app seen), used as
+`if_modified_since` for the next GetAppList call.
 
 `reviews-state-cursor`: one item per appid with `last_review_ts` (newest review creation
 timestamp already written to S3), `total_reviews` (used to balance review partitions), and the
@@ -47,7 +48,7 @@ class GameIdsState:
         states: dict[int, GameState] = {}
         for item in _scan(
             self._table,
-            ProjectionExpression="appid, #s, attempts, recommendations",
+            ProjectionExpression="appid, #s, attempts, recommendations, coming_soon",
             ExpressionAttributeNames={"#s": "status"},
         ):
             appid = int(item["appid"])
@@ -59,6 +60,7 @@ class GameIdsState:
                 status=GameStatus(item["status"]),
                 attempts=int(item.get("attempts", 0)),
                 recommendations=int(rec) if rec is not None else None,
+                coming_soon=bool(item.get("coming_soon", False)),
             )
         return states
 
@@ -89,10 +91,16 @@ class GameIdsState:
                     }
                 )
 
-    def mark_scraped(self, appid: int, recommendations: int | None) -> None:
+    def mark_scraped(
+        self, appid: int, recommendations: int | None, coming_soon: bool = False
+    ) -> None:
         names = {"#s": "status"}
-        values: dict[str, Any] = {":s": GameStatus.SCRAPED.value, ":t": _now()}
-        expr = "SET #s = :s, scraped_at = :t"
+        values: dict[str, Any] = {
+            ":s": GameStatus.SCRAPED.value,
+            ":t": _now(),
+            ":c": coming_soon,
+        }
+        expr = "SET #s = :s, scraped_at = :t, coming_soon = :c"
         if recommendations is not None:
             expr += ", recommendations = :r"
             values[":r"] = recommendations
@@ -102,6 +110,46 @@ class GameIdsState:
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
+
+    def requeue(self, appids: Iterable[int]) -> int:
+        """Back to `pending` (attempts reset) to be scraped again; only `scraped` games.
+        Returns how many were re-queued."""
+        requeued = 0
+        for appid in appids:
+            try:
+                self._table.update_item(
+                    Key={"appid": appid},
+                    UpdateExpression="SET #s = :p, attempts = :z, requeued_at = :t",
+                    ConditionExpression=Attr("status").eq(GameStatus.SCRAPED.value),
+                    ExpressionAttributeNames={"#s": "status"},
+                    ExpressionAttributeValues={
+                        ":p": GameStatus.PENDING.value,
+                        ":z": 0,
+                        ":t": _now(),
+                    },
+                )
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                continue
+            requeued += 1
+        return requeued
+
+    def seed_coming_soon(self, appid: int, coming_soon: bool) -> bool:
+        """Set `coming_soon` of a game scraped before spec 10. False when the item is missing or
+        already has it (written by a scrape), so seeding is idempotent."""
+        try:
+            self._table.update_item(
+                Key={"appid": appid},
+                UpdateExpression="SET coming_soon = :c",
+                ConditionExpression="attribute_exists(appid) AND attribute_not_exists(coming_soon)",
+                ExpressionAttributeValues={":c": coming_soon},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
 
     def mark_unavailable(self, appid: int) -> None:
         self._table.update_item(

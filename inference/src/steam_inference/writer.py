@@ -6,7 +6,8 @@ one item per new game (`contracts.GameDetails`, insert-only).
     only (~0.5 read units per item, a few cents per full scan);
   - `write` puts the items with parallel batch writes (each worker thread owns its boto3
     resource; `batch_writer` resends unprocessed items and botocore retries throttling);
-  - `delete` removes users that no longer get recommendations.
+  - `delete` removes items by key: users that no longer get recommendations, unreleased games
+    (numeric `game_id` keys).
 `JsonlWriter` writes the items to a local file for dry runs (no stored state: writes them all).
 """
 
@@ -43,8 +44,8 @@ class Writer(Protocol):
         """Write (overwrite) every item, return how many were written."""
         ...
 
-    def delete(self, user_ids: Iterable[str]) -> int:
-        """Delete the items of these users, return how many were deleted."""
+    def delete(self, keys: Iterable[str | int]) -> int:
+        """Delete the items with these keys, return how many were deleted."""
         ...
 
 
@@ -101,9 +102,9 @@ class DynamoWriter:
                 batch.put_item(Item=item)
         return len(chunk)
 
-    def _delete_chunk(self, chunk: list[str]) -> int:
+    def _delete_chunk(self, chunk: list[str | int]) -> int:
         with self._table().batch_writer(overwrite_by_pkeys=[self.key]) as batch:
-            for key in chunk:  # string keys (the recommendations table)
+            for key in chunk:  # str (recommendations) or int (game details) keys
                 batch.delete_item(Key={self.key: key})
         return len(chunk)
 
@@ -125,8 +126,8 @@ class DynamoWriter:
     def write(self, items: Iterable[Item]) -> int:
         return self._run(self._put_chunk, _chunks(item.to_item() for item in items), "wrote")
 
-    def delete(self, user_ids: Iterable[str]) -> int:
-        return self._run(self._delete_chunk, _chunks(user_ids), "deleted")
+    def delete(self, keys: Iterable[str | int]) -> int:
+        return self._run(self._delete_chunk, _chunks(keys), "deleted")
 
 
 class JsonlWriter:
@@ -146,7 +147,7 @@ class JsonlWriter:
         log.info("wrote %d items to %s", written, self.path)
         return written
 
-    def delete(self, user_ids: Iterable[str]) -> int:
+    def delete(self, keys: Iterable[str | int]) -> int:
         return 0
 
 

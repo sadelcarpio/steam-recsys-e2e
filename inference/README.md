@@ -58,8 +58,11 @@ steam_marts (Iceberg, pyiceberg)
    without an item. It goes through the same change check, and it is never deleted.
 6. **Game details.** The mart `game_details` (name, short description, header image URL,
    release date, price, developer / publisher / genre / category names) is loaded into the
-   DynamoDB table `game-details`, one item per game. Details are static, so this is
-   insert-only: the run scans the stored `game_id`s and writes only the missing games. The
+   DynamoDB table `game-details`, one item per released game. Details are static, so this is
+   insert-only: the run scans the stored `game_id`s and writes only the missing games.
+   Unreleased games (`game_coming_soon`, spec 10) are never written and stored ones are
+   deleted, so a game re-scraped after its release is missing again and gets its released
+   details. The
    first run loads the catalog (about 50k items, about $0.06), and later runs write only new
    games. Descriptions are cleaned to plain text (tags dropped, HTML entities decoded). The
    sync is skipped with a warning while the mart does not exist, and it also runs only when a
@@ -85,6 +88,9 @@ steam_marts (Iceberg, pyiceberg)
    name (hentai, nsfw, porn…): the genres alone miss most of them, and `required_age` mostly
    marks violence. With the tag marts, also a game tagged `NSFW` / `Hentai`, or with
    `Sexual Content` / `Nudity` among its top 5 tags (lower down they also tag mainstream RPGs). About 2,500 of 176k games today. `EXCLUDE_ADULT=false` turns it off.
+   **Unreleased games** (`game_details.game_coming_soon`, spec 10, about 50k) are excluded the
+   same way, always: they cannot have been played, and their details are only refreshed when
+   they are re-scraped after the release.
 9. **Search index.** With the online catalog (same games, same condition), the run writes
    `s3://model-artifacts-<acct>/serving/search/games.json` (`contracts.SearchIndex`): every
    catalog game as `[appid, name, reviews]`, most reviewed first, where `reviews` counts the

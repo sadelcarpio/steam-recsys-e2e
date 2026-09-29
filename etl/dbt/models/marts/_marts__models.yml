@@ -64,7 +64,8 @@ models:
         description: Steam appid.
         data_tests: [unique, not_null]
       - name: game_name_key
-        description: lower(game_name), the merge key (one current appid per name).
+        description: >
+          lower(game_name) of the game's first scrape, the merge key (one current appid per name).
         data_tests: [unique, not_null]
       - name: game_name
         data_tests: [not_null]
@@ -76,6 +77,11 @@ models:
         description: Release date text as shown by Steam (e.g. "21 Aug, 2012"). May be null.
       - name: game_price
         description: Final price in the store currency (0 for free games, null when unknown).
+      - name: game_coming_soon
+        description: >
+          Unreleased at its latest scrape (spec 10). Inference never recommends or indexes these
+          games; the row is merged again with the released scrape once the game is re-scraped.
+        data_tests: [not_null]
       - name: game_developers
         description: Names (not ids), cleaned. Same for publishers / genres / categories.
 

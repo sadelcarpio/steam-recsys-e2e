@@ -74,10 +74,11 @@ def seed(
     return counts
 
 
-def query_scraped(athena: Any, work_group: str, database: str) -> dict[int, Scraped]:
-    execution = athena.start_query_execution(
-        QueryString=QUERY.format(database=database), WorkGroup=work_group
-    )["QueryExecutionId"]
+def run_query(athena: Any, query: str, work_group: str) -> list[tuple[str | None, ...]]:
+    """Run an Athena query and return its rows as strings (None for nulls), header excluded."""
+    execution = athena.start_query_execution(QueryString=query, WorkGroup=work_group)[
+        "QueryExecutionId"
+    ]
     while True:
         status = athena.get_query_execution(QueryExecutionId=execution)["QueryExecution"]["Status"]
         if status["State"] == "SUCCEEDED":
@@ -85,14 +86,21 @@ def query_scraped(athena: Any, work_group: str, database: str) -> dict[int, Scra
         if status["State"] in {"FAILED", "CANCELLED"}:
             raise RuntimeError(f"Athena query {status['State']}: {status.get('StateChangeReason')}")
         time.sleep(2)
-    scraped: dict[int, Scraped] = {}
+    out: list[tuple[str | None, ...]] = []
     pages = athena.get_paginator("get_query_results").paginate(QueryExecutionId=execution)
     for page_no, page in enumerate(pages):
         rows = page["ResultSet"]["Rows"]
         for row in rows[1:] if page_no == 0 else rows:  # the first row is the header
-            appid, oldest, reviews = (c.get("VarCharValue") for c in row["Data"])
-            scraped[int(appid)] = Scraped(oldest=int(oldest), reviews=int(reviews))
-    return scraped
+            out.append(tuple(c.get("VarCharValue") for c in row["Data"]))
+    return out
+
+
+def query_scraped(athena: Any, work_group: str, database: str) -> dict[int, Scraped]:
+    rows = run_query(athena, QUERY.format(database=database), work_group)
+    return {
+        int(appid): Scraped(oldest=int(oldest), reviews=int(reviews))
+        for appid, oldest, reviews in rows
+    }
 
 
 def main() -> int:

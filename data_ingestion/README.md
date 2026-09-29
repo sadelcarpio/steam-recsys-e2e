@@ -15,8 +15,8 @@ EventBridge Scheduler ─► Step Functions
 
 | Piece | Entry point | What it does |
 |---|---|---|
-| Lambda `list-partition-game-ids` | `steam_ingestion.list_partition_game_ids.handler.handler` | GetAppList (games only, `if_modified_since` = stored catalog cursor), registers new appids as `pending` in `game-ids-state`, writes game partitions (pending appids, ≤ `GAMES_PER_TASK` each) and review partitions (all known games, balanced by estimated request count across `NUM_REVIEW_WORKERS`). |
-| ECS `games-scraping` | `python -m steam_ingestion.games_scraping` | `appdetails` + review summary for each appid → `games/<scrape-date>-<n>-<part>.parquet`; marks appids `scraped` / `unavailable` / retries up to `MAX_GAME_ATTEMPTS`. |
+| Lambda `list-partition-game-ids` | `steam_ingestion.list_partition_game_ids.handler.handler` | GetAppList (games only, `if_modified_since` = stored catalog cursor), registers new appids as `pending` in `game-ids-state` and re-queues changed coming-soon games (below), writes game partitions (pending appids, ≤ `GAMES_PER_TASK` each) and review partitions (all known released games, balanced by estimated request count across `NUM_REVIEW_WORKERS`). |
+| ECS `games-scraping` | `python -m steam_ingestion.games_scraping` | `appdetails` + review summary for each appid → `games/<scrape-date>-<n>-<part>.parquet`; marks appids `scraped` (with `coming_soon`) / `unavailable` / retries up to `MAX_GAME_ATTEMPTS`. |
 | ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor (uncapped by default: `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. |
 
 | ECS `tags-scraping` | `python -m steam_ingestion.tags_scraping` | Steam **user tags** of every `scraped` / `pending` appid (spec 8): `IStoreBrowseService/GetItems` in batches of `TAGS_BATCH_SIZE` (100), top `TAGS_PER_GAME` (20) tags with their weights, names from `IStoreService/GetTagList` → `game_tags/<scrape-date>-<part>.parquet`. The whole catalog every run (~20 min: votes change); no API key. A failure never stops the pipeline (the `Scrape` branch catches it). |
@@ -36,8 +36,30 @@ its backfill keeps what was fetched) and exits 143. Step Functions retries the p
 10 times, waiting 5 min growing to 30 min; the tags task 4 times), which resumes from the
 committed state. Up to `scrape_tolerated_failure_percentage` (Terraform, default 10%) of a Map's
 partitions may still fail without failing the run (dbt and inference still run; the failed
-partitions catch up next run); above that the Map aborts the rest and the run fails. Set the variable to `FARGATE` to go
-back to on-demand.
+partitions catch up next run); above that the Map aborts the rest and the run fails. Set
+`scraping_capacity_provider` to `FARGATE` to go back to on-demand.
+
+### Coming-soon games (spec 10)
+
+A game is scraped once, so an unreleased game would keep its coming-soon details forever
+(about 52k games, 29% of the catalog, in September 2026). `game-ids-state` keeps each game's
+`coming_soon` flag from its last scrape, and:
+- the Lambda puts a `scraped`, coming-soon game back to `pending` when GetAppList reports it as
+  modified since the last run (its store page changed, usually its release), so it is scraped
+  again in the same run (`rescrape_game_ids` in the result). Only coming-soon games: refreshing
+  prices of every modified game is out of scope (cost);
+- coming-soon games are left out of the review partitions (they have no reviews). A released
+  game's first review scrape fetches its whole history, so nothing is lost.
+
+Games scraped before spec 10 have no flag (absent = released). Seed it once from the raw games
+(Athena; conditional writes, safe to re-run; run it while no pipeline execution is running). It
+also re-queues coming-soon games that already look released (a past day-precise release date,
+or scraped reviews), whose change happened before the Lambda watched for it:
+
+```bash
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_coming_soon --dry-run   # counts only
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_coming_soon
+```
 
 ### Reviews backfill (spec 6)
 

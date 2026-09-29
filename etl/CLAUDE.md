@@ -39,7 +39,11 @@ Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
 - `game_details` is display data, never a model feature. Its rows are the rows of
   `int_games__deduplicated` (merge key `game_name_key`, watermark `_batch_at`), with the text
   taken from the winning scrape. A re-scrape of a game that already wins its name does not
-  update it (the details are treated as static; a full refresh takes the latest scrape).
+  update it (the details are treated as static; a full refresh takes the latest scrape),
+  except when its `game_coming_soon` changed (spec 10: the released scrape replaces it).
+- `game_name_key` is lower(name) of a game's **first** scrape (a stored winner keeps its key),
+  so a rename (e.g. on release) never puts one appid under two keys and incremental equals
+  full refresh.
 - Timestamps are `timestamp(6)` in Iceberg tables (Athena requirement), but plain `timestamp` in
   views: Athena stores view columns as Hive types and rejects `timestamp(6)` there. Changing a mart's columns means updating
   `contracts.py` and the integration test (`on_schema_change: fail`).

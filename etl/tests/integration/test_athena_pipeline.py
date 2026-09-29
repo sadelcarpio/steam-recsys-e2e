@@ -247,7 +247,7 @@ def test_marts_match_contracts(runs, run):
 
 def test_games_deduplicated(runs):
     kept = {r["game_id"] for r in runs["batch1"]["int_games__deduplicated"]}
-    assert kept == {10, 21, *range(101, 108)}  # 20 loses to 21, 30 is dlc, 40 has no name
+    assert kept == {10, 21, *range(101, 108), 200}  # 20 loses to 21, 30 is dlc, 40 has no name
     kept2 = {r["game_id"] for r in runs["batch2"]["int_games__deduplicated"]}
     assert kept2 == kept | {50}  # 60 "ALPHA" loses to 10
     alpha = by(runs["batch2"]["int_games__deduplicated"], "game_id")[10]
@@ -283,7 +283,7 @@ def test_lookups_are_dense_stable_and_skip_reserved_ids(runs):
     assert names["lkp_genres"] == {"Action": 2, "Indie": 3, "RPG": 4, "Strategy": 5}
     assert names["lkp_categories"] == {"Multi-player": 2, "Single-player": 3}
     games = {r["game_id"]: r["game_idx"] for r in runs["batch2"]["lkp_games"]}
-    assert games == {10: 2, 21: 3, **{g: g - 97 for g in range(101, 108)}, 50: 11}
+    assert games == {10: 2, 21: 3, **{g: g - 97 for g in range(101, 108)}, 200: 11, 50: 12}
     for table in ("lkp_developers", "lkp_games"):
         assert all(r in runs["batch2"][table] for r in runs["batch1"][table])  # append-only
 
@@ -296,7 +296,7 @@ def test_review_counts_are_cumulative_per_second(runs):
     rows = [r for r in runs["batch2"]["int_game_review_counts"] if r["game_id"] == 10]
     got = [(r["timestamp"], r["positive_reviews"], r["negative_reviews"]) for r in rows]
     assert got == [(EPOCH, 0, 0), (ts(1000), 1, 0), (ts(1500), 2, 1), (ts(6000), 3, 1)]
-    assert len(runs["batch2"]["int_game_review_counts"]) == 25  # 10 base rows + 15 seconds
+    assert len(runs["batch2"]["int_game_review_counts"]) == 26  # 11 base rows + 15 seconds
 
 
 def test_game_features_smoothed_ratio_and_encoded_attributes(runs):
@@ -308,7 +308,7 @@ def test_game_features_smoothed_ratio_and_encoded_attributes(runs):
     alpha = rows[-1]
     assert (alpha["game_idx"], alpha["game_developers"], alpha["game_publishers"]) == (2, [4], [4])
     assert (alpha["game_genres"], alpha["game_categories"]) == ([2], [3, 2])
-    assert len(runs["batch2"]["game_features"]) == 25
+    assert len(runs["batch2"]["game_features"]) == 26
 
 
 def test_game_details_one_row_per_catalog_game(runs):
@@ -326,6 +326,22 @@ def test_game_details_one_row_per_catalog_game(runs):
     delta = details[50]
     assert delta["game_short_description"] is None and delta["game_price"] is None
     assert delta["game_developers"] == ["Valve", "New Studio"]
+    assert not alpha["game_coming_soon"] and not delta["game_coming_soon"]
+
+
+def test_game_details_follow_a_release(runs):
+    """spec 10: an unreleased game re-scraped after its release (and renamed) is merged again
+    under its first name key, with the released details."""
+    before = by(runs["batch1"]["game_details"], "game_id")[200]
+    assert before["game_coming_soon"] and before["game_price"] is None
+    assert before["game_release_date"] == "Coming soon"
+    for run in ("batch2", "full"):
+        rows = [r for r in runs[run]["game_details"] if r["game_id"] == 200]
+        assert len(rows) == 1, run
+        (after,) = rows
+        assert (after["game_name_key"], after["game_name"]) == ("project omega", "Omega"), run
+        assert not after["game_coming_soon"] and after["game_price"] == pytest.approx(19.99)
+        assert after["game_release_date"] == "8 Jan, 2026"
 
 
 def test_lookup_of_tags_covers_catalog_games_only(runs):
@@ -347,7 +363,7 @@ def test_game_tags_latest_scrape_per_catalog_game(runs):
         [990.0, 950.0, 400.0],
     )
     assert batch2[21] == batch1[21]  # not re-scraped: not merged again
-    assert (batch2[50]["game_idx"], batch2[50]["game_tags"]) == (11, [8, 7])
+    assert (batch2[50]["game_idx"], batch2[50]["game_tags"]) == (12, [8, 7])
 
 
 def test_user_features_last_five_positive_most_recent_first(runs):

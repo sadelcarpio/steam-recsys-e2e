@@ -1,6 +1,7 @@
 # inference
 
-Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
+Specs: `specs/4-inference-pipeline.md`, `specs/10-coming-soon-games.md` (unreleased games).
+Human docs: `README.md`.
 
 ## Layout
 
@@ -14,15 +15,16 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
   - `features.py`: stage 1. Latest `user_features` per user (streamed reduction), latest
     `game_features` per game (all current games, even beyond the model vocab), reviews
     grouped per user and newest first (`Reviews.of` -> CSR), `popular_counts` (recent positive
-    reviews per game_idx), lookup names and truncated short descriptions (`game_details`) for
-    prompts
+    reviews per game_idx), lookup names, truncated short descriptions (prompts) and the
+    release status (`Games.coming_soon`) from `game_details`
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
   - `rerank.py`: stage 3. Prompt, Bedrock Converse with a forced `submit_ranking` tool,
     `parse_response`, `merge_ranking` (repairs the answer), `rerank_all` (threads, per-user
     failure isolation)
   - `writer.py`: stage 4. `DynamoWriter` (`stored_hashes` = parallel scan, threaded batch
     writes / deletes, a resource per thread), `JsonlWriter` (dry runs, no stored state)
-  - `details.py`: mart `game_details` -> `game-details` table, insert-only (`sync_game_details`)
+  - `details.py`: mart `game_details` -> `game-details` table, insert-only for released games,
+    deletes stored unreleased ones (`sync_game_details`)
   - `online.py`: the online catalog for serving (`build_catalog`, `encode_catalog`,
     `S3BundleStore` puts the catalog, then a manifest pinned to its version id that names the
     model's `user_tower.npz`; `LocalBundleStore` for dry runs; both also publish the search
@@ -59,7 +61,8 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
 - Adult games (`adult_mask`, on unless `EXCLUDE_ADULT=false`) never reach anything published:
   masked in retrieval (so never candidates, reranked or explained), dropped from the popular
   item, the online catalog (`build_catalog(keep=...)`) and the search index, and left out of
-  prompts. A new output must apply the same mask.
+  prompts. A new output must apply the same mask. Unreleased games (`Games.coming_soon`, spec 10)
+  are always in the same `excluded` mask.
 - Only changed items are written: `UserRecommendations.content_hash` covers what the user
   sees, but not the scores or the time. A new visible field must go into the hash, or changes
   to it will never be written. Deletes of users that are gone happen only on full runs
@@ -71,7 +74,8 @@ Spec: `specs/4-inference-pipeline.md`. Human docs: `README.md`.
 - `__popular__` is a reserved `user_id` (never a Steam id). It is always emitted, so it is
   never deleted as a gone user.
 - `game-details` is insert-only: an existing game is never rewritten. To force a reload,
-  delete the items (or the table) first.
+  delete the items (or the table) first. It holds released games only: stored unreleased ones
+  are deleted, so a release re-inserts the game with its released details.
 - Online model ownership: training exports the user tower (`steam_training.export`, fixed per
   model), and this pipeline publishes only the catalog side (it depends on the current game
   features). Serving refuses a pair whose `model_id`s differ. The manifest is published only

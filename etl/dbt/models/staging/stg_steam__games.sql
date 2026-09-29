@@ -14,6 +14,7 @@ select
     nullif(trim(header_image), '') as game_header_image,
     nullif(trim(release_date), '') as game_release_date,
     price as game_price,
+    coming_soon as game_coming_soon,
     scrape_date
 from {{ source('steam', 'games') }}
 where appid is not null
