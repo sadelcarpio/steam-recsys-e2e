@@ -26,7 +26,9 @@ Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
   mirrored by `tests/integration/fixtures.py`. Update both when the scraper schema changes.
 - Watermarks: `int_game_review_counts`, `user_features` and `interactions` consume
   `int_review_events` rows, and `game_features` consumes `int_game_review_counts` rows, with
-  `_batch_at > max(_batch_at)` of the consuming model. Every row written must carry the
+  `_batch_at > max(_batch_at)` of the consuming model. `game_features` also re-merges every row
+  of a game whose `int_games__deduplicated` row changed (same watermark), keeping the rows'
+  `_batch_at`. Every row written must carry the
   `_batch_at` of the upstream rows it came from (or the run stamp).
 - Lookups: never rebuild, never reuse ids. 0 = padding, 1 = OOV, first real id = 2. Padding and
   OOV must never be conflated (histories: 0 or >= 2; encoded arrays: >= 1).

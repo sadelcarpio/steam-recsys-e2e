@@ -371,7 +371,7 @@ def test_user_features_last_five_positive_most_recent_first(runs):
     for r in runs["batch2"]["user_features"]:
         latest[r["user_id"]] = r["games_reviewed_positive"]  # rows sorted by timestamp
     assert latest[900] == [10, 9, 8, 7, 6]
-    assert latest[100] == [11, 3, 2, 0, 0]
+    assert latest[100] == [12, 3, 2, 0, 0]  # game 50 (idx 12 after game 200)
     assert 200 in latest and 600 not in latest  # 600 only has a negative review
 
 
