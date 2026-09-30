@@ -65,6 +65,9 @@ resource "aws_ssm_parameter" "inference" {
     BEDROCK_MODEL_ID       = var.inference_bedrock_model_id
     MAX_USERS              = tostring(var.inference_max_users)
     RERANK_MAX_USERS       = tostring(var.inference_rerank_max_users)
+    RERANK_ENABLED_STAGES  = var.inference_rerank_stages
+    RERANK_BLEND_WEIGHT    = tostring(var.inference_rerank_blend_weight)
+    RERANK_SHUFFLE         = tostring(var.inference_rerank_shuffle)
   }
   name  = "${local.inference_ssm_prefix}/${each.key}"
   type  = "String"

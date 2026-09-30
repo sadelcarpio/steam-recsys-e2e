@@ -1,7 +1,7 @@
 import numpy as np
 import pyarrow as pa
 import pytest
-from conftest import FIRST_GAME, N_GAMES, REVIEWS, FakeSource, add_tags
+from conftest import FIRST_GAME, N_GAMES, REVIEWS, FakeSource, add_tags, review_time
 
 from steam_inference import features
 from steam_inference.features import load_inference_data, truncate
@@ -129,3 +129,61 @@ def test_tags_are_optional_unless_the_model_needs_them(source):
     assert "tags:" not in games.describe(0)
     with pytest.raises(RuntimeError, match="tags"):
         load_inference_data(source, require_tags=True)
+
+
+def test_max_users_loads_only_the_kept_users_reviews(source):
+    full = load_inference_data(source)
+    kept = load_inference_data(source, max_users=2)
+    assert len(kept.reviews.game_idx) == 7 + 18  # 101 and 104 only
+    for i, user in enumerate(kept.users.user_id):
+        start, count = kept.users.review_start[i], kept.users.review_count[i]
+        expected = [g for g, _ in reversed(REVIEWS[int(user)])]
+        assert kept.reviews.game_idx[start : start + count].tolist() == expected
+    # popularity still counts every user's reviews
+    assert np.array_equal(kept.popular_counts, full.popular_counts)
+
+
+def test_activity_counts_every_user(source):
+    activity = features.review_activity(source, 7)
+    assert activity.user_id.tolist() == [101, 102, 103, 104, 105]
+    assert activity.reviews.tolist() == [len(REVIEWS[u]) for u in range(101, 106)]
+    assert activity.positives.tolist() == [sum(p for _, p in REVIEWS[u]) for u in range(101, 106)]
+    assert activity.most_active().tolist() == [101, 102, 103, 104]  # 105: negatives only
+    assert activity.most_active(1).tolist() == [104]
+
+
+def test_streamed_activity_matches_single_pass(monkeypatch, marts):
+    once = features.review_activity(FakeSource(marts, batch_rows=10_000), 7)
+    monkeypatch.setattr(features, "REDUCE_ROWS", 1)  # reduce after every batch
+    streamed = features.review_activity(FakeSource(marts, batch_rows=2), 7)
+    assert np.array_equal(once.user_id, streamed.user_id)
+    assert np.array_equal(once.reviews, streamed.reviews)
+    assert np.array_equal(once.positives, streamed.positives)
+    assert once.newest == streamed.newest
+
+
+def test_as_of_reads_ignore_later_rows(source):
+    # 101's reviews are hours 0..6 of its day: keep the first 3 (2+, 3+, 4-)
+    cutoff = features._micros(pa.array([review_time(101, 2)]))[0]
+    activity = features.review_activity(source, 7, until=cutoff)
+    u101 = activity.user_id.tolist().index(101)
+    assert (activity.reviews[u101], activity.positives[u101]) == (3, 2)
+    users = features.latest_users(
+        source.batches("user_features", ["user_id", "timestamp", "games_reviewed_positive"], 7),
+        keep=np.array([101]),
+        until=cutoff,
+    )
+    assert users.user_id.tolist() == [101]
+    assert users.history[0].tolist() == [3, 2, 0, 0, 0]
+
+
+def test_member():
+    ids = np.array([3, 5, 9])
+    assert features.member(np.array([1, 3, 4, 9, 10]), ids).tolist() == [
+        False,
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert not features.member(np.array([1]), np.array([], dtype=np.int64)).any()

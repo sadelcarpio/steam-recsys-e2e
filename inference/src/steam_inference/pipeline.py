@@ -28,7 +28,14 @@ from steam_inference.contracts import (
 from steam_inference.details import sync_game_details
 from steam_inference.features import InferenceData, load_inference_data
 from steam_inference.online import BundleStore, build_catalog, encode_catalog
-from steam_inference.rerank import RankFn, Reranked, RerankRequest, rerank_all
+from steam_inference.rerank import (
+    Reranked,
+    RerankLlm,
+    RerankOptions,
+    RerankRequest,
+    RerankStats,
+    rerank_all,
+)
 from steam_inference.retrieval import Candidates, retrieve
 from steam_inference.search import build_search_index, encode_search_index
 from steam_inference.writer import Writer
@@ -41,7 +48,7 @@ def run_inference(
     source: TableSource,
     store: ArtifactStore,
     writer: Writer,
-    rank_fn: RankFn | None,
+    llm: RerankLlm | None,
     *,
     details_writer: Writer | None = None,
     bundle_store: BundleStore | None = None,
@@ -126,17 +133,27 @@ def run_inference(
             )
 
     reranked: dict[int, Reranked] = {}
-    failures = 0
-    if rank_fn is not None:
+    stats = RerankStats()
+    if llm is not None:
         requests = {
             user: rerank_request(data, candidates, user, excluded)
             for user in select_rerank_users(data, candidates, settings)
         }
-        log.info("reranking %d users with %s", len(requests), settings.bedrock_model_id)
-        reranked, failures = rerank_all(
-            rank_fn,
+        log.info(
+            "reranking %d users with %s (%s)",
+            len(requests),
+            settings.bedrock_model_id,
+            settings.rerank_enabled_stages,
+        )
+        reranked, stats = rerank_all(
+            llm,
             requests,
-            explain_top_n=settings.explain_top_n,
+            RerankOptions(
+                explain_top_n=settings.explain_top_n,
+                stages=settings.rerank_enabled_stages,
+                blend_weight=settings.rerank_blend_weight,
+                shuffle=settings.rerank_shuffle,
+            ),
             concurrency=settings.rerank_concurrency,
         )
 
@@ -177,7 +194,11 @@ def run_inference(
         adult_games=int(adult.sum()),
         unreleased_games=int(unreleased.sum()),
         reranked_users=len(reranked),
-        rerank_failures=failures,
+        rerank_failures=stats.failures,
+        rank_retries=stats.rank_retries,
+        rank_fallbacks=stats.rank_fallbacks,
+        explain_retries=stats.explain_retries,
+        template_explanations=stats.templates,
         written=written,
         unchanged=changes.unchanged,
         deleted=deleted,
@@ -272,11 +293,12 @@ def rerank_request(
     rows, _ = candidates.of(user)
     return RerankRequest(
         liked=[
-            games.describe(int(row))
+            games.info(int(row))
             for row in liked_rows
             if row >= 0 and (excluded is None or not excluded[row])
         ],
-        candidates=[games.describe(int(row)) for row in rows],
+        candidates=[games.info(int(row)) for row in rows],
+        seed=int(data.users.user_id[user]),
     )
 
 

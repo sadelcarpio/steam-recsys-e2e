@@ -58,6 +58,17 @@ REDUCE_ROWS = 1_000_000
 
 
 @dataclass(frozen=True)
+class GameInfo:
+    """One game of a rerank prompt: its prompt line plus the names the checks use."""
+
+    name: str
+    text: str  # Games.describe
+    genres: tuple[str, ...] = ()
+    developers: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Games:
     catalog: Catalog  # current features of every game (the ranking corpus)
     game_id: np.ndarray  # int64 per catalog row: Steam appid
@@ -73,6 +84,17 @@ class Games:
 
     def __len__(self) -> int:
         return len(self.catalog)
+
+    def info(self, row: int) -> GameInfo:
+        """A catalog row as the rerank prompt and its checks see it."""
+        items = self.catalog.items
+        return GameInfo(
+            name=str(self.name[row]),
+            text=self.describe(row),
+            genres=tuple(_names(self.genre_names, items.genres.row(row))),
+            developers=tuple(_names(self.developer_names, items.developers.row(row))[:2]),
+            tags=tuple(_names(self.tag_names, items.tags.row(row))[:PROMPT_TAGS]),
+        )
 
     def describe(self, row: int) -> str:
         """One-line description of a catalog row for the LLM prompt."""
@@ -154,33 +176,40 @@ def load_inference_data(
 ) -> InferenceData:
     """`description_chars` > 0 also loads the games' short descriptions (for the rerank
     prompt), truncated to that many characters. `require_tags`: fail when the tag marts are
-    missing (the model was trained with tags)."""
+    missing (the model was trained with tags).
+
+    Memory follows the kept users, not the size of the marts: `interactions` is read twice (the
+    activity of every user, then the reviews of the selected users only) and `user_features`
+    is reduced to the latest row of the selected users as it streams."""
     snapshots = {table: source.snapshot_id(table) for table in TABLES}
     snapshots |= _optional_snapshots(source, TAG_TABLES)
     if require_tags and not set(TAG_TABLES) <= set(snapshots):
         raise RuntimeError(f"the model uses Steam tags but {TAG_TABLES} are missing: run the ETL")
     games = load_games(source, snapshots, description_chars)
-    review_users, reviews, popular_counts = _load_reviews(
-        source, snapshots["interactions"], popular_window_days
+    activity = review_activity(source, snapshots["interactions"])
+    selected = activity.most_active(max_users)
+    popular_since = activity.newest - popular_window_days * DAY_MICROS
+    review_users, reviews, popular = collect_reviews(
+        source, snapshots["interactions"], selected, popular_since=popular_since
     )
-    users = _latest_users(
+    users = latest_users(
         source.batches(
             "user_features",
             ["user_id", "timestamp", "games_reviewed_positive"],
             snapshots["user_features"],
-        )
+        ),
+        keep=selected,
     )
     start = np.searchsorted(review_users, users.user_id, side="left")
     count = np.searchsorted(review_users, users.user_id, side="right") - start
     users = Users(users.user_id, users.history, start, count)
-    if max_users and len(users) > max_users:
-        # the most active users (ties: lowest user id), kept in user id order
-        keep = np.lexsort((users.user_id, -users.review_count))[:max_users]
-        users = users.take(np.sort(keep))
     log.info(
-        "loaded %d users, %d reviews, %d catalog games (snapshots %s)",
+        "loaded %d users (of %d with a positive review), %d of %d reviews, %d catalog games "
+        "(snapshots %s)",
         len(users),
+        int((activity.positives > 0).sum()),
         len(reviews.game_idx),
+        int(activity.reviews.sum()),
         len(games),
         snapshots,
     )
@@ -188,7 +217,7 @@ def load_inference_data(
         games=games,
         users=users,
         reviews=reviews,
-        popular_counts=popular_counts,
+        popular_counts=popular,
         snapshots=snapshots,
     )
 
@@ -287,28 +316,123 @@ def truncate(text: str, max_chars: int) -> str:
     return cut.rstrip(" ,;:.-") + "…"
 
 
-def _load_reviews(
-    source: TableSource, snapshot_id: int | None, popular_window_days: int
+REVIEW_COLUMNS = ["user_id", "game_idx", "timestamp", "is_positive"]
+DAY_MICROS = 86_400 * 1_000_000
+
+
+def review_rows(
+    batch: pa.RecordBatch, until: int | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(user, game_idx, micros, is_positive) of the valid reviews of an `interactions` batch
+    (created at or before `until` when given)."""
+    user = _int64(pc.fill_null(batch["user_id"], -1))
+    game = _int64(pc.fill_null(batch["game_idx"], -1))
+    ts = _micros(batch["timestamp"])
+    positive = np.asarray(
+        pc.fill_null(batch["is_positive"], False).to_numpy(zero_copy_only=False), dtype=bool
+    )
+    keep = (user >= 0) & (game >= 0)
+    if until is not None:
+        keep &= ts <= until
+    return user[keep], game[keep], ts[keep], positive[keep]
+
+
+@dataclass(frozen=True)
+class Activity:
+    """Review counts of every user of `interactions` (sorted by user id)."""
+
+    user_id: np.ndarray  # int64, unique, ascending
+    reviews: np.ndarray  # int64 per user
+    positives: np.ndarray  # int64 per user
+    newest: int  # micros of the newest review (0 without reviews)
+
+    def most_active(self, max_users: int = 0) -> np.ndarray:
+        """Sorted ids of the users with a positive review (so a `user_features` row); with
+        `max_users`, only that many of the most active (ties: lowest user id)."""
+        eligible = np.flatnonzero(self.positives > 0)
+        if max_users and len(eligible) > max_users:
+            order = np.lexsort((self.user_id[eligible], -self.reviews[eligible]))
+            eligible = np.sort(eligible[order[:max_users]])
+        return self.user_id[eligible]
+
+
+def review_activity(
+    source: TableSource, snapshot_id: int | None, until: int | None = None
+) -> Activity:
+    """Pass 1 over `interactions`: reviews / positive reviews per user and the newest review,
+    reduced whenever the buffer outgrows the kept state (memory ~ distinct users)."""
+    state: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    buffer: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    buffered = newest = 0
+    for batch in source.batches("interactions", REVIEW_COLUMNS, snapshot_id):
+        user, _, ts, positive = review_rows(batch, until)
+        if not len(user):
+            continue
+        newest = max(newest, int(ts.max()))
+        buffer.append((user, np.ones(len(user), dtype=np.int64), positive.astype(np.int64)))
+        buffered += len(user)
+        if buffered > max(REDUCE_ROWS, 2 * (len(state[0]) if state else 0)):
+            state = _sum_per_user([state, *buffer] if state else buffer)
+            buffer, buffered = [], 0
+    if buffer or state is None:
+        state = _sum_per_user([state, *buffer] if state else buffer)
+    user, reviews, positives = state
+    return Activity(user, reviews, positives, newest)
+
+
+def _sum_per_user(parts: list) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not parts:
+        empty = np.zeros(0, dtype=np.int64)
+        return empty, empty.copy(), empty.copy()
+    user = np.concatenate([p[0] for p in parts])
+    unique, inverse = np.unique(user, return_inverse=True)
+    sums = [
+        np.bincount(inverse, weights=np.concatenate([p[i] for p in parts]), minlength=len(unique))
+        for i in (1, 2)
+    ]
+    return unique, sums[0].astype(np.int64), sums[1].astype(np.int64)
+
+
+def member(values: np.ndarray, sorted_ids: np.ndarray) -> np.ndarray:
+    """Bool per value: is it in `sorted_ids` (ascending)."""
+    if not len(sorted_ids):
+        return np.zeros(len(values), dtype=bool)
+    at = np.minimum(np.searchsorted(sorted_ids, values), len(sorted_ids) - 1)
+    return sorted_ids[at] == values
+
+
+def collect_reviews(
+    source: TableSource,
+    snapshot_id: int | None,
+    selected: np.ndarray,
+    *,
+    popular_since: int,
+    until: int | None = None,
 ) -> tuple[np.ndarray, Reviews, np.ndarray]:
-    """(sorted user id of every review, reviews, popular counts) from `interactions`."""
-    users, games, timestamps, positives = [], [], [], []
-    columns = ["user_id", "game_idx", "timestamp", "is_positive"]
-    for batch in source.batches("interactions", columns, snapshot_id):
-        user = _int64(pc.fill_null(batch["user_id"], -1))
-        game = _int64(pc.fill_null(batch["game_idx"], -1))
-        keep = (user >= 0) & (game >= 0)
+    """Pass 2 over `interactions` -> (sorted user id of every kept review, their reviews newest
+    first within a user, popular counts). Only the reviews of `selected` (sorted user ids) are
+    kept; the popular counts (positive reviews per game_idx since `popular_since`) cover every
+    user."""
+    users, games, timestamps = [], [], []
+    popular = np.zeros(0, dtype=np.int64)
+    for batch in source.batches("interactions", REVIEW_COLUMNS, snapshot_id):
+        user, game, ts, positive = review_rows(batch, until)
+        recent = game[positive & (ts >= popular_since)]
+        if len(recent):
+            counts = np.bincount(recent)
+            if len(counts) > len(popular):
+                popular = np.pad(popular, (0, len(counts) - len(popular)))
+            popular[: len(counts)] += counts
+        keep = member(user, selected)
         users.append(user[keep])
         games.append(game[keep])
-        timestamps.append(_micros(batch["timestamp"])[keep])
-        positive = pc.fill_null(batch["is_positive"], False).to_numpy(zero_copy_only=False)
-        positives.append(np.asarray(positive, dtype=bool)[keep])
+        timestamps.append(ts[keep])
     if not users:
         empty = np.zeros(0, dtype=np.int64)
-        return empty, Reviews(empty), empty
+        return empty, Reviews(empty), popular
     user = np.concatenate(users)
     game = np.concatenate(games)
     ts = np.concatenate(timestamps)
-    popular = popular_counts(game, ts, np.concatenate(positives), popular_window_days)
     order = np.lexsort((-ts, user))
     return user[order], Reviews(game[order]), popular
 
@@ -319,21 +443,34 @@ def popular_counts(
     """Positive reviews per game_idx in the last `window_days` before the newest review."""
     if not len(game_idx):
         return np.zeros(0, dtype=np.int64)
-    recent = positive & (micros >= micros.max() - window_days * 86_400 * 1_000_000)
+    recent = positive & (micros >= micros.max() - window_days * DAY_MICROS)
     return np.bincount(game_idx[recent], minlength=int(game_idx.max()) + 1).astype(np.int64)
 
 
-def _latest_users(batches: Iterable[pa.RecordBatch]) -> Users:
-    """Latest row per user, reduced whenever the buffer outgrows the kept state."""
+def latest_users(
+    batches: Iterable[pa.RecordBatch],
+    *,
+    keep: np.ndarray | None = None,
+    until: int | None = None,
+) -> Users:
+    """Latest row per user (only `keep`, sorted user ids, when given; only rows at or before
+    `until` when given), reduced whenever the buffer outgrows the kept state."""
     state: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     buffer: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     buffered = 0
     for batch in batches:
         user = _int64(pc.fill_null(batch["user_id"], -1))
-        keep = user >= 0
-        history = pad_history(Ragged.from_arrow(batch["games_reviewed_positive"]))
-        buffer.append((user[keep], _micros(batch["timestamp"])[keep], history[keep]))
-        buffered += int(keep.sum())
+        ts = _micros(batch["timestamp"])
+        rows = user >= 0
+        if keep is not None:
+            rows &= member(user, keep)
+        if until is not None:
+            rows &= ts <= until
+        if not rows.any():
+            continue
+        history = pad_history(Ragged.from_arrow(batch["games_reviewed_positive"].filter(rows)))
+        buffer.append((user[rows], ts[rows], history))
+        buffered += int(rows.sum())
         if buffered > max(REDUCE_ROWS, 2 * (len(state[0]) if state else 0)):
             state = _reduce_latest([state, *buffer] if state else buffer)
             buffer, buffered = [], 0

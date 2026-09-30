@@ -180,6 +180,32 @@ variable "inference_rerank_max_users" {
   default     = 1000
 }
 
+variable "inference_rerank_stages" {
+  description = "Two-stage rerank (spec 7): rank+explain (LLM order, then explanations of the top N) or explain (retrieval order kept, explanations only). Pick it with python -m steam_inference.evaluate_rerank."
+  type        = string
+  default     = "rank+explain"
+  validation {
+    condition     = contains(["rank+explain", "explain"], var.inference_rerank_stages)
+    error_message = "inference_rerank_stages must be rank+explain or explain."
+  }
+}
+
+variable "inference_rerank_blend_weight" {
+  description = "Final order = ascending w * llm_rank + (1 - w) * retrieval_rank (1 = LLM order, 0 = retrieval order)."
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.inference_rerank_blend_weight >= 0 && var.inference_rerank_blend_weight <= 1
+    error_message = "inference_rerank_blend_weight must be between 0 and 1."
+  }
+}
+
+variable "inference_rerank_shuffle" {
+  description = "Shuffle the candidates of the ranking prompt (seeded by the user id) against position bias."
+  type        = bool
+  default     = true
+}
+
 # ---- serving -------------------------------------------------------------------------------
 
 variable "serving_auth_type" {

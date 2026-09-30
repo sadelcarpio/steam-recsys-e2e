@@ -1,6 +1,7 @@
 # inference
 
-Specs: `specs/4-inference-pipeline.md`, `specs/10-coming-soon-games.md` (unreleased games).
+Specs: `specs/4-inference-pipeline.md`, `specs/7-rerank-two-stage.md` (two-stage rerank +
+evaluation), `specs/10-coming-soon-games.md` (unreleased games).
 Human docs: `README.md`.
 
 ## Layout
@@ -11,16 +12,25 @@ Human docs: `README.md`.
   (`latest_game_rows`, `catalog_from_table`) come from there. Never copy them.
   - `config.py`: `InferenceSettings`, env > SSM `/inference/*` when `USE_SSM=true`
   - `contracts.py`: DynamoDB item contracts (`UserRecommendations.to_item`, `GameDetails`,
-    `POPULAR_USER_ID`), the LLM tool output (`LlmRanking`), `InferenceSummary`
-  - `features.py`: stage 1. Latest `user_features` per user (streamed reduction), latest
-    `game_features` per game (all current games, even beyond the model vocab), reviews
-    grouped per user and newest first (`Reviews.of` -> CSR), `popular_counts` (recent positive
-    reviews per game_idx), lookup names, truncated short descriptions (prompts) and the
-    release status (`Games.coming_soon`) from `game_details`
+    `POPULAR_USER_ID`), the LLM tool inputs (`LlmRanking`, `LlmExplanations`),
+    `InferenceSummary`, `RerankEvaluation`
+  - `features.py`: stage 1. `review_activity` (pass 1 over `interactions`: reviews /
+    positives per user, `Activity.most_active` picks the `MAX_USERS`), `collect_reviews`
+    (pass 2: only the kept users' reviews, grouped per user newest first -> `Reviews.of` CSR,
+    plus the popularity counts of every user), `latest_users` (latest `user_features` row of
+    the kept users; `until` = as-of reads), latest `game_features` per game (all current games,
+    even beyond the model vocab), lookup names, `Games.info` / `describe` (prompt lines),
+    truncated short descriptions and the release status (`Games.coming_soon`)
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
-  - `rerank.py`: stage 3. Prompt, Bedrock Converse with a forced `submit_ranking` tool,
-    `parse_response`, `merge_ranking` (repairs the answer), `rerank_all` (threads, per-user
-    failure isolation)
+  - `rerank.py`: stage 3, two calls per user. `llm_ranking` (shuffled prompt,
+    `permutation_error` + one retry, else retrieval order), `blend`, then explanations of the
+    final top N checked by `explanation_problem` (no candidate name, grounded, length), one
+    re-ask of the failed ones, `template_explanation` for the rest. `rerank_user` /
+    `rerank_all` (threads, per-user failure isolation, `RerankStats`), `BedrockRerankLlm`
+    (forced tools with min/max items, token usage per stage)
+  - `evaluate_rerank.py`: `python -m steam_inference.evaluate_rerank`: cohort active after
+    the model's cutoff, history as of the cutoff, hit rate@5/@10 of retrieval / LLM / blends
+    -> `evaluation/rerank/<model_id>/<ts>.json`
   - `writer.py`: stage 4. `DynamoWriter` (`stored_hashes` = parallel scan, threaded batch
     writes / deletes, a resource per thread), `JsonlWriter` (dry runs, no stored state)
   - `details.py`: mart `game_details` -> `game-details` table, insert-only for released games,
@@ -85,12 +95,16 @@ Human docs: `README.md`.
 - The search index (`SearchIndex`, `SEARCH_INDEX_FORMAT`) is read by the frontend
   (`frontend/src/api.ts`): change both together. It is published only with the online catalog,
   so search offers exactly the games `POST /recommendations` can use.
-- LLM output is untrusted: the final order is always a permutation of the retrieved candidates,
-  and explanations are kept only for the top `EXPLAIN_TOP_N`. One user's failure never fails
-  the run.
-- Memory: everything is streamed per batch. Kept state is users x K candidates, the game id of
-  every review, one score chunk (`USER_BATCH_SIZE` x games) and the stored hashes (a dict with
-  one entry per item, about 150 MB at 1.4M users).
+- LLM output is untrusted: the final order is always a permutation of the retrieved candidates
+  (a ranking is used only when it is an exact permutation). Every top-`EXPLAIN_TOP_N` entry of
+  a reranked user has an explanation (checked LLM text or the template), and no other entry
+  has one. An explanation never names the recommended game itself. One user's failure never
+  fails the run.
+- Memory: everything is streamed per batch, and only the `MAX_USERS` kept users' reviews and
+  `user_features` rows are held. Kept state is the per-user review counts of pass 1 (3 ints per
+  user of `interactions`), the kept users' reviewed game ids, users x K candidates, one score
+  chunk (`USER_BATCH_SIZE` x games) and the stored hashes (a dict with one entry per item,
+  about 150 MB at 1.4M users). Never load a whole mart when a per-batch filter will do.
 - The Bedrock model id lives in Terraform (`inference_bedrock_model_id`), because IAM grants
   exactly that model. Changing it only via env would get AccessDenied in AWS.
 
