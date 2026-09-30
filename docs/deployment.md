@@ -45,11 +45,12 @@ Changes reach `main` only through PRs (admins included, no force pushes). Every 
 *CI* workflow (`.github/workflows/ci.yml`): it calls the CI of each component whose paths
 changed, and its `ci-passed` job is the only required status check (path-filtered workflows
 would never report on PRs that skip them, and a required check that never reports blocks the
-merge). Set it once `ci.yml` is on `main`:
+merge). Branches must be up to date with `main` before merging (`strict`), so every commit on
+`main` was tested exactly as merged; component CIs therefore do not run again on push.
 
 ```bash
 gh api -X PUT repos/{owner}/{repo}/branches/main/protection --input - <<'EOF'
-{"required_status_checks": {"strict": false, "contexts": ["ci-passed"]},
+{"required_status_checks": {"strict": true, "contexts": ["ci-passed"]},
  "enforce_admins": true, "required_pull_request_reviews": {"required_approving_review_count": 0},
  "restrictions": null, "allow_force_pushes": false, "allow_deletions": false}
 EOF

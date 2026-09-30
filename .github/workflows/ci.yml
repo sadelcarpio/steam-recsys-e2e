@@ -3,8 +3,8 @@ name: CI
 # The single PR gate. Every PR runs it (no `paths:` filter, so its checks always report); it
 # calls the CI of each component whose files changed, and `ci-passed` is the one required
 # status check on `main` (a job skipped through `if:` counts as passing, a workflow skipped
-# through `paths:` never reports). Pushes to `main` still trigger each component's CI directly.
-# Adding a component: a pattern in `changes`, a job calling its `*-ci.yml`, and `ci-passed.needs`.
+# through `paths:` never reports). Branches must be up to date to merge, so every commit on
+# `main` was tested as merged and there is no CI on push. Adding a component: a pattern in `changes`, a job calling its `*-ci.yml`, and `ci-passed.needs`.
 on:
   pull_request:
 
@@ -30,8 +30,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Plain git instead of a third-party paths-filter action. The patterns mirror the paths
-      # each component workflow runs on for pushes to `main`; a change to this file runs all.
+      # Plain git instead of a third-party paths-filter action. One pattern per component (its
+      # directory, plus what it imports, plus its workflows); a change to this file runs all.
       - id: diff
         env:
           BASE: ${{ github.event.pull_request.base.sha }}

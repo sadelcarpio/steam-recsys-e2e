@@ -1,13 +1,9 @@
 name: data-ingestion CI
 
 on:
-  # PRs: called by ci.yml when these paths change (the required `ci-passed` gate).
+  # Called by ci.yml on PRs that change this component (paths listed there). No push trigger:
+  # the required check needs branches up to date, so `main` is tested as merged.
   workflow_call:
-  push:
-    branches: [main]
-    paths:
-      - "data_ingestion/**"
-      - ".github/workflows/data-ingestion-*.yml"
 
 permissions:
   contents: read

@@ -1,19 +1,12 @@
 name: inference CI
 
 # inference imports the training package (model, artifact contract, catalog code), and its
-# contract test reads the written items with the serving package, so changes to either run this.
+# contract test reads the written items with the serving package, so changes to either run this
+# (ci.yml's `inference` pattern).
 on:
-  # PRs: called by ci.yml when these paths change (the required `ci-passed` gate).
+  # Called by ci.yml on PRs that change this component (paths listed there). No push trigger:
+  # the required check needs branches up to date, so `main` is tested as merged.
   workflow_call:
-  push:
-    branches: [main]
-    paths:
-      - "inference/**"
-      - "training/src/**"
-      - "training/pyproject.toml"
-      - "serving/src/**"
-      - "serving/pyproject.toml"
-      - ".github/workflows/inference-*.yml"
 
 permissions:
   contents: read
