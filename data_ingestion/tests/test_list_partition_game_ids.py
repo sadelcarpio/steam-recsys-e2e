@@ -214,6 +214,30 @@ def test_pending_backfills_weigh_more_and_request_an_etl_full_refresh(
 
 
 @responses.activate
+def test_backfills_at_the_stored_cap_are_not_pending_work(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    aws.games.put_item(Item={"appid": 1, "status": "scraped", "attempts": 0})
+    aws.cursors.put_item(
+        Item={
+            "appid": 1,
+            "last_review_ts": 0,
+            "total_reviews": 1_000_000,
+            "oldest_review_ts": 10,
+            "stored_reviews": 500,
+        }
+    )
+    _mock_app_list([])
+    at_cap = settings.model_copy(update={"backfill_max_reviews_per_game": 500})
+    result = run("run-8", at_cap, client, aws.s3, aws.dynamodb)
+    assert result.backfill_game_ids == 0 and not result.etl_full_refresh
+
+    under_cap = settings.model_copy(update={"backfill_max_reviews_per_game": 600})
+    result = run("run-9", under_cap, client, aws.s3, aws.dynamodb)
+    assert result.backfill_game_ids == 1 and result.etl_full_refresh
+
+
+@responses.activate
 def test_handler_uses_env_api_key_and_validates_event(
     aws: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

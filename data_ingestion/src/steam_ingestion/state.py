@@ -8,7 +8,10 @@ the game was unreleased at its last scrape (`coming_soon`, spec 10). The item wi
 `reviews-state-cursor`: one item per appid with `last_review_ts` (newest review creation
 timestamp already written to S3), `total_reviews` (used to balance review partitions), and the
 backfill of older reviews: `oldest_review_ts` (oldest review written; absent = unknown, a cursor
-from before the backfill that was not seeded) and `backfill_complete`.
+from before the backfill that was not seeded) and `backfill_complete`, plus `stored_reviews`
+(reviews written so far, for the backfill cap; absent = unknown, a cursor from before the counter
+that was not seeded) and `backfill_run_id` (the run of the last backfill, so a retried task does
+not spend the run's backfill budget twice).
 """
 
 from __future__ import annotations
@@ -185,11 +188,27 @@ class ReviewCursor:
     total_reviews: int | None
     oldest_review_ts: int | None = None
     backfill_complete: bool = False
+    stored_reviews: int | None = None
+    backfill_run_id: str | None = None
 
     @property
     def backfill_pending(self) -> bool:
         """Older reviews may remain. Unknown `oldest_review_ts` (unseeded cursor): not pending."""
         return self.oldest_review_ts is not None and not self.backfill_complete
+
+    def backfill_budget(self, per_run: int, max_stored: int) -> int:
+        """Older reviews one run may backfill for this game (0 when none are pending)."""
+        if not self.backfill_pending:
+            return 0
+        return backfill_budget(self.stored_reviews, per_run, max_stored)
+
+
+def backfill_budget(stored: int | None, per_run: int, max_stored: int) -> int:
+    """`per_run` older reviews, down to what is left under `max_stored` stored reviews
+    (0 = no cap; an unknown `stored` count is not capped)."""
+    if max_stored and stored is not None:
+        return max(0, min(per_run, max_stored - stored))
+    return per_run
 
 
 class ReviewsCursorState:
@@ -236,6 +255,23 @@ class ReviewsCursorState:
             raise
         return True
 
+    def seed_stored_reviews(self, appid: int, stored_reviews: int) -> bool:
+        """Set `stored_reviews` of an existing cursor that has none (seeding). False when the
+        cursor is missing or already has it, so seeding is idempotent."""
+        try:
+            self._table.update_item(
+                Key={"appid": appid},
+                UpdateExpression="SET stored_reviews = :s, updated_at = :t",
+                ConditionExpression="attribute_exists(appid) "
+                "AND attribute_not_exists(stored_reviews)",
+                ExpressionAttributeValues={":s": stored_reviews, ":t": _now()},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
     def save(self, cursors: dict[int, ReviewCursor]) -> None:
         now = _now()
         with self._table.batch_writer() as batch:
@@ -251,15 +287,22 @@ class ReviewsCursorState:
                     item["oldest_review_ts"] = cursor.oldest_review_ts
                 if cursor.oldest_review_ts is not None or cursor.backfill_complete:
                     item["backfill_complete"] = cursor.backfill_complete
+                if cursor.stored_reviews is not None:
+                    item["stored_reviews"] = cursor.stored_reviews
+                if cursor.backfill_run_id is not None:
+                    item["backfill_run_id"] = cursor.backfill_run_id
                 batch.put_item(Item=item)
 
 
 def _to_cursor(item: dict[str, Any]) -> ReviewCursor:
     total = item.get("total_reviews")
     oldest = item.get("oldest_review_ts")
+    stored = item.get("stored_reviews")
     return ReviewCursor(
         last_review_ts=int(item.get("last_review_ts", 0)),
         total_reviews=int(total) if total is not None else None,
         oldest_review_ts=int(oldest) if oldest is not None else None,
         backfill_complete=bool(item.get("backfill_complete", False)),
+        stored_reviews=int(stored) if stored is not None else None,
+        backfill_run_id=item.get("backfill_run_id"),
     )

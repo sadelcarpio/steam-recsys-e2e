@@ -4,12 +4,15 @@ For each appid, pages newest-first (`filter=recent`) until reaching the `last_re
 stored in `reviews-state-cursor` (forward pass, capped by `max_reviews_per_game`). Then, while
 older reviews are pending, it pages the range `[1, oldest_review_ts]` newest-first for up to
 `backfill_reviews_per_run` reviews and moves `oldest_review_ts` back (backward pass); an
-exhausted range marks the game `backfill_complete`. Rows are buffered and flushed to
-`s3://raw-steam-data-*/reviews/<scrape-date>-<worker-id>-<part>.parquet`; after each flush the
-cursors of games whose reviews are *fully* written are committed. A game split across a flush
-keeps its old cursor, so a crash can only re-emit rows (dedupe on `rec_id` downstream), never
-skip them. On SIGTERM (Spot interruption) it stops at the next page, flushes, commits the
-finished games (and the one in its backward pass, as far as it got) and exits non-zero.
+exhausted range, or `backfill_max_reviews_per_game` reviews stored (`stored_reviews`), marks the
+game `backfill_complete`. Each game backfills at most once per run (`backfill_run_id`): a retried
+task only fetches new reviews of the games its first attempt already backfilled. Rows are
+buffered and flushed to `s3://raw-steam-data-*/reviews/<scrape-date>-<worker-id>-<part>.parquet`;
+after each flush the cursors of games whose reviews are *fully* written are committed. A game
+split across a flush keeps its old cursor, so a crash can only re-emit rows (dedupe on `rec_id`
+downstream), never skip them. On SIGTERM (Spot interruption) it stops at the next page,
+flushes, commits the finished games (and the one in its backward pass, as far as it got) and
+exits non-zero.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from steam_ingestion.config import IngestionSettings, ScrapeTaskSettings, config
 from steam_ingestion.models import REVIEWS_PARTITION_RE, ReviewRecord
 from steam_ingestion.schemas import REVIEWS_SCHEMA
 from steam_ingestion.shutdown import EXIT_CODE, Shutdown, ShutdownRequested
-from steam_ingestion.state import ReviewCursor, ReviewsCursorState
+from steam_ingestion.state import ReviewCursor, ReviewsCursorState, backfill_budget
 from steam_ingestion.steam_api import ReviewPage, SteamApiError, SteamClient
 from steam_ingestion.storage import next_part_number, put_parquet, read_partition
 
@@ -54,6 +57,11 @@ class _Walk:
         self.count += 1
         self.oldest = ts if self.oldest is None else min(self.oldest, ts)
         self.newest = ts if self.newest is None else max(self.newest, ts)
+
+
+def _capped(stored: int | None, max_stored: int) -> bool:
+    """The game has enough reviews stored: its backfill is done (an unknown count is not)."""
+    return bool(max_stored and stored is not None and stored >= max_stored)
 
 
 def build_review_record(appid: int, raw: dict[str, Any], scrape_date: date) -> ReviewRecord:
@@ -112,7 +120,7 @@ def scrape_partition(
 
     buffer: list[ReviewRecord] = []
     completed: dict[int, ReviewCursor] = {}  # finished games whose rows are all in `buffer`/S3
-    failures = backfill_failures = backfill_rows = total_rows = 0
+    failures = backfill_failures = backfill_rows = backfill_skipped = total_rows = 0
     stopped = False
 
     def flush() -> None:
@@ -143,7 +151,9 @@ def scrape_partition(
                 flush()  # current game is not in `completed`: its cursor stays put
             shutdown.check()
 
-    cap, budget = settings.max_reviews_per_game, settings.backfill_reviews_per_run
+    run_id = match["run_id"]
+    cap, per_run = settings.max_reviews_per_game, settings.backfill_reviews_per_run
+    max_stored = settings.backfill_max_reviews_per_game
     for i, appid in enumerate(appids, 1):
         if shutdown.requested:
             stopped = True
@@ -153,6 +163,9 @@ def scrape_partition(
         total = previous.total_reviews if previous else None
         oldest = previous.oldest_review_ts if previous else None
         complete = previous.backfill_complete if previous else False
+        # None: unknown (a cursor from before the counter, not seeded): the cap does not apply
+        stored = previous.stored_reviews if previous else 0
+        backfill_run = previous.backfill_run_id if previous else None
 
         # forward pass: reviews newer than the cursor
         forward = _Walk()
@@ -167,14 +180,21 @@ def scrape_partition(
         else:
             if forward.total is not None:
                 total = forward.total
+            if stored is not None:
+                stored += forward.count
             if previous is None:
                 # first scrape: the whole history unless the cap truncated the walk
                 oldest, complete = forward.oldest, not (cap and forward.count >= cap)
+            complete = complete or _capped(stored, max_stored)
 
             # backward pass: reviews older than the oldest one written (end_date is inclusive, so
             # the boundary second can repeat: the ETL dedupes on review_id)
-            if budget and not complete and oldest is not None:
+            budget = backfill_budget(stored, per_run, max_stored)
+            if budget and not complete and oldest is not None and backfill_run == run_id:
+                backfill_skipped += 1  # a retried task: this run's backfill is already spent
+            elif budget and not complete and oldest is not None:
                 backward = _Walk()
+                backfill_run = run_id
                 try:
                     collect(appid, client.iter_review_pages(appid, 0, budget, oldest), backward)
                     complete = backward.count < budget  # the range ran out before the budget
@@ -187,12 +207,17 @@ def scrape_partition(
                 backfill_rows += backward.count
                 if backward.oldest is not None:
                     oldest = min(oldest, backward.oldest)
+                if stored is not None:
+                    stored += backward.count
+                complete = complete or _capped(stored, max_stored)
 
             cursor = ReviewCursor(
                 last_review_ts=max(since, forward.newest or 0),
                 total_reviews=total,
                 oldest_review_ts=oldest,
                 backfill_complete=complete,
+                stored_reviews=stored,
+                backfill_run_id=backfill_run,
             )
             if cursor != previous:
                 completed[appid] = cursor
@@ -209,12 +234,14 @@ def scrape_partition(
     flush()
 
     logger.info(
-        "%s: %d reviews (%d backfilled), %d failed games, %d failed backfills of %d",
+        "%s: %d reviews (%d backfilled), %d failed games, %d failed backfills, "
+        "%d backfills already done this run, of %d",
         "stopped" if stopped else "done",
         total_rows,
         backfill_rows,
         failures,
         backfill_failures,
+        backfill_skipped,
         len(appids),
     )
     if stopped:

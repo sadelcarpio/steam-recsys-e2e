@@ -23,16 +23,17 @@ locals {
 
 resource "aws_ssm_parameter" "ingestion" {
   for_each = {
-    RAW_BUCKET               = aws_s3_bucket.raw_steam_data.bucket
-    PARTITIONS_BUCKET        = aws_s3_bucket.game_partitions.bucket
-    GAME_IDS_TABLE           = aws_dynamodb_table.game_ids_state.name
-    REVIEWS_CURSOR_TABLE     = aws_dynamodb_table.reviews_state_cursor.name
-    STEAM_API_KEY_SECRET_ID  = aws_secretsmanager_secret.steam_api_key.name
-    NUM_REVIEW_WORKERS       = tostring(var.num_review_workers)
-    GAMES_PER_TASK           = tostring(var.games_per_task)
-    MAX_REVIEWS_PER_GAME     = tostring(var.max_reviews_per_game)
-    BACKFILL_REVIEWS_PER_RUN = tostring(var.backfill_reviews_per_run)
-    REQUEST_INTERVAL_SECONDS = tostring(var.request_interval_seconds)
+    RAW_BUCKET                    = aws_s3_bucket.raw_steam_data.bucket
+    PARTITIONS_BUCKET             = aws_s3_bucket.game_partitions.bucket
+    GAME_IDS_TABLE                = aws_dynamodb_table.game_ids_state.name
+    REVIEWS_CURSOR_TABLE          = aws_dynamodb_table.reviews_state_cursor.name
+    STEAM_API_KEY_SECRET_ID       = aws_secretsmanager_secret.steam_api_key.name
+    NUM_REVIEW_WORKERS            = tostring(var.num_review_workers)
+    GAMES_PER_TASK                = tostring(var.games_per_task)
+    MAX_REVIEWS_PER_GAME          = tostring(var.max_reviews_per_game)
+    BACKFILL_REVIEWS_PER_RUN      = tostring(var.backfill_reviews_per_run)
+    BACKFILL_MAX_REVIEWS_PER_GAME = tostring(var.backfill_max_reviews_per_game)
+    REQUEST_INTERVAL_SECONDS      = tostring(var.request_interval_seconds)
   }
   name  = "${local.ingestion_ssm_prefix}/${each.key}"
   type  = "String"

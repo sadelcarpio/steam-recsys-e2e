@@ -75,3 +75,15 @@ long first pass (about 15 s per 1000 reviews); a task failure mid-game restarts 
 Scraper, API client, state, partitioning, Lambda and seeding tests; SSM parameter +
 Terraform variable `backfill_reviews_per_run`; `Transform` override; README / CLAUDE.md /
 `docs/deployment.md` (seeding step).
+
+## Addendum: backfill cap and once per run (2026-09-30)
+
+- `BACKFILL_MAX_REVIEWS_PER_GAME` (default 500000, `0` = off): the backfill stops once a game has
+  that many reviews stored; the forward pass is not affected. The cursor counts them in
+  `stored_reviews` (forward + backward rows committed with it); cursors from before the counter
+  are seeded once with `python -m steam_ingestion.seed_stored_reviews` (pending backfills only,
+  Athena counts), and are not capped until then. The Lambda weighs a capped game's backfill as
+  `min(BACKFILL_REVIEWS_PER_RUN, cap - stored_reviews)` and does not count it as pending.
+- Once per run: the cursor records the run id of its last backward pass (`backfill_run_id`). A
+  retried task (Fargate Spot interruption) skips the backward pass of games already backfilled
+  in the run, instead of spending another `BACKFILL_REVIEWS_PER_RUN` on each.

@@ -469,6 +469,16 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
    `Infer` excludes unreleased games and deletes them from `game-details` (about 50k deletes,
    a few cents). Check: `select count_if(game_coming_soon), count(*) from steam_marts.game_details;`
 
+**Release with the backfill cap (spec 6 addendum):**
+1. Merge to `main`, then *data-ingestion CD* (Lambda + scraper image). The cap defaults to
+   500000 in the code, so the old infrastructure keeps working.
+2. *infrastructure CD* `apply` (SSM `BACKFILL_MAX_REVIEWS_PER_GAME`).
+3. With no pipeline execution running (an older scraper image would drop the field), seed the
+   counts of the pending backfills once (`--dry-run` first prints how many are already capped):
+   `cd data_ingestion && AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_stored_reviews`
+4. The next run marks the games at the cap `backfill_complete` (forward pass only for them).
+   Once no backfill is pending, `Transform` stops running full refreshes.
+
 ## Order for a fresh account (summary)
 
 1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →

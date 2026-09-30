@@ -14,7 +14,7 @@ from steam_ingestion.models import PartitionFile
 from steam_ingestion.reviews_scraping.scraper import build_review_record, scrape_partition
 from steam_ingestion.schemas import REVIEWS_SCHEMA
 from steam_ingestion.shutdown import Shutdown, ShutdownRequested
-from steam_ingestion.state import ReviewCursor, ReviewsCursorState
+from steam_ingestion.state import ReviewCursor, ReviewsCursorState, backfill_budget
 from steam_ingestion.steam_api import SteamClient
 from steam_ingestion.storage import list_keys, write_partition
 
@@ -415,3 +415,123 @@ def test_cursor_backfill_fields_roundtrip(aws: SimpleNamespace) -> None:
     assert state.load([1, 2, 3]) == cursors
     assert state.load_all() == cursors
     assert [c.backfill_pending for c in cursors.values()] == [True, False, False]
+
+
+def test_backfill_budget_is_capped_by_the_stored_reviews() -> None:
+    assert backfill_budget(None, 100, 500) == 100  # unknown count: not capped
+    assert backfill_budget(450, 100, 500) == 50
+    assert backfill_budget(500, 100, 500) == 0
+    assert backfill_budget(900, 100, 0) == 100  # no cap
+    pending = ReviewCursor(10, 5, oldest_review_ts=3, stored_reviews=450)
+    assert pending.backfill_budget(100, 500) == 50
+    done = ReviewCursor(10, 5, oldest_review_ts=3, backfill_complete=True, stored_reviews=1)
+    assert done.backfill_budget(100, 500) == 0
+
+
+def _pending(stored: int | None = None, run_id: str | None = None) -> ReviewCursor:
+    return ReviewCursor(
+        last_review_ts=500,
+        total_reviews=100,
+        oldest_review_ts=300,
+        stored_reviews=stored,
+        backfill_run_id=run_id,
+    )
+
+
+@responses.activate
+def test_first_scrape_counts_the_stored_reviews(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    _mock_reviews(10, [[_review(2, 200), _review(1, 100)]])
+    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    cursor = _cursor(aws, 10)
+    assert int(cursor["stored_reviews"]) == 2
+    assert "backfill_run_id" not in cursor  # complete on its first scrape: no backfill
+
+
+@responses.activate
+def test_backfill_stops_at_the_stored_cap_but_new_reviews_keep_coming(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save({10: _pending(stored=7)})
+    _mock_reviews(10, [[_review(6, 600)]])  # forward: stored 7 -> 8
+    _mock_reviews(10, [[_review(3, 300), _review(2, 200)], [_review(1, 100)]], until=300)
+    run = settings.model_copy(update={"backfill_max_reviews_per_game": 10})
+
+    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 3, 6]  # budget 2 = 10 - 8
+    cursor = _cursor(aws, 10)
+    assert int(cursor["stored_reviews"]) == 10
+    assert _backfill_state(cursor) == (200, True)  # capped: older reviews are left out
+    assert cursor["backfill_run_id"] == "run-1"
+
+
+@responses.activate
+def test_game_at_the_stored_cap_only_fetches_new_reviews(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save({10: _pending(stored=10)})
+    _mock_reviews(10, [[_review(6, 600)]])
+    run = settings.model_copy(update={"backfill_max_reviews_per_game": 10})
+
+    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    assert len(responses.calls) == 1  # forward pass only
+    cursor = _cursor(aws, 10)
+    assert int(cursor["last_review_ts"]) == 600 and int(cursor["stored_reviews"]) == 11
+    assert _backfill_state(cursor) == (300, True)
+
+
+@responses.activate
+def test_unseeded_stored_count_is_not_capped(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save({10: _pending(stored=None)})
+    _mock_reviews(10, [[_review(6, 600)]])
+    _mock_reviews(10, [[_review(3, 300), _review(2, 200)]], until=300)
+    run = settings.model_copy(update={"backfill_max_reviews_per_game": 1})
+
+    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    cursor = _cursor(aws, 10)
+    assert _backfill_state(cursor) == (200, True)  # the range ran out
+    assert "stored_reviews" not in cursor
+
+
+@responses.activate
+def test_retried_task_does_not_backfill_twice_in_a_run(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    _seed(aws, [10, 20])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: _pending(stored=5, run_id="run-1"), 20: _pending(stored=5, run_id="run-0")}
+    )
+    _mock_reviews(10, [[_review(6, 600)]])
+    _mock_reviews(20, [[_review(16, 600)]])
+    _mock_reviews(20, [[_review(13, 300), _review(12, 200)]], until=300)
+
+    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [6, 12, 13, 16]
+    first, other = _cursor(aws, 10), _cursor(aws, 20)
+    # game 10 was backfilled by this run's first attempt: only its new review
+    assert int(first["last_review_ts"]) == 600 and int(first["stored_reviews"]) == 6
+    assert _backfill_state(first) == (300, False)
+    # game 20's last backfill was an earlier run's: it backfills again
+    assert int(other["stored_reviews"]) == 8 and other["backfill_run_id"] == "run-1"
+    assert _backfill_state(other) == (200, True)
+
+
+def test_cursor_counter_fields_roundtrip(aws: SimpleNamespace) -> None:
+    state = ReviewsCursorState(aws.cursors, aws.dynamodb)
+    cursors = {1: _pending(stored=42, run_id="run-1"), 2: _pending()}
+    state.save(cursors)
+    assert state.load([1, 2]) == cursors
+    assert state.seed_stored_reviews(2, 7) and not state.seed_stored_reviews(2, 8)
+    assert state.load([2])[2].stored_reviews == 7
+    assert not state.seed_stored_reviews(99, 1)  # no cursor: nothing created

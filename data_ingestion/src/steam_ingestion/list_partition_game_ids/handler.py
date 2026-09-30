@@ -33,7 +33,7 @@ from steam_ingestion.partitioning import (
     chunk_by_size,
     estimated_review_requests,
 )
-from steam_ingestion.state import GameIdsState, ReviewsCursorState
+from steam_ingestion.state import GameIdsState, ReviewsCursorState, backfill_budget
 from steam_ingestion.steam_api import SteamClient
 from steam_ingestion.storage import delete_prefix, write_partition
 
@@ -100,7 +100,8 @@ def run(
         | {a for a, s in known.items() if s.status != GameStatus.UNAVAILABLE and not s.coming_soon}
     )
     cursors = cursor_state.load_all()
-    cap, budget = settings.max_reviews_per_game, settings.backfill_reviews_per_run
+    cap, per_run = settings.max_reviews_per_game, settings.backfill_reviews_per_run
+    max_stored = settings.backfill_max_reviews_per_game
     weights: dict[int, float] = {}
     backfill_ids = 0
     for a in review_ids:
@@ -109,12 +110,15 @@ def run(
             total = cursor.total_reviews
         else:
             total = known[a].recommendations if a in known else None
-        # a first scrape truncated by the cap starts its backfill in the same run
-        backfill = cursor.backfill_pending if cursor else bool(cap and (total or 0) > cap)
-        backfill_ids += bool(backfill and budget)
-        weights[a] = estimated_review_requests(
-            total, cap, budget if backfill else 0, scraped=cursor is not None
-        )
+        if cursor is not None:
+            # 0 once the game has `max_stored` reviews: the scraper then marks it complete
+            backfill = cursor.backfill_budget(per_run, max_stored)
+        else:
+            # a first scrape truncated by the cap starts its backfill in the same run
+            truncated = bool(cap and (total or 0) > cap)
+            backfill = backfill_budget(cap, per_run, max_stored) if truncated else 0
+        backfill_ids += bool(backfill)
+        weights[a] = estimated_review_requests(total, cap, backfill, scraped=cursor is not None)
     reviews_keys = []
     delete_prefix(s3, settings.partitions_bucket, f"reviews/{run_id}/")
     for n, part in enumerate(balance_by_weight(review_ids, weights, settings.num_review_workers)):

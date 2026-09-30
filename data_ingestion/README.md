@@ -59,6 +59,8 @@ or scraped reviews), whose change happened before the Lambda watched for it:
 ```bash
 AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_coming_soon --dry-run   # counts only
 AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_coming_soon
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_stored_reviews --dry-run   # backfill cap
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_stored_reviews
 ```
 
 ### Reviews backfill (spec 6)
@@ -69,7 +71,10 @@ load ran with a 2000 cap) get the rest from the backfill: each run fetches up to
 `start_date=1&end_date=<oldest_review_ts>&date_range_type=include` range (newest-first inside
 the range, `end_date` inclusive), and moves the cursor's `oldest_review_ts` back. When the range
 runs out (Steam stops returning pages, for the biggest games after a few hundred thousand
-reviews) the cursor gets `backfill_complete`. A review outside the range means Steam ignored it:
+reviews) the cursor gets `backfill_complete`. It also gets it once the game has
+`BACKFILL_MAX_REVIEWS_PER_GAME` reviews stored (cursor `stored_reviews`): huge games such as
+CS2 (~10M) keep their newest 500k and every new review. Each game backfills at most once per run
+(cursor `backfill_run_id`), so a Spot retry of a task does not spend the budget twice. A review outside the range means Steam ignored it:
 that game's backfill stops for the run (forward results are kept). While any backfill is
 pending, the Lambda returns `etl_full_refresh: true` and the pipeline rebuilds the marts
 (backfilled reviews are older than rows already loaded).
@@ -99,7 +104,8 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
 | `THROTTLE_COOLDOWN_SECONDS` | 60 | Minimum wait after an HTTP 429 (or `Retry-After` if longer), so retries outlast the throttle window |
 | `MAX_REVIEWS_PER_GAME` | 0 | Newest reviews per game per run (forward pass); `0` = no cap. With a cap, more new reviews than this in one run leave a gap that is not backfilled |
-| `BACKFILL_REVIEWS_PER_RUN` | 100000 | Older reviews per game per run (backfill); `0` = off |
+| `BACKFILL_REVIEWS_PER_RUN` | 100000 | Older reviews per game per run (backfill); `0` = off. Spent once per run: a retried task does not backfill the same game again |
+| `BACKFILL_MAX_REVIEWS_PER_GAME` | 500000 | The backfill stops once a game has this many reviews stored; `0` = no cap. New reviews are always fetched |
 | `MAX_GAME_ATTEMPTS` | 3 | |
 | `MAX_FAILURE_RATIO` | 0.2 | Task exits 1 above this share of failed games |
 | `PARTITION_KEY` | – | Per-task, injected by the Distributed Map |

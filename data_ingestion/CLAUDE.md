@@ -19,7 +19,8 @@ reviews), `specs/8-game-tags.md` (Steam user tags), `specs/10-coming-soon-games.
   - `state.py`: DynamoDB access. `game-ids-state` has one item per appid (status, attempts,
     `coming_soon` of the last scrape), and `appid=0` is the catalog cursor item.
     `reviews-state-cursor` holds `last_review_ts`, `total_reviews` and the backfill fields
-    `oldest_review_ts` (absent = unseeded, never backfilled) / `backfill_complete`
+    `oldest_review_ts` (absent = unseeded, never backfilled) / `backfill_complete`, plus
+    `stored_reviews` (absent = unseeded: no backfill cap) and `backfill_run_id`
   - `storage.py` (S3, Lambda-safe), `partitioning.py` (pure)
   - `list_partition_game_ids/handler.py`, `games_scraping/scraper.py`,
     `reviews_scraping/scraper.py` (+ `__main__.py` for `python -m`): forward pass, then the
@@ -30,6 +31,8 @@ reviews), `specs/8-game-tags.md` (Steam user tags), `specs/10-coming-soon-games.
   - `shutdown.py`: SIGTERM flag + interruptible sleep (Fargate Spot interruptions)
   - `seed_backfill.py`: one-off, seeds the backfill fields of older cursors from Athena
     (`run_query`: Athena rows as strings)
+  - `seed_stored_reviews.py`: one-off, seeds `stored_reviews` of the pending backfills
+    (reuses `seed_backfill.query_scraped`)
   - `seed_coming_soon.py`: one-off, seeds `coming_soon` of games scraped before spec 10 and
     re-queues the ones that already look released
 - `scraping.Dockerfile`: one image for both ECS tasks
@@ -47,9 +50,14 @@ reviews), `specs/8-game-tags.md` (Steam user tags), `specs/10-coming-soon-games.
 - Review cursors are committed only for games whose rows are fully flushed. A game that was
   split across a flush keeps its old cursor (duplicates are possible, gaps are not).
 - Backfill: `oldest_review_ts` only moves back to reviews that are buffered (so written with the
-  cursor); `backfill_complete` only when a range walk ended before the budget. A failed backfill
-  never fails the game. The Lambda's `etl_full_refresh` (Step Functions `Transform` override)
-  must stay true while any backfill is pending.
+  cursor); `backfill_complete` only when a range walk ended before the budget, or once
+  `stored_reviews` reaches `BACKFILL_MAX_REVIEWS_PER_GAME` (the forward pass is never capped by
+  it). `stored_reviews` grows only with rows committed with the cursor. A failed backfill never
+  fails the game. A game backfills at most once per run id (`backfill_run_id`, set when a
+  backward pass starts), so a retried task (same partition key) only runs forward passes for it;
+  re-running a run id manually therefore skips the backfills already done. The Lambda's
+  `etl_full_refresh` (Step Functions `Transform` override) must stay true while any backfill with
+  a non-zero budget is pending.
 - `MAX_REVIEWS_PER_GAME` stays `0` (default): a forward cap drops a scraped game's new reviews
   past it, a gap the backfill never reaches. Partition weights therefore count a scraped game's
   new reviews (`SCRAPED_GAME_NEW_REVIEWS`), not its lifetime `total_reviews`.

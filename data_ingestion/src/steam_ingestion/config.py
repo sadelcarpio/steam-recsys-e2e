@@ -85,6 +85,9 @@ class IngestionSettings(BaseSettings):
     max_reviews_per_game: int = Field(0, ge=0)
     # Older reviews fetched per game per run past the ones already scraped (backfill); 0 = off.
     backfill_reviews_per_run: int = Field(100_000, ge=0)
+    # The backfill stops once a game has this many reviews stored (0 = no cap): the rest of a
+    # huge game's history adds little. Only the backfill: new reviews are always fetched.
+    backfill_max_reviews_per_game: int = Field(500_000, ge=0)
     # tags-scraping (IStoreBrowseService/GetItems, api.steampowered.com: not the store throttle)
     tags_batch_size: int = Field(100, ge=1, le=200)
     tags_per_game: int = Field(20, ge=1, le=50)

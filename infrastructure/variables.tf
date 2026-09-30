@@ -79,6 +79,12 @@ variable "backfill_reviews_per_run" {
   default     = 100000
 }
 
+variable "backfill_max_reviews_per_game" {
+  description = "The backfill stops once a game has this many reviews stored; 0 = no cap. Only the backfill: new reviews are always fetched."
+  type        = number
+  default     = 500000
+}
+
 variable "request_interval_seconds" {
   type    = number
   default = 1.5
