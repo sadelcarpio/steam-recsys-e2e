@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Literal
 
 import boto3
 from pydantic import Field, model_validator
@@ -88,9 +88,10 @@ class InferenceSettings(BaseSettings):
 
     # ---- LLM reranking (Bedrock Converse API) ----
     rerank_enabled: bool = True
-    # Amazon Nova 2 Lite (US cross-region inference profile): ~1.8k input + ~0.4k output tokens
-    # per reranked user. Any Converse model with tool use works (README: model comparison), e.g.
-    # us.anthropic.claude-haiku-4-5-20251001-v1:0 (better explanations, ~2.5x the cost).
+    # Amazon Nova 2 Lite (US cross-region inference profile): ~4.5k input + ~0.5k output tokens
+    # per reranked user over both calls (README: LLM choice and cost). Any Converse model with
+    # tool use works, e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0 (better explanations,
+    # ~2.5x the cost).
     bedrock_model_id: str = "us.amazon.nova-2-lite-v1:0"
     # Reranked users: at least this many reviews ("more than 5"), the most active first...
     rerank_min_reviews: int = Field(6, ge=1)
@@ -105,7 +106,15 @@ class InferenceSettings(BaseSettings):
     # half the Nova 2 Lite cross-region quota (2000 RPM, 8M tokens/min); throttling is retried.
     rerank_concurrency: int = Field(32, ge=1, le=256)
     rerank_max_tokens: int = Field(2000, ge=100)
+    # Temperature of the explanations (the ranking call always uses 0).
     rerank_temperature: float = Field(0.2, ge=0, le=1)
+    # Two-stage rerank (spec 7): `rank+explain` (LLM order, then explanations) or `explain`
+    # (the retrieval order is kept; only the explanations come from the LLM).
+    rerank_enabled_stages: Literal["rank+explain", "explain"] = "rank+explain"
+    # Final order = ascending w * llm_rank + (1 - w) * retrieval_rank (1 = LLM order).
+    rerank_blend_weight: float = Field(1.0, ge=0, le=1)
+    # Shuffle the candidates of the ranking prompt (seeded by the user id) against position bias.
+    rerank_shuffle: bool = True
 
     # ---- output ----
     # Parallel DynamoDB scan segments / batch writers. Only changed items are written; stored

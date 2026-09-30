@@ -82,7 +82,14 @@ class TableSource(Protocol):
 
 
 class IcebergSource:
-    """Reads the marts through the Glue catalog, straight from S3 (no Athena, no scan cost)."""
+    """Reads the marts through the Glue catalog, straight from S3 (no Athena, no scan cost).
+
+    Batches are streamed one data file after another, batch by batch within a file. pyiceberg's
+    public readers (`scan.to_arrow_batch_reader()`, `ArrowScan.to_record_batches`) submit
+    every file of the scan to a thread pool at once and read each one fully, so a "streamed"
+    mart ends up in memory: 24 GB for `game_features` (4 files of up to 34M rows) in 2026-09,
+    the inference job's OOM. This uses pyiceberg's private per-file iterator;
+    `tests/test_data.py::test_iceberg_source_*` catches an upgrade that changes it."""
 
     def __init__(self, database: str, region: str) -> None:
         from pyiceberg.catalog import load_catalog
@@ -103,8 +110,25 @@ class IcebergSource:
     def batches(
         self, table: str, columns: list[str], snapshot_id: int | None
     ) -> Iterator[pa.RecordBatch]:
-        scan = self._table(table).scan(selected_fields=tuple(columns), snapshot_id=snapshot_id)
-        yield from scan.to_arrow_batch_reader()
+        yield from iceberg_batches(self._table(table), columns, snapshot_id)
+
+
+def iceberg_batches(table, columns: list[str], snapshot_id: int | None) -> Iterator[pa.RecordBatch]:
+    """The selected columns of a pyiceberg `table` at `snapshot_id`, streamed batch by batch
+    (at most one file's current batch in memory; see `IcebergSource`)."""
+    from pyiceberg.io.pyarrow import ArrowScan, _read_all_delete_files, schema_to_pyarrow
+
+    scan = table.scan(selected_fields=tuple(columns), snapshot_id=snapshot_id)
+    tasks = list(scan.plan_files())
+    projected = scan.projection()
+    target = schema_to_pyarrow(projected)
+    arrow = ArrowScan(scan.table_metadata, scan.io, projected, scan.row_filter, scan.case_sensitive)
+    # the same projection / deletes / cast as scan.to_arrow_batch_reader(), without reading
+    # every file up front
+    batches = arrow._record_batches_from_scan_tasks_and_deletes(
+        tasks, _read_all_delete_files(scan.io, tasks)
+    )
+    yield from pa.RecordBatchReader.from_batches(target, batches).cast(target)
 
 
 # ---- in-memory layout ----------------------------------------------------------------------

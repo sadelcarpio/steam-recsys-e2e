@@ -10,11 +10,12 @@ from conftest import (
     N_GAMES,
     REVIEWS,
     TABLE,
+    FailingLlm,
     FakeSource,
+    ReverseLlm,
     add_tags,
     make_metadata,
     make_model,
-    reverse_ranking,
 )
 
 from steam_inference.contracts import POPULAR_USER_ID
@@ -46,7 +47,7 @@ def test_skipped_without_a_champion(settings, source, store):
 
 
 def test_writes_every_user_and_reranks_the_active_ones(settings, source, store, champion):
-    summary = run_inference(settings, source, store, _writer(settings), reverse_ranking, now=NOW)
+    summary = run_inference(settings, source, store, _writer(settings), ReverseLlm(), now=NOW)
     assert not summary.skipped
     assert summary.model_id == "abc123"  # the champion's own id, not "champion"
     assert summary.users == 4 and summary.written == 5  # + the popularity fallback
@@ -83,14 +84,9 @@ def test_writes_every_user_and_reranks_the_active_ones(settings, source, store, 
 
 
 def test_rerank_prompt_games_carry_their_short_description(settings, source, store, champion):
-    requests = []
-
-    def recording(request):
-        requests.append(request)
-        return reverse_ranking(request)
-
-    run_inference(settings, source, store, _writer(settings), recording, now=NOW)
-    games = [g for r in requests for g in (*r.liked, *r.candidates)]
+    llm = ReverseLlm()
+    run_inference(settings, source, store, _writer(settings), llm, now=NOW)
+    games = [g for liked, candidates in llm.ranked for g in (*liked, *candidates)]
     # odd games have a scraped description (conftest.details_table), even ones none
     assert any(g.endswith("positive reviews | Shoot & loot 7.") for g in games)
     assert any(g.endswith("positive reviews") for g in games)
@@ -98,18 +94,26 @@ def test_rerank_prompt_games_carry_their_short_description(settings, source, sto
 
 def test_rerank_is_capped_to_the_most_active_users(settings, source, store, champion):
     capped = settings.model_copy(update={"rerank_max_users": 1})
-    run_inference(capped, source, store, _writer(capped), reverse_ranking, now=NOW)
+    run_inference(capped, source, store, _writer(capped), ReverseLlm(), now=NOW)
     assert {u for u, item in _items().items() if item["reranked"]} == {"104"}
 
 
 def test_failed_rerank_falls_back_to_retrieval_order(settings, source, store, champion):
-    def failing(request):
-        raise RuntimeError("bedrock down")
-
-    summary = run_inference(settings, source, store, _writer(settings), failing, now=NOW)
+    summary = run_inference(settings, source, store, _writer(settings), FailingLlm(), now=NOW)
     assert summary.rerank_failures == 3 and summary.reranked_users == 0
     assert summary.written == 5
     assert not any(item["reranked"] for item in _items().values())
+
+
+def test_explain_only_keeps_the_retrieval_order(settings, source, store, champion):
+    explain_only = settings.model_copy(update={"rerank_enabled_stages": "explain"})
+    llm = ReverseLlm()
+    summary = run_inference(explain_only, source, store, _writer(explain_only), llm, now=NOW)
+    assert llm.ranked == [] and summary.reranked_users == 3
+    assert (summary.rank_fallbacks, summary.template_explanations) == (0, 0)
+    recs = _items()["101"]["recommendations"]
+    assert [r["score"] for r in recs] == sorted((r["score"] for r in recs), reverse=True)
+    assert [("explanation" in r) for r in recs] == [True, True, False, False, False]
 
 
 def test_rerank_disabled(settings, source, store, champion):
@@ -131,7 +135,7 @@ def test_unchanged_users_are_not_rewritten(settings, source, store, champion):
 def test_changed_users_are_rewritten(settings, source, store, champion):
     run_inference(settings, source, store, _writer(settings), None, now=NOW)
     # reranking changes the order of the three active users only
-    summary = run_inference(settings, source, store, _writer(settings), reverse_ranking, now=LATER)
+    summary = run_inference(settings, source, store, _writer(settings), ReverseLlm(), now=LATER)
     assert (summary.written, summary.unchanged) == (3, 2)
     items = _items()
     assert {u for u, item in items.items() if item["generated_at"] == LATER.isoformat()} == {
@@ -199,7 +203,7 @@ def test_rejects_an_incompatible_architecture(settings, source, store):
 
 def test_jsonl_dry_run(settings, source, store, champion, tmp_path):
     path = tmp_path / "out" / "recs.jsonl"
-    summary = run_inference(settings, source, store, JsonlWriter(str(path)), reverse_ranking)
+    summary = run_inference(settings, source, store, JsonlWriter(str(path)), ReverseLlm())
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     assert summary.written == len(lines) == 5
     assert isinstance(lines[0]["recommendations"][0]["score"], float)
@@ -207,7 +211,7 @@ def test_jsonl_dry_run(settings, source, store, champion, tmp_path):
 
 
 def test_popularity_fallback_item(settings, source, store, champion):
-    summary = run_inference(settings, source, store, _writer(settings), reverse_ranking, now=NOW)
+    summary = run_inference(settings, source, store, _writer(settings), ReverseLlm(), now=NOW)
     assert summary.popular_games == 5
     popular = _items(popular=True)[POPULAR_USER_ID]
     assert popular["model_id"] == "popularity" and not popular["reranked"]

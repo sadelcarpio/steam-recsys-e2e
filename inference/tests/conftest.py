@@ -22,7 +22,6 @@ from steam_training.contracts import (
 from steam_training.model import TwoTowerModel
 
 from steam_inference.config import InferenceSettings
-from steam_inference.contracts import LlmRanking, RankedCandidate
 
 BUCKET = "model-artifacts-test"
 TABLE = "game-explainable-recommendations"
@@ -43,6 +42,11 @@ REVIEWS = {
     # negative reviews only: no user_features row, never recommended
     105: [(3, False)],
 }
+
+
+def review_time(user: int, i: int) -> datetime:
+    """Creation time of the `i`-th review (0-based, oldest first) of `user`."""
+    return START + timedelta(days=user - 100, hours=i)
 
 
 def game_row(game_idx: int, ts: datetime, ratio: float) -> dict:
@@ -66,7 +70,7 @@ def make_marts() -> dict[str, pa.Table]:
     for user, reviews in REVIEWS.items():
         liked: list[int] = []
         for i, (game, positive) in enumerate(reviews):
-            ts = START + timedelta(days=user - 100, hours=i)
+            ts = review_time(user, i)
             interactions.append(
                 {"user_id": user, "game_idx": game, "is_positive": positive, "timestamp": ts}
             )
@@ -227,12 +231,33 @@ def make_metadata(model: TwoTowerModel, model_id: str) -> ModelMetadata:
     )
 
 
-def reverse_ranking(request) -> LlmRanking:
-    """Fake LLM: reverses the candidates and explains every one of them."""
-    n = len(request.candidates)
-    return LlmRanking(
-        ranking=[RankedCandidate(candidate=i, explanation=f"because {i}") for i in range(n, 0, -1)]
-    )
+class ReverseLlm:
+    """Fake LLM: reverses the candidates it is shown and explains every recommended game with
+    the first liked game's name (grounded), recording the prompts it gets."""
+
+    def __init__(self) -> None:
+        self.ranked: list[tuple[list[str], list[str]]] = []
+        self.explained: list[tuple[list[str], list[str]]] = []
+
+    def rank(self, liked, candidates, error=None) -> list[int]:
+        self.ranked.append((liked, candidates))
+        return list(range(len(candidates), 0, -1))
+
+    def explain(self, liked, candidates, note=None) -> dict[int, str]:
+        self.explained.append((liked, candidates))
+        # prompt lines start with the game name: "Game 6 | Genre 2 | ..."
+        anchor = liked[0].split(" | ")[0] if liked else candidates[0].split(" | ")[1]
+        return {i: f"Te va a gustar tanto como {anchor}." for i in range(1, len(candidates) + 1)}
+
+
+class FailingLlm:
+    """Fake LLM whose every call fails (Bedrock unavailable)."""
+
+    def rank(self, liked, candidates, error=None):
+        raise RuntimeError("bedrock down")
+
+    def explain(self, liked, candidates, note=None):
+        raise RuntimeError("bedrock down")
 
 
 @pytest.fixture
@@ -255,6 +280,7 @@ def settings(monkeypatch) -> InferenceSettings:
         rerank_min_reviews=6,
         rerank_max_users=10,
         rerank_concurrency=2,
+        rerank_shuffle=False,  # the fake LLM's reversal is then the reverse retrieval order
         user_batch_size=2,
         item_batch_size=7,
         write_concurrency=2,

@@ -4,7 +4,7 @@ item this pipeline writes, and serve them end to end."""
 import json
 
 import boto3
-from conftest import DETAILS_TABLE, N_GAMES, TABLE, reverse_ranking
+from conftest import DETAILS_TABLE, N_GAMES, TABLE, ReverseLlm
 from steam_serving.app import App
 from steam_serving.config import ServingSettings
 from steam_serving.contracts import GameDetails, StoredRecommendations
@@ -20,7 +20,7 @@ def _run(settings, source, store):
         source,
         store,
         DynamoWriter(TABLE, region="us-east-1", concurrency=2),
-        reverse_ranking,
+        ReverseLlm(),
         details_writer=DynamoWriter(
             DETAILS_TABLE, region="us-east-1", concurrency=2, key="game_id"
         ),

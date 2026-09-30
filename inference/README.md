@@ -12,7 +12,7 @@ steam_marts (Iceberg, pyiceberg)
   game_features  latest row per game   ─► item tower ─┴► exact top K per user (reviewed games excluded)
   interactions   reviewed games, review counts, recent positives        │
                                                                     ▼
-                           1000 most active users (>= 6 reviews) ─► Bedrock LLM rerank + explanations
+                           1000 most active users (>= 6 reviews) ─► Bedrock: 1. ranking  2. explanations
                                                                     │
                                                                     ▼
                               DynamoDB game-explainable-recommendations (one item per user, changed ones only,
@@ -28,7 +28,14 @@ steam_marts (Iceberg, pyiceberg)
    exist (required when the model was trained with tags, else only used by the prompt and the
    adult filter). `interactions` supplies each user's reviewed games (excluded from the
    recommendations) and review counts. All reads are
-   pinned to the snapshot current at the start of the run.
+   pinned to the snapshot current at the start of the run. Memory follows the `MAX_USERS`
+   kept users, not the size of the marts: `interactions` is read twice (review counts of every
+   user, which pick the most active; then only the kept users' reviews plus the popularity
+   counts), and `user_features` keeps only the kept users' latest row as it streams. Marts are
+   read batch by batch within each file (`steam_training.data.IcebergSource`; pyiceberg's own
+   reader loads every file fully at once). The 2026-09-30 run ran out of 16 GB that way
+   (`game_features` 112M rows, `interactions` 112M, `user_features` 95M); now loading 1M users
+   peaks at 6.8 GB and takes about 5.5 min (measured locally on the same marts).
 2. **Retrieval.** Every game is embedded once. Users are scored against all games in chunks
    (exact brute force, no ANN), and the top `TOP_K` (30) are kept. Games newer than the model
    are ranked from their content features (their ids map to OOV).
@@ -37,12 +44,23 @@ steam_marts (Iceberg, pyiceberg)
    `games_reviewed_positive` (the last 5 liked games, the user tower's input) and their K
    candidates. Each game is one line: name | genres | top 5 Steam tags | developers | free or paid | positive
    review share | Steam short description (mart `game_details`, cut at
-   `RERANK_DESCRIPTION_CHARS`). The model must call a `submit_ranking` tool
-   that returns every candidate once, best first, and explains the first `EXPLAIN_TOP_N` (5).
-   Invalid answers are repaired: unknown or repeated numbers are dropped and missing
-   candidates are appended. An answer with no usable tool call (e.g. stop reason
-   `malformed_tool_use`, about 0.3% of users with Nova 2 Lite) is retried up to twice. A user
-   that still fails keeps the retrieval order.
+   `RERANK_DESCRIPTION_CHARS`). Two calls per user (spec 7):
+   - **Ranking** (`submit_ranking`, temperature 0): the candidates shuffled with a seed from
+     the user id (against position bias), answered as candidate numbers only. The answer must
+     be an exact permutation; one retry states what was wrong (missing / duplicated / unknown
+     numbers), a second failure keeps the retrieval order (`rank_fallbacks`). The final order
+     is ascending `w * llm_rank + (1 - w) * retrieval_rank` (`RERANK_BLEND_WEIGHT`, 1 = LLM
+     order).
+   - **Explanations** (`submit_explanations`): only the final top `EXPLAIN_TOP_N` (5), exactly
+     one text each. Each text is checked in code: it must not name the recommended game itself
+     (the text is shown next to it; this catches "you played <game>" claims), it must name a
+     liked game, or a genre, tag or developer from the prompt, and it is at most 600
+     characters. Failed ones are re-asked once, then replaced by a template built from the data
+     ("Porque te gustó Hades, del mismo estudio (Supergiant Games).").
+   `RERANK_ENABLED_STAGES=explain` skips the ranking (retrieval order, LLM explanations). An
+   answer with no usable tool call (e.g. stop reason `malformed_tool_use`) is retried up to
+   twice. A user whose calls all fail keeps the retrieval order without explanations. The run
+   logs the retries, fallbacks and templates in its summary, and the Bedrock usage per stage.
 4. **Output.** One item per user who has `user_features`. Only the users whose
    recommendations changed are written. The run first scans the table for each stored
    `content_hash` (reading only `user_id` and `content_hash`). An item is rewritten only when
@@ -138,16 +156,18 @@ item with the serving package, so a contract change that breaks serving fails he
 
 `recommendations` is ordered best first: the LLM order when `reranked`, the model order
 otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
-Only the first `EXPLAIN_TOP_N` entries of a reranked list have an `explanation` (written in Spanish, set in the prompt in `rerank.py`). `score` and
+The first `EXPLAIN_TOP_N` entries of a reranked list always have an `explanation` (written in
+Spanish, set in the prompts in `rerank.py`), and only those. `score` and
 `generated_at` are as of the last write: an unchanged list keeps them. `user_id` is a string,
 because Steam ids exceed JavaScript's safe integers.
 
 ## LLM choice and cost
 
-Bedrock has no free tier. Measured on the real marts with the same prompt, each reranked user
-costs about 1.8k input tokens and 0.4k output tokens without the short descriptions; at
-`RERANK_DESCRIPTION_CHARS=200` they add about 50 tokens per game, roughly 1.8k more input
-tokens for 35 games (estimate):
+Bedrock has no free tier. The one-call rerank measured 3.47k input and 0.44k output tokens per
+user (2026-09-26, 1000 users, with descriptions). The two calls are estimated at ~3.3k in /
+~0.1k out for the ranking plus ~1k in / ~0.35k out for the explanations, plus retries: about
+4.5k in / 0.5k out per user. With Nova 2 Lite ($0.33 / $2.75 per 1M tokens) that is about
+$2.85 per 1000 users per run (the one call: $2.37).
 
 | Model (`BEDROCK_MODEL_ID`) | Quality of the explanations | Relative cost |
 |---|---|---|
@@ -155,9 +175,8 @@ tokens for 35 games (estimate):
 | **`us.amazon.nova-2-lite-v1:0`** (default) | Grounded in the liked list, consistent | ~ 1x |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Most specific (cites review %, developers) | ~ 2.5x |
 
-At the default of 1000 users per weekly run, that is about 1.8M input and 0.4M output tokens.
 Check the current per-token prices on the Bedrock pricing page. The job logs the exact usage
-(`bedrock usage: ... tokens`). To change the model, set the Terraform variable
+per stage (`bedrock usage (rank): ... tokens`). To change the model, set the Terraform variable
 `inference_bedrock_model_id`, which updates both the SSM parameter and the IAM permission.
 
 DynamoDB, on-demand, per run:
@@ -190,6 +209,10 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
 | `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
+| `RERANK_ENABLED_STAGES` | `rank+explain` | Or `explain`: keep the retrieval order, only explain it (Terraform `inference_rerank_stages`) |
+| `RERANK_BLEND_WEIGHT` | 1.0 | Final order = `w * llm_rank + (1 - w) * retrieval_rank` (Terraform `inference_rerank_blend_weight`) |
+| `RERANK_SHUFFLE` | true | Shuffle the ranking prompt's candidates, seeded by the user id (Terraform `inference_rerank_shuffle`) |
+| `RERANK_TEMPERATURE` / `RERANK_MAX_TOKENS` | 0.2 / 2000 | Explanations' temperature (the ranking always uses 0) / max output tokens per call |
 | `RERANK_DESCRIPTION_CHARS` | 200 | Short description per prompt game, cut at a word boundary; `0` = none (the mart `game_details` is then not read) |
 | `RERANK_CONCURRENCY` / `WRITE_CONCURRENCY` | 32 / 8 | Parallel Bedrock calls (~1000 req/min, half the 2000 RPM quota) / DynamoDB scan segments and writers |
 | `USER_BATCH_SIZE` / `ITEM_BATCH_SIZE` / `NUM_THREADS` | 1024 / 4096 / 0 | Scoring |
@@ -210,6 +233,23 @@ a handful of Bedrock calls:
 MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> OUTPUT_PATH=/tmp/recs.jsonl \
   MAX_USERS=200 RERANK_MAX_USERS=5 uv run python -m steam_inference
 ```
+
+### Rerank evaluation
+
+Does the LLM order beat the retrieval order? For a sample of users active after the model's
+training cutoff (>= `RERANK_MIN_REVIEWS` reviews before it, a positive review after it), the
+command rebuilds their history as of the cutoff, retrieves `TOP_K` candidates with the model and
+runs the ranking call. It reports hit rate@5 / @10 against the games they liked after the
+cutoff, for the retrieval order, the LLM order and blends w = 0.25 / 0.5 / 0.75, prints a table
+and writes `s3://model-artifacts-<acct>/evaluation/rerank/<model_id>/<timestamp>.json`
+(`RerankEvaluation`). One ranking call per sampled user (about $1 per 500 users):
+
+```bash
+AWS_PROFILE=<admin> USE_SSM=true uv run python -m steam_inference.evaluate_rerank --users 500
+```
+
+Set `RERANK_BLEND_WEIGHT` (Terraform `inference_rerank_blend_weight`) from the best row; if no
+blend beats `retrieval`, use `inference_rerank_stages = "explain"`.
 
 Build the image from the **repository root**: `docker build -f inference/Dockerfile -t inference .`
 

@@ -116,9 +116,11 @@ def test_prompt_leaves_out_liked_adult_games(adult_marts, champion):
         champion, data.games, data.users, data.reviews, k=5, user_batch_size=8, item_batch_size=8
     )
     user = int(np.flatnonzero(data.users.user_id == 101)[0])  # liked game_idx 3 ("Hentai Game")
-    assert any("Hentai" in line for line in rerank_request(data, candidates, user).liked)
+    assert any(
+        "Hentai" in line for line in (g.text for g in rerank_request(data, candidates, user).liked)
+    )
     request = rerank_request(data, candidates, user, excluded)
-    assert request.liked and not any("Hentai" in line for line in request.liked)
+    assert request.liked and not any("Hentai" in g.text for g in request.liked)
 
 
 def test_filter_catalog_keeps_names_aligned():

@@ -182,21 +182,48 @@ class SearchIndex(_Frozen):
     games: list[tuple[int, str, Annotated[int, Field(ge=0)]]]
 
 
-class RankedCandidate(BaseModel):
-    """One entry of the LLM's ranking: a candidate number from the prompt (1-based)."""
+class LlmRanking(BaseModel):
+    """Input of the stage-1 `submit_ranking` tool: candidate numbers from the prompt (1-based),
+    best first. Validated as a permutation in code (rerank.permutation_error)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ranking: list[int]
+
+
+class LlmExplanation(BaseModel):
+    """One explanation of the stage-2 `submit_explanations` tool (1-based candidate number)."""
 
     model_config = ConfigDict(extra="ignore")
 
     candidate: int
-    explanation: str | None = None
+    text: str
 
 
-class LlmRanking(BaseModel):
-    """Input of the `submit_ranking` tool the LLM must call."""
+class LlmExplanations(BaseModel):
+    """Input of the stage-2 `submit_explanations` tool."""
 
     model_config = ConfigDict(extra="ignore")
 
-    ranking: list[RankedCandidate]
+    explanations: list[LlmExplanation]
+
+
+class RerankEvaluation(_Frozen):
+    """s3://<bucket>/evaluation/rerank/<model_id>/<timestamp>.json: hit rates of the retrieval
+    order, the LLM order and their blends on users active after the model's training cutoff."""
+
+    model_id: str
+    rerank_model: str
+    cutoff: datetime
+    generated_at: datetime
+    sampled_users: int
+    evaluated_users: int  # sampled users whose LLM ranking succeeded (all orders use them)
+    rank_fallbacks: int
+    top_k: int
+    # order name ("retrieval", "llm", "blend_0.5", ...) -> {"hit@5": share, "hit@10": share}
+    hit_rates: dict[str, dict[str, float]]
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class InferenceSummary(_Frozen):
@@ -208,7 +235,13 @@ class InferenceSummary(_Frozen):
     adult_games: int = 0  # excluded from everything published (adult.py)
     unreleased_games: int = 0  # coming soon (spec 10): excluded like adult games
     reranked_users: int = 0
-    rerank_failures: int = 0
+    rerank_failures: int = 0  # users left with the retrieval order and no explanations
+    # two-stage rerank (spec 7): users whose ranking was re-asked / fell back to the retrieval
+    # order; explanations re-asked / replaced by the template
+    rank_retries: int = 0
+    rank_fallbacks: int = 0
+    explain_retries: int = 0
+    template_explanations: int = 0
     written: int = 0
     unchanged: int = 0
     deleted: int = 0
