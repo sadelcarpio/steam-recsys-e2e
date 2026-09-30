@@ -1,15 +1,9 @@
 name: etl CI
 
 on:
-  pull_request:
-    paths:
-      - "etl/**"
-      - ".github/workflows/etl-*.yml"
-  push:
-    branches: [main]
-    paths:
-      - "etl/**"
-      - ".github/workflows/etl-*.yml"
+  # Called by ci.yml on PRs that change this component (paths listed there). No push trigger:
+  # the required check needs branches up to date, so `main` is tested as merged.
+  workflow_call:
   # Manual run, e.g. after setting the ETL_CI_* variables. The Athena job only gets AWS
   # credentials on `main` (or from a PR): the CI role trusts no other branch.
   workflow_dispatch:

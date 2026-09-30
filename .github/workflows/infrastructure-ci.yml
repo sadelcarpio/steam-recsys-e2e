@@ -1,15 +1,9 @@
 name: infrastructure CI
 
 on:
-  pull_request:
-    paths:
-      - "infrastructure/**"
-      - ".github/workflows/infrastructure-*.yml"
-  push:
-    branches: [main]
-    paths:
-      - "infrastructure/**"
-      - ".github/workflows/infrastructure-*.yml"
+  # Called by ci.yml on PRs that change this component (paths listed there). No push trigger:
+  # the required check needs branches up to date, so `main` is tested as merged.
+  workflow_call:
 
 permissions:
   contents: read
