@@ -1,0 +1,102 @@
+name: CI
+
+# The single PR gate. Every PR runs it (no `paths:` filter, so its checks always report); it
+# calls the CI of each component whose files changed, and `ci-passed` is the one required
+# status check on `main` (a job skipped through `if:` counts as passing, a workflow skipped
+# through `paths:` never reports). Pushes to `main` still trigger each component's CI directly.
+# Adding a component: a pattern in `changes`, a job calling its `*-ci.yml`, and `ci-passed.needs`.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      data-ingestion: ${{ steps.diff.outputs.data-ingestion }}
+      etl: ${{ steps.diff.outputs.etl }}
+      training: ${{ steps.diff.outputs.training }}
+      inference: ${{ steps.diff.outputs.inference }}
+      serving: ${{ steps.diff.outputs.serving }}
+      frontend: ${{ steps.diff.outputs.frontend }}
+      infrastructure: ${{ steps.diff.outputs.infrastructure }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Plain git instead of a third-party paths-filter action. The patterns mirror the paths
+      # each component workflow runs on for pushes to `main`; a change to this file runs all.
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          files="$(git diff --name-only "$BASE...$HEAD")"
+          printf '%s\n' "$files"
+          changed() {
+            if grep -qE "^(\.github/workflows/ci\.yml$|$1)" <<<"$files"; then echo true; else echo false; fi
+          }
+          {
+            echo "data-ingestion=$(changed 'data_ingestion/|\.github/workflows/data-ingestion-[^/]*\.yml$')"
+            echo "etl=$(changed 'etl/|\.github/workflows/etl-[^/]*\.yml$')"
+            echo "training=$(changed 'training/|\.github/workflows/training-[^/]*\.yml$')"
+            echo "inference=$(changed 'inference/|training/src/|training/pyproject\.toml$|serving/src/|serving/pyproject\.toml$|\.github/workflows/inference-[^/]*\.yml$')"
+            echo "serving=$(changed 'serving/|\.github/workflows/serving-[^/]*\.yml$')"
+            echo "frontend=$(changed 'frontend/|infrastructure/cloudfront/|\.github/workflows/frontend-[^/]*\.yml$')"
+            echo "infrastructure=$(changed 'infrastructure/|\.github/workflows/infrastructure-[^/]*\.yml$')"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  data-ingestion:
+    needs: changes
+    if: needs.changes.outputs.data-ingestion == 'true'
+    uses: ./.github/workflows/data-ingestion-ci.yml
+
+  etl:
+    needs: changes
+    if: needs.changes.outputs.etl == 'true'
+    uses: ./.github/workflows/etl-ci.yml
+    permissions:
+      contents: read
+      id-token: write # athena-integration assumes the PR-scoped CI role (OIDC)
+
+  training:
+    needs: changes
+    if: needs.changes.outputs.training == 'true'
+    uses: ./.github/workflows/training-ci.yml
+
+  inference:
+    needs: changes
+    if: needs.changes.outputs.inference == 'true'
+    uses: ./.github/workflows/inference-ci.yml
+
+  serving:
+    needs: changes
+    if: needs.changes.outputs.serving == 'true'
+    uses: ./.github/workflows/serving-ci.yml
+
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    uses: ./.github/workflows/frontend-ci.yml
+
+  infrastructure:
+    needs: changes
+    if: needs.changes.outputs.infrastructure == 'true'
+    uses: ./.github/workflows/infrastructure-ci.yml
+
+  ci-passed:
+    if: always()
+    needs: [changes, data-ingestion, etl, training, inference, serving, frontend, infrastructure]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null

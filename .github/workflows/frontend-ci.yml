@@ -1,11 +1,8 @@
 name: frontend CI
 
 on:
-  pull_request:
-    paths:
-      - "frontend/**"
-      - "infrastructure/cloudfront/**"
-      - ".github/workflows/frontend-*.yml"
+  # PRs: called by ci.yml when these paths change (the required `ci-passed` gate).
+  workflow_call:
   push:
     branches: [main]
     paths:

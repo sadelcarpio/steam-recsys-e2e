@@ -1,10 +1,8 @@
 name: training CI
 
 on:
-  pull_request:
-    paths:
-      - "training/**"
-      - ".github/workflows/training-*.yml"
+  # PRs: called by ci.yml when these paths change (the required `ci-passed` gate).
+  workflow_call:
   push:
     branches: [main]
     paths:

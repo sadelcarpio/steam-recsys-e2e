@@ -1,10 +1,8 @@
 name: serving CI
 
 on:
-  pull_request:
-    paths:
-      - "serving/**"
-      - ".github/workflows/serving-*.yml"
+  # PRs: called by ci.yml when these paths change (the required `ci-passed` gate).
+  workflow_call:
   push:
     branches: [main]
     paths:

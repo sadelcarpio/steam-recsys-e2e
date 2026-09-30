@@ -21,8 +21,8 @@ component, described below:
 - Once a feature is completed, the CLAUDE.md file for its subdirectory MUST be updated, as well as a README.md file for
   usage and human readable documentation. Brief, informative, what it does, how to do it.
 - Every component must be fully deployable via AUtomated CI/CD Pipelines on github workflows, as part of each spec /
-  feature request. CI can run in parallel only in code changes of specific paths. CD manually triggered, separated by
-  component.
+  feature request. CI can run in parallel only in code changes of specific paths (on PRs through the `ci.yml` gate,
+  whose `ci-passed` job is the required check on `main`). CD manually triggered, separated by component.
 - All sensitive information such as API Keys or username / passwords must live in AWS Secrets Manager, env variables
   under AWS Parameter Store, with the convention following the directory name (kebab-case) and the env variable name.
   Each component
