@@ -202,3 +202,43 @@ def test_load_with_tags(source):
         [0.9, 0.1]
     )
     assert tags.row(last) == []  # no tags in the mart
+
+
+def _iceberg_table(tmp_path, files: list[pa.Table]):
+    from pyiceberg.catalog.memory import InMemoryCatalog
+
+    catalog = InMemoryCatalog("test", warehouse=f"file://{tmp_path}")
+    catalog.create_namespace("marts")
+    table = catalog.create_table("marts.t", schema=files[0].schema)
+    for data in files:
+        table.append(data)  # one data file per append
+    return catalog, table
+
+
+def test_iceberg_source_streams_every_file_batch_by_batch(tmp_path):
+    from steam_training.data import IcebergSource, iceberg_batches
+
+    big = pa.table({"id": pa.array(range(300_000), pa.int64()), "v": pa.array([1.0] * 300_000)})
+    small = pa.table({"id": pa.array([-1, -2], pa.int64()), "v": pa.array([2.0, 3.0])})
+    catalog, table = _iceberg_table(tmp_path, [big, small])
+    batches = list(iceberg_batches(table, ["id"], table.current_snapshot().snapshot_id))
+    assert len(batches) > 2  # the 300k-row file comes in several batches, not as one
+    assert all(b.schema.names == ["id"] for b in batches)
+    ids = pa.concat_arrays([b["id"] for b in batches]).to_pylist()
+    assert sorted(ids) == sorted([*range(300_000), -1, -2])
+
+    source = IcebergSource.__new__(IcebergSource)  # the Glue catalog swapped for a local one
+    source._database, source._catalog, source._tables = "marts", catalog, {}
+    assert source.snapshot_id("t") == table.current_snapshot().snapshot_id
+    assert sum(b.num_rows for b in source.batches("t", ["v"], source.snapshot_id("t"))) == 300_002
+
+
+def test_iceberg_source_reads_the_pinned_snapshot(tmp_path):
+    from steam_training.data import iceberg_batches
+
+    first = pa.table({"id": pa.array([1, 2], pa.int64())})
+    catalog, table = _iceberg_table(tmp_path, [first])
+    pinned = table.current_snapshot().snapshot_id
+    table.append(pa.table({"id": pa.array([3], pa.int64())}))
+    old = [b for b in iceberg_batches(table, ["id"], pinned)]
+    assert sorted(pa.concat_arrays([b["id"] for b in old]).to_pylist()) == [1, 2]

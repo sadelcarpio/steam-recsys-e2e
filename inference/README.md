@@ -31,9 +31,11 @@ steam_marts (Iceberg, pyiceberg)
    pinned to the snapshot current at the start of the run. Memory follows the `MAX_USERS`
    kept users, not the size of the marts: `interactions` is read twice (review counts of every
    user, which pick the most active; then only the kept users' reviews plus the popularity
-   counts), and `user_features` keeps only the kept users' latest row as it streams. The
-   2026-09-30 run (112M reviews, 95M `user_features` rows) ran out of 16 GB with the previous
-   one-pass loader.
+   counts), and `user_features` keeps only the kept users' latest row as it streams. Marts are
+   read batch by batch within each file (`steam_training.data.IcebergSource`; pyiceberg's own
+   reader loads every file fully at once). The 2026-09-30 run ran out of 16 GB that way
+   (`game_features` 112M rows, `interactions` 112M, `user_features` 95M); now loading 1M users
+   peaks at 6.8 GB and takes about 5.5 min (measured locally on the same marts).
 2. **Retrieval.** Every game is embedded once. Users are scored against all games in chunks
    (exact brute force, no ANN), and the top `TOP_K` (30) are kept. Games newer than the model
    are ranked from their content features (their ids map to OOV).

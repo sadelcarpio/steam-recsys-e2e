@@ -63,4 +63,5 @@ dev = [
     "moto[s3,sagemaker,ssm]>=5.0",
     "pytest>=8.3",
     "ruff>=0.8",
+    "sqlalchemy>=2.1.1",
 ]
