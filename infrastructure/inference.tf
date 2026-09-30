@@ -63,6 +63,7 @@ resource "aws_ssm_parameter" "inference" {
     ONLINE_BUNDLE_PREFIX   = local.online_bundle_prefix
     SEARCH_INDEX_KEY       = local.search_index_key
     BEDROCK_MODEL_ID       = var.inference_bedrock_model_id
+    MAX_USERS              = tostring(var.inference_max_users)
     RERANK_MAX_USERS       = tostring(var.inference_rerank_max_users)
   }
   name  = "${local.inference_ssm_prefix}/${each.key}"

@@ -151,9 +151,9 @@ variable "inference_image_tag" {
 }
 
 variable "inference_instance_type" {
-  description = "SageMaker Processing instance of the inference job (ml.t3.xlarge: 4 vCPU / 16 GB, default quota 2)."
+  description = "SageMaker Processing instance of the inference job (ml.m5.2xlarge: 8 vCPU / 32 GB; it loads every review of `interactions`, 112M after the reviews backfill, which outgrew the 16 GB of ml.t3.xlarge)."
   type        = string
-  default     = "ml.t3.xlarge"
+  default     = "ml.m5.2xlarge"
 }
 
 variable "inference_max_runtime_seconds" {
@@ -166,6 +166,12 @@ variable "inference_bedrock_model_id" {
   description = "Bedrock model (or cross-region inference profile) that reranks the candidates."
   type        = string
   default     = "us.amazon.nova-2-lite-v1:0"
+}
+
+variable "inference_max_users" {
+  description = "Users scored per scheduled run (the most active ones); 0 = every user of user_features (~33M, far beyond the job's max runtime). Users left out keep their previous item or get the popular list."
+  type        = number
+  default     = 1000000
 }
 
 variable "inference_rerank_max_users" {

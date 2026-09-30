@@ -1,7 +1,7 @@
 # Inference
 
 Weekly batch recommendations. It runs as a SageMaker Processing job (`steam-recsys-infer-*`,
-`ml.t3.xlarge` by default), the last step (`Infer`) of the `steam-recsys-pipeline` Step
+`ml.m5.2xlarge` by default, the `MAX_USERS` = 1M most active users), the last step (`Infer`) of the `steam-recsys-pipeline` Step
 Function, after `Transform`. The step is skipped
 (`NoChampion`) while no model has been promoted.
 
@@ -185,7 +185,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `SEARCH_INDEX_KEY` | `serving/search/games.json` | Frontend search index, written with the online catalog (dry runs: `online/games.json.gz`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user |
-| `MAX_USERS` | 0 (all) | Only the N most active users (local runs) |
+| `MAX_USERS` | 0 (all) | Only the N most active users. Scheduled runs: 1000000 (SSM, `inference_max_users`) |
 | `RERANK_ENABLED` | true | |
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
