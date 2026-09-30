@@ -286,9 +286,9 @@ To swap in a model that loses (e.g. the first one trained on the full backfill),
 
 ## 10. Recommendations (batch inference)
 
-The pipeline's last step (`Infer`, a SageMaker Processing job on `ml.t3.xlarge`) runs every week once
-`models/champion/metadata.json` exists: it scores every user of `user_features` against every
-game, reranks the candidates of the 1000 most active users (>= 6 reviews) with Bedrock and
+The pipeline's last step (`Infer`, a SageMaker Processing job on `ml.m5.2xlarge`) runs every week
+once `models/champion/metadata.json` exists: it scores the `MAX_USERS` (SSM, Terraform variable
+`inference_max_users`, default 1000000) most active users of `user_features` against every game, reranks the candidates of the 1000 most active users (>= 6 reviews) with Bedrock and
 writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`
 (plus the `__popular__` fallback item). It also loads the details of games missing from
 DynamoDB `game-details` (the first run writes the whole catalog, ~176k games on the 2026-09 data;
@@ -312,15 +312,17 @@ pipeline; `env_overrides` passes container variables such as `RERANK_ENABLED=fal
 `MODEL_ID=<sha>`. Do not run it while the pipeline's `Infer` step runs (both write the same
 items; harmless, but wasted Bedrock calls).
 
-**Run time.** The job must finish within `inference_max_runtime_seconds` (4 h). On the 2026-09
-data (~9.25M users with a positive review) a full run does not fit: retrieval takes ~1 h 45 min
-and the DynamoDB writes ~128 items/s. Cap the users with `env_overrides`, e.g.
-`MAX_USERS=1000000 RERANK_MAX_USERS=2000` (the most active users; ~2.5 h). Users left out keep
-their previous item, or get the popular list.
+**Run time.** The job must finish within `inference_max_runtime_seconds` (4 h). After the reviews
+backfill (~33M users with a positive review, 112M reviews) a full run does not fit, so scheduled
+runs score `MAX_USERS` = 1M users (~1-2 h, mostly the DynamoDB writes of changed users). Users
+left out keep their previous item, or get the popular list. `env_overrides` of a run-now takes
+precedence over SSM (e.g. `MAX_USERS=2000000`); stored users that are gone are only deleted on a
+full run (`MAX_USERS=0`).
 
-**Quota.** Processing jobs have a default quota on `ml.t3.*` (2 × `ml.t3.xlarge`), so no request
-is needed. Every `ml.m5` / `ml.c5` processing quota is 0. For a non-burstable instance, request
-e.g. `ml.m5.xlarge for processing job usage` and set `inference_instance_type`.
+**Memory / quota.** The job loads every review of `interactions` (112M rows after the backfill),
+which ran out of the 16 GB of `ml.t3.xlarge` (2026-09-30). The default is `ml.m5.2xlarge` (32 GB,
+$0.461/h; processing quota 4 in this account). Check a quota before another instance type:
+`aws service-quotas list-service-quotas --service-code sagemaker --query "Quotas[?contains(QuotaName,'processing job usage')].[QuotaName,Value]"`.
 
 Follow a run:
 
