@@ -81,7 +81,19 @@ jobs:
                 | del(."ProcessingJobName.$") | .ProcessingJobName = $name
                 | .Environment += $env' > job.json
           aws sagemaker create-processing-job --cli-input-json file://job.json > /dev/null
+          # console links to follow the job while it runs (also after this step stops watching)
+          CONSOLE="https://${AWS_REGION}.console.aws.amazon.com"
+          JOB_URL="$CONSOLE/sagemaker/home?region=${AWS_REGION}#/processing-jobs/$JOB"
+          LOGS_URL="$CONSOLE/cloudwatch/home?region=${AWS_REGION}#logsV2:log-groups/log-group/\$252Faws\$252Fsagemaker\$252FProcessingJobs\$3FlogStreamNameFilter\$3D$JOB"
+          {
+            echo "### inference job \`$JOB\` started"
+            echo "- [Job in the SageMaker console]($JOB_URL)"
+            echo "- [Logs in CloudWatch]($LOGS_URL) (the stream appears once the instance starts, ~3 min)"
+            echo "- CLI: \`aws logs tail /aws/sagemaker/ProcessingJobs --log-stream-name-prefix $JOB --follow\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "started $JOB"
+          echo "job:  $JOB_URL"
+          echo "logs: $LOGS_URL"
           DEADLINE=$(( $(date +%s) + WAIT_MINUTES * 60 ))
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             STATUS=$(aws sagemaker describe-processing-job --processing-job-name "$JOB" \
@@ -92,7 +104,6 @@ jobs:
                   --query 'FailureReason || ExitMessage || `""`' --output text)
                 echo "### inference job $JOB: $STATUS" >> "$GITHUB_STEP_SUMMARY"
                 [ -n "$REASON" ] && echo "$REASON" >> "$GITHUB_STEP_SUMMARY"
-                echo "Logs: CloudWatch \`/aws/sagemaker/ProcessingJobs\`, stream prefix \`$JOB\`" >> "$GITHUB_STEP_SUMMARY"
                 [ "$STATUS" = Completed ]
                 exit
                 ;;
