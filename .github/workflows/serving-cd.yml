@@ -1,11 +1,12 @@
 name: serving CD
 
-# Manual deploy of the `recsys-serving` Lambda code (zip). Infrastructure must be applied first
+# Deploy (on merges to main through cd.yml, or manual) of the `recsys-serving` Lambda code (zip). Infrastructure must be applied first
 # (it creates the function, its Function URL and the auth type). Smoke-tests the new code with
 # direct invokes of /health, /popular and POST /recommendations (works whatever the URL auth
 # type).
 on:
   workflow_dispatch:
+  workflow_call: # cd.yml, on merges to main
 
 permissions:
   id-token: write
@@ -22,6 +23,7 @@ defaults:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: prod
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -31,6 +33,8 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: ./.github/actions/pipeline-guard
 
       - name: Deploy Lambda code
         run: |

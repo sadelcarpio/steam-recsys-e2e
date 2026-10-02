@@ -71,19 +71,28 @@ terraform init
 terraform apply   # agrega -var create_github_oidc_provider=true si la cuenta no tiene el proveedor OIDC de GitHub
 ```
 
-### 2. Variables del repositorio en GitHub
+### 2. Entornos y variables en GitHub
+
+Entornos `prod` (revisor obligatorio, solo `main`: todos los deploys) y `dev` (CI que usa AWS);
+comandos en [`docs/deployment.md`](docs/deployment.md), paso 2.
 
 ```bash
-gh variable set AWS_ROLE_ARN    --body "$(terraform output -raw github_deploy_role_arn)"
-gh variable set TF_STATE_BUCKET --body "$(terraform output -raw tf_state_bucket)"
-gh variable set AWS_REGION      --body us-east-1
+gh variable set AWS_ROLE_ARN      --env prod --body "$(terraform output -raw github_deploy_role_arn)"
+gh variable set AWS_PLAN_ROLE_ARN --body "$(terraform output -raw github_plan_role_arn)"
+gh variable set TF_STATE_BUCKET   --body "$(terraform output -raw tf_state_bucket)"
+gh variable set AWS_REGION        --body us-east-1
+gh variable set SERVING_AUTH_TYPE --body NONE   # URL pública de demo (o AWS_IAM para firmar las llamadas)
 ```
+
+Cada merge a `main` despliega lo que cambió (workflow **CD**): primero verifica que el pipeline
+no esté corriendo, luego `terraform plan`, y tras tu aprobación en `prod`, el apply y los
+componentes.
 
 ### 3. Infraestructura
 
-Actions → **infrastructure CD** → `action=plan`, revisar, y luego `action=apply`. En
-`serving_auth_type` elige `NONE` para una URL pública de demo (o `AWS_IAM` para firmar las
-llamadas). El resumen del job muestra la URL de la API (`serving_function_url`).
+Actions → **infrastructure CD** → `action=plan`, revisar, y luego `action=apply` (aprobar el
+job en `prod`). La autenticación de la API es la variable `SERVING_AUTH_TYPE`. El resumen del job
+muestra la URL de la API (`serving_function_url`).
 
 ### 4. API key de Steam
 

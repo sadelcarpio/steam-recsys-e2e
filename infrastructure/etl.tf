@@ -334,16 +334,15 @@ data "aws_iam_policy_document" "etl_ci_trust" {
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
-    # Pull requests (same-repo branches: forks get no OIDC token) and pushes to main.
+    # Jobs of the `dev` GitHub environment (the Athena CI job, on PRs from same-repo branches:
+    # forks get no OIDC token). A job that targets an environment gets this subject.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values = flatten([
-        for repo in [var.github_repository, var.github_repository_immutable] : [
-          "repo:${repo}:pull_request",
-          "repo:${repo}:ref:refs/heads/main",
-        ]
-      ])
+      values = [
+        for repo in [var.github_repository, var.github_repository_immutable] :
+        "repo:${repo}:environment:dev"
+      ]
     }
   }
 }

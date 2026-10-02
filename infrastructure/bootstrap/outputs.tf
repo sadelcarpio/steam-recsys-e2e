@@ -4,6 +4,11 @@ output "tf_state_bucket" {
 }
 
 output "github_deploy_role_arn" {
-  description = "Set as the AWS_ROLE_ARN GitHub repository variable."
+  description = "Set as the AWS_ROLE_ARN variable of the `prod` GitHub environment."
   value       = aws_iam_role.github_deploy.arn
+}
+
+output "github_plan_role_arn" {
+  description = "Set as the AWS_PLAN_ROLE_ARN GitHub repository variable."
+  value       = aws_iam_role.github_plan.arn
 }

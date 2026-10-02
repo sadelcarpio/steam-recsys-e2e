@@ -17,8 +17,12 @@ directly instead of through `terraform output` (which needs the remote state ini
 
 ## 1. Bootstrap (once, local, admin credentials)
 
-Creates the Terraform state bucket and the GitHub deploy role `steam-recsys-github-deploy`
-(trusted only from `main`).
+Creates the Terraform state bucket and the two GitHub OIDC roles:
+- `steam-recsys-github-deploy` (PowerUser, project IAM): trusted only from jobs of the `prod`
+  GitHub environment (required reviewer, `main` only).
+- `steam-recsys-github-plan` (ReadOnlyAccess + state lock + the managed secret values): trusted
+  from `main` without an environment. It runs the pipeline guard and `terraform plan` before the
+  approval, so the reviewer approves a plan they have seen.
 
 ```bash
 cd infrastructure/bootstrap
@@ -26,18 +30,54 @@ terraform init
 terraform apply        # add -var create_github_oidc_provider=true if the account has no GitHub OIDC provider yet
 ```
 
-## 2. GitHub repository variables (deploy)
+## 2. GitHub environments and variables (deploy)
 
-Workflows read these as `${{ vars.NAME }}`: they are **repository variables** (GitHub → Settings
-→ Secrets and variables → Actions → *Variables* tab), not secrets and not Environments. They are
-resource names, not credentials.
+Two GitHub environments (Settings → Environments):
+- `prod`: every deploy job (all CD workflows, infrastructure apply). Required reviewer, deploys
+  only from `main`. Holds `AWS_ROLE_ARN`; the deploy role trusts nothing else.
+- `dev`: CI jobs that use AWS (the etl Athena test). No reviewer, any branch. Holds the
+  `ETL_CI_*` variables (step 4).
+
+```bash
+REPO=sadelcarpio/steam-recsys-e2e
+ME=$(gh api user --jq .id)
+jq -n --argjson me "$ME" '{reviewers: [{type: "User", id: $me}], prevent_self_review: false,
+  deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}' \
+  | gh api -X PUT repos/$REPO/environments/prod --input -
+gh api -X POST repos/$REPO/environments/prod/deployment-branch-policies -f name=main -f type=branch
+gh api -X PUT repos/$REPO/environments/dev
+```
+
+Workflows read variables as `${{ vars.NAME }}`; they are resource names, not credentials.
+Repository-level ones are read by jobs without an environment (the guard, `terraform plan`):
 
 ```bash
 cd infrastructure/bootstrap
-gh variable set AWS_ROLE_ARN    --body "$(terraform output -raw github_deploy_role_arn)"
-gh variable set TF_STATE_BUCKET --body "$(terraform output -raw tf_state_bucket)"
-gh variable set AWS_REGION      --body us-east-1
+gh variable set AWS_ROLE_ARN      --env prod --body "$(terraform output -raw github_deploy_role_arn)"
+gh variable set AWS_PLAN_ROLE_ARN --body "$(terraform output -raw github_plan_role_arn)"
+gh variable set TF_STATE_BUCKET   --body "$(terraform output -raw tf_state_bucket)"
+gh variable set AWS_REGION        --body us-east-1
+gh variable set SERVING_AUTH_TYPE --body AWS_IAM   # or NONE (step 11)
 ```
+
+### CD: on every merge to `main`
+
+*CD* (`.github/workflows/cd.yml`) runs on every push to `main` (a merge: PRs are required) and
+deploys the components whose paths changed (the same patterns as *CI*, minus training; a manual
+run deploys all):
+
+1. **Pipeline guard** (plan role): fails while a `steam-recsys-pipeline` execution is running,
+   since its tasks resolve `:latest` (and the champion) when they start. Re-run the failed jobs
+   once it finishes. Every deploy job checks again right before deploying.
+2. **infrastructure CD**: `plan` (plan role; the summary has the changes and a plan hash), then
+   `apply` in `prod`: after approval it re-plans and applies only if the plan hash matches the
+   reviewed one (a stale plan fails: re-run to review the new one).
+3. **Component CDs** in `prod` (data-ingestion, etl, inference image, serving, frontend), after
+   the infrastructure, so a merge that adds a resource and its code deploys them in order.
+
+Reviews: one for the infrastructure apply, one for the component deploys (they wait together:
+approve them at once). Training, promotion and inference `run_now` stay manual (also in `prod`,
+so they ask for approval too). Each component CD can still be run manually.
 
 ### Branch protection (`main`)
 
@@ -60,15 +100,17 @@ EOF
 
 ### 3a. Normal path: `infrastructure CD` workflow (from `main`)
 
-Actions → *infrastructure CD* → Run workflow → `action=plan`, review, then `action=apply`. The
-job summary lists the Terraform outputs.
+Merges to `main` apply it through *CD*. Manually: Actions → *infrastructure CD* → Run workflow
+→ `action=plan` (no approval), or `action=apply` (plan, then approve the `prod` apply). The job
+summary has the plan and the Terraform outputs.
 
 ### 3b. Changes that add infrastructure (development)
 
-The deploy role only trusts `main`, so *infrastructure CD* applies a change only after it is
-merged. Merge it, then run *infrastructure CD*. If the change adds a pipeline step whose image
-does not exist yet, run that component's CD before the next scheduled run (Thursday 17:00 CT), or
-pause the schedule with `schedule_enabled = false` until then.
+The deploy role only trusts the `prod` environment (`main` only), so a change is applied only
+after it is merged, by *CD*. If the change adds a pipeline step whose image does not exist yet,
+*CD* deploys that component right after the infrastructure when both changed in the same merge;
+otherwise run its CD before the next scheduled run (Thursday 17:00 CT), or pause the schedule
+with `schedule_enabled = false` until then.
 
 When a PR's CI needs its new infrastructure first (e.g. the etl Athena integration test needs the
 CI role, bucket and workgroup of `etl.tf`), apply once from the branch with your admin
@@ -81,31 +123,34 @@ terraform init -backend-config="bucket=tf-state-<acct>"
 terraform plan -out tfplan && terraform apply tfplan
 ```
 
-## 4. GitHub repository variables (etl CI)
+## 4. `dev` environment variables (etl CI)
 
-Needed by the `athena-integration` job of *etl CI* (it is skipped while `ETL_CI_ROLE_ARN` is
-unset). Values are Terraform outputs of step 3. After setting them, run *etl CI* manually
-(Actions → *etl CI* → Run workflow, on `main`) or push to the PR:
+Needed by the `athena-integration` job of *etl CI*: it runs in the `dev` environment (the only
+subject the `steam-recsys-etl-ci` role trusts) and fails until these are set. Values are
+Terraform outputs of step 3. After setting them, run *etl CI* manually (Actions → *etl CI* → Run
+workflow) or push to the PR:
 
 The names are fixed, so the AWS CLI can look them up (no Terraform state needed locally):
 
 ```bash
 ACCT=$(aws sts get-caller-identity --query Account --output text)
-gh variable set ETL_CI_ROLE_ARN   --body "$(aws iam get-role --role-name steam-recsys-etl-ci --query Role.Arn --output text)"
-gh variable set ETL_CI_BUCKET     --body "etl-ci-${ACCT}"
-gh variable set ETL_CI_WORK_GROUP --body "steam-recsys-etl-ci"
+gh variable set ETL_CI_ROLE_ARN   --env dev --body "$(aws iam get-role --role-name steam-recsys-etl-ci --query Role.Arn --output text)"
+gh variable set ETL_CI_BUCKET     --env dev --body "etl-ci-${ACCT}"
+gh variable set ETL_CI_WORK_GROUP --env dev --body "steam-recsys-etl-ci"
 ```
 
-(Or copy them from the *infrastructure CD* job summary into the Variables tab.)
+(Or copy them from the *infrastructure CD* job summary into the `dev` environment.)
 
-| Variable | Value | Used by |
-|---|---|---|
-| `AWS_REGION` | `us-east-1` | all AWS workflows |
-| `AWS_ROLE_ARN` | `github_deploy_role_arn` (bootstrap) | every CD workflow |
-| `TF_STATE_BUCKET` | `tf_state_bucket` (bootstrap) | infrastructure CD |
-| `ETL_CI_ROLE_ARN` | `etl_ci_role_arn` | etl CI (Athena test) |
-| `ETL_CI_BUCKET` | `etl_ci_bucket` | etl CI (Athena test) |
-| `ETL_CI_WORK_GROUP` | `etl_ci_work_group` | etl CI (Athena test) |
+| Variable | Scope | Value | Used by |
+|---|---|---|---|
+| `AWS_REGION` | repository | `us-east-1` | all AWS workflows |
+| `AWS_PLAN_ROLE_ARN` | repository | `github_plan_role_arn` (bootstrap) | CD guard, infrastructure plan |
+| `TF_STATE_BUCKET` | repository | `tf_state_bucket` (bootstrap) | infrastructure CD |
+| `SERVING_AUTH_TYPE` | repository | `AWS_IAM` or `NONE` | infrastructure CD (step 11) |
+| `AWS_ROLE_ARN` | `prod` | `github_deploy_role_arn` (bootstrap) | every deploy job |
+| `ETL_CI_ROLE_ARN` | `dev` | `etl_ci_role_arn` | etl CI (Athena test) |
+| `ETL_CI_BUCKET` | `dev` | `etl_ci_bucket` | etl CI (Athena test) |
+| `ETL_CI_WORK_GROUP` | `dev` | `etl_ci_work_group` | etl CI (Athena test) |
 
 ## 5. Secrets (out of band)
 
@@ -350,14 +395,15 @@ deleted, reranked, `game_details_written`, `online_bundle`.
 `recsys-serving` is a Lambda behind a Lambda Function URL. It reads the tables of step 10, so it
 returns 404 until the first inference run. API and examples: `serving/README.md`.
 
-**Auth.** Actions → *infrastructure CD* → Run workflow → `serving_auth_type`:
+**Auth.** The repository variable `SERVING_AUTH_TYPE`, applied by every infrastructure CD run
+(including the ones on merges; a manual run can override it with its `serving_auth_type` input):
 - `AWS_IAM` (default): callers sign requests with SigV4. Assume
   `steam-recsys-serving-client` (output `serving_client_role_arn`) or grant
   `lambda:InvokeFunctionUrl` + `lambda:InvokeFunction` on the function.
 - `NONE`: a public demo URL.
 
-The value is applied on **every** infrastructure CD run, so choose `NONE` again on each apply
-to keep the URL public. The outputs `serving_function_url` / `serving_auth_type` are in the
+Change the variable, not only a manual run's input: the next merge that touches the
+infrastructure applies the variable again. The outputs `serving_function_url` / `serving_auth_type` are in the
 job summary.
 
 **Deploy.** Actions → *serving CD* → Run workflow (on `main`). It runs the tests, uploads the
@@ -424,13 +470,13 @@ alias) at the `frontend_cloudfront_domain` output.
 Roll a release onto an account that already runs the pipeline in this order. Skip the steps of
 components the release does not touch.
 
-1. Merge to `main`. The CIs run on the changed paths.
-2. *infrastructure CD*: `plan`, review, then `apply`. Pick `serving_auth_type` on every run.
-3. *data-ingestion CD* / *etl CD*: new images, used by the next `Scrape` / `Transform`.
-4. Training changes only: *training CD* (new models); promote as in step 9.
-5. *inference CD*: new image for the next `Infer`. With `run_now`, it also runs it immediately.
-6. *serving CD*: new Lambda code. *frontend CD*: new app.
-7. Data now instead of Thursday: step 8 (ETL alone), then *inference CD* with `run_now`. Or run
+1. Merge to `main` (CIs run on the PR's changed paths). *CD* then deploys the changed
+   components (step 2): review the infrastructure plan and approve the apply, then approve the
+   component deploys (data-ingestion / etl images for the next `Scrape` / `Transform`, the
+   inference image for the next `Infer`, serving, frontend). Not while the pipeline runs: the
+   guard fails; re-run the failed jobs later.
+2. Training changes only: *training CD* (new models); promote as in step 9.
+3. Data now instead of Thursday: step 8 (ETL alone), then *inference CD* with `run_now`. Or run
    the whole pipeline (step 7).
 
 Never start step 8 or `run_now` while a pipeline execution is running (step 8 shows how to
@@ -500,9 +546,9 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
 
 ## Order for a fresh account (summary)
 
-1 bootstrap → 2 deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →
+1 bootstrap → 2 environments + deploy variables → 3 infrastructure → 4 etl CI variables → 5 secrets →
 6 component CDs → 7 run (or 8, ETL only, to backfill from the raw data already there) →
 9 SageMaker quota, train and promote →
 10 inference (automatic from the next pipeline run, or *inference CD* with `run_now`) →
-11 serving (*serving CD*; its auth is an *infrastructure CD* input) → 12 frontend (*frontend CD*). After that, the weekly
+11 serving (*serving CD*; its auth is the `SERVING_AUTH_TYPE` variable) → 12 frontend (*frontend CD*). After that, the weekly
 schedule runs everything incrementally (step 7).
