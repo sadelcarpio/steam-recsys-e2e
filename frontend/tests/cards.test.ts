@@ -56,6 +56,10 @@ describe("cards", () => {
 
   it("renders details with facts and a Steam link", () => {
     const view = detailsView(personalized.recommendations[0].details!, "why");
+    // the stored image, not the legacy CDN fallback
+    expect(view.querySelector("img")?.getAttribute("src")).toBe(
+      "https://cdn.example/620/header.jpg",
+    );
     expect(view.querySelector("h2")?.textContent).toBe("Portal 2");
     expect([...view.querySelectorAll("dt")].map((d) => d.textContent)).toEqual([
       "Lanzamiento",
