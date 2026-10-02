@@ -38,10 +38,11 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
 
 ## Invariants (keep them when changing code)
 
-- `IcebergSource.batches` reads data files through `read_ahead` (at most `READ_AHEAD_FILES`
-  ahead of the consumer). Never go back to `scan.to_arrow_batch_reader()`: pyiceberg submits
-  every file of the scan at once and reads each fully, so the whole mart lands in memory
-  (inference and training share this reader).
+- `IcebergSource.batches` streams through `iceberg_batches`: one data file after another, batch
+  by batch within a file (pyiceberg's private `ArrowScan._record_batches_from_scan_tasks_and_deletes`,
+  guarded by `tests/test_data.py::test_iceberg_source_*`). Never go back to
+  `scan.to_arrow_batch_reader()`: pyiceberg submits every file of the scan at once and reads each
+  fully, so the whole mart lands in memory (inference and training share this reader).
 - `UserTower.game_table` is a buffer, never a parameter. It is synced from
   `ItemTower.game_embedding` only at the start of each epoch, never after the last epoch (the
   user MLP was trained against that snapshot).
