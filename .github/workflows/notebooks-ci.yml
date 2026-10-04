@@ -1,0 +1,36 @@
+name: notebooks CI
+
+on:
+  # Called by ci.yml on PRs that change this component (paths listed there).
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: notebooks
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: notebooks/uv.lock
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      # Helpers only (in-memory batches, local parquet); the notebooks need AWS data.
+      - run: uv run pytest -q
+      - name: Notebooks are committed without outputs
+        run: |
+          uv run python - <<'PY'
+          import glob, nbformat
+          dirty = [p for p in glob.glob("*.ipynb")
+                   if any(c.get("outputs") or c.get("execution_count")
+                          for c in nbformat.read(p, as_version=4).cells if c.cell_type == "code")]
+          assert not dirty, f"clear the outputs of {dirty}"
+          PY

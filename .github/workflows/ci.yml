@@ -26,6 +26,7 @@ jobs:
       serving: ${{ steps.diff.outputs.serving }}
       frontend: ${{ steps.diff.outputs.frontend }}
       infrastructure: ${{ steps.diff.outputs.infrastructure }}
+      notebooks: ${{ steps.diff.outputs.notebooks }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,6 +51,7 @@ jobs:
             echo "serving=$(changed 'serving/|\.github/workflows/serving-[^/]*\.yml$')"
             echo "frontend=$(changed 'frontend/|infrastructure/cloudfront/|\.github/workflows/frontend-[^/]*\.yml$')"
             echo "infrastructure=$(changed 'infrastructure/|\.github/workflows/infrastructure-[^/]*\.yml$')"
+            echo "notebooks=$(changed 'notebooks/|\.github/workflows/notebooks-[^/]*\.yml$')"
           } | tee -a "$GITHUB_OUTPUT"
 
   data-ingestion:
@@ -90,9 +92,14 @@ jobs:
     if: needs.changes.outputs.infrastructure == 'true'
     uses: ./.github/workflows/infrastructure-ci.yml
 
+  notebooks:
+    needs: changes
+    if: needs.changes.outputs.notebooks == 'true'
+    uses: ./.github/workflows/notebooks-ci.yml
+
   ci-passed:
     if: always()
-    needs: [changes, data-ingestion, etl, training, inference, serving, frontend, infrastructure]
+    needs: [changes, data-ingestion, etl, training, inference, serving, frontend, infrastructure, notebooks]
     runs-on: ubuntu-latest
     steps:
       - env:
