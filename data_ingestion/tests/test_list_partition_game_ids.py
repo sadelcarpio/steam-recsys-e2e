@@ -252,3 +252,17 @@ def test_handler_uses_env_api_key_and_validates_event(
 
     with pytest.raises(ValueError):
         lambda_handler.handler({"run_id": "bad/id"}, None)
+
+
+@responses.activate
+def test_pending_games_split_across_games_workers(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    _mock_app_list([(i, 100 + i) for i in range(1, 11)])
+    settings = settings.model_copy(update={"num_games_workers": 5, "games_per_task": 8000})
+    result = run("run-1", settings, client, aws.s3, aws.dynamodb)
+
+    games = _partitions(aws, "games/run-1/")
+    assert [len(appids) for appids in games.values()] == [2, 2, 2, 2, 2]
+    assert sorted(sum(games.values(), [])) == list(range(1, 11))
+    assert result.games_partitions == sorted(games)
