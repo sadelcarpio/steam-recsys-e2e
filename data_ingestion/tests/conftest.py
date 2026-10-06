@@ -29,6 +29,7 @@ def settings() -> IngestionSettings:
         raw_bucket=RAW_BUCKET,
         partitions_bucket=PARTITIONS_BUCKET,
         num_review_workers=3,
+        num_games_workers=1,
         games_per_task=4,
         games_flush_every=2,
         reviews_flush_rows=3,

@@ -7,11 +7,12 @@ import math
 from collections.abc import Mapping, Sequence
 
 
-def chunk_by_size(items: Sequence[int], max_size: int) -> list[list[int]]:
-    """Split into the fewest chunks of at most `max_size`, balanced in size."""
+def chunk_by_size(items: Sequence[int], max_size: int, min_chunks: int = 1) -> list[list[int]]:
+    """Split into chunks balanced in size: at least `min_chunks` (fewer only when there are fewer
+    items), more when needed to keep every chunk at most `max_size`."""
     if not items:
         return []
-    n = math.ceil(len(items) / max_size)
+    n = max(math.ceil(len(items) / max_size), min(min_chunks, len(items)))
     base, extra = divmod(len(items), n)
     chunks, start = [], 0
     for i in range(n):

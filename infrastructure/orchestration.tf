@@ -14,7 +14,7 @@ locals {
     games = {
       state           = "ScrapeGames"
       task            = local.scraping_tasks.games.name
-      max_concurrency = var.max_games_tasks
+      max_concurrency = var.num_games_workers
     }
     reviews = {
       state           = "ScrapeReviews"
