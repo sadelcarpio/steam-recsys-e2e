@@ -99,7 +99,7 @@ models:
             expression: games_reviewed_positive[1] >= 2
     columns:
       - name: user_id
-        description: Steam author id.
+        description: Pseudonymous user id (keyed hash of the Steam author id, spec 13).
         data_tests: [not_null]
       - name: games_reviewed_positive
         description: Last N positively reviewed game_idx, most recent first, right-padded with 0.
@@ -125,4 +125,23 @@ models:
                 field: game_idx
       - name: game_name
         description: Always set, every game has a 1970-01-01 game_features row.
+        data_tests: [not_null]
+
+  - name: user_index
+    description: >
+      Demo user index (spec 13): every user of interactions, user_idx 1 = most reviews ...
+      count(*) = least (ties: lowest user_id), the order inference uses for MAX_USERS and the
+      rerank. Rebuilt every run, so user_idx is NOT stable across runs: demo queries only
+      (/u/<user_idx>), never a join key, a feature or an export column.
+    columns:
+      - name: user_idx
+        description: Dense rank 1..count(*) (singular test assert_user_index_is_dense).
+        data_tests: [unique, not_null]
+      - name: user_id
+        description: Pseudonymous user id, as in interactions.
+        data_tests: [unique, not_null]
+      - name: num_reviews
+        description: Reviews of kept games (rows of interactions).
+        data_tests: [not_null]
+      - name: num_positive
         data_tests: [not_null]

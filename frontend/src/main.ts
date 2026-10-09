@@ -5,7 +5,7 @@ import {
   onlineRecommendations,
   userRecommendations,
   MAX_LIKED_GAMES,
-  USER_ID_PATTERN,
+  USER_IDX_PATTERN,
   ApiError,
   type Recommendation,
   type RecommendationsResponse,
@@ -13,7 +13,7 @@ import {
 import { cardGrid, detailsView, h, responseSummary } from "./cards";
 import { t } from "./i18n";
 import { LikedGames } from "./liked";
-import { parseRoute, userPath } from "./router";
+import { neighbours, parseRoute, randomUser, userPath } from "./router";
 import type { GameHit } from "./search";
 
 const main = document.querySelector<HTMLElement>("#main")!;
@@ -39,21 +39,21 @@ document.addEventListener("click", (e) => {
 document.querySelector<HTMLFormElement>("#user-form")!.addEventListener("submit", (e) => {
   e.preventDefault();
   const input = (e.currentTarget as HTMLFormElement).elements.namedItem("user") as HTMLInputElement;
-  const userId = input.value.trim();
-  if (!USER_ID_PATTERN.test(userId)) {
+  const userIdx = input.value.trim();
+  if (!USER_IDX_PATTERN.test(userIdx)) {
     input.setCustomValidity(t.userIdInvalid);
     input.reportValidity();
     return;
   }
   input.setCustomValidity("");
-  navigate(userPath(userId));
+  navigate(userPath(Number(userIdx)));
 });
 
 function render(): void {
   const route = parseRoute(location.pathname);
   main.replaceChildren();
   if (route.page === "discover") discoverPage();
-  else if (route.page === "user") userPage(route.userId);
+  else if (route.page === "user") userPage(route.userIdx);
   else
     main.append(
       h("p", { class: "empty" }, t.notFound, h("a", { href: "/", "data-nav": "" }, t.goHome)),
@@ -108,13 +108,34 @@ async function showRecommendations(
   }
 }
 
-// ---- /u/<id> -----------------------------------------------------------------------------
+// ---- /u/<user number> ---------------------------------------------------------------------
 
-function userPage(userId: string): void {
+function userPage(userIdx: number): void {
+  const of = h("span", { class: "muted" });
+  const nav = h("nav", { class: "user-nav" });
   const section = h("section", {});
-  main.append(h("h1", {}, t.userTitle, h("code", {}, userId)), section);
-  (document.querySelector("#user-form input") as HTMLInputElement).value = userId;
-  void showRecommendations(section, () => userRecommendations(userId));
+  main.append(h("h1", {}, t.userTitle(userIdx), of), h("p", { class: "hint" }, t.userHint));
+  main.append(nav, section);
+  (document.querySelector("#user-form input") as HTMLInputElement).value = String(userIdx);
+  void showRecommendations(
+    section,
+    () => userRecommendations(userIdx),
+    (response) => {
+      const max = response.max_user;
+      if (max) {
+        of.textContent = t.userOf(max);
+        const { prev, next } = neighbours(userIdx, max);
+        const link = (n: number, text: string) =>
+          h("a", { href: userPath(n), "data-nav": "" }, text);
+        nav.replaceChildren(
+          ...(prev ? [link(prev, t.previousUser)] : []),
+          link(randomUser(max, userIdx), t.randomUser),
+          ...(next ? [link(next, t.nextUser)] : []),
+        );
+      }
+      return null;
+    },
+  );
 }
 
 // ---- / (discover) ------------------------------------------------------------------------

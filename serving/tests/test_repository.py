@@ -1,4 +1,4 @@
-from conftest import DETAILS_TABLE, RECS_TABLE
+from conftest import DETAILS_TABLE, RECS_TABLE, USERS
 
 from steam_serving.repository import DynamoRepository
 
@@ -8,7 +8,7 @@ def _repo():
 
 
 def test_recommendations(tables):
-    stored = _repo().recommendations("76561198000000002")
+    stored = _repo().recommendations(USERS[2])
     assert [r.game_id for r in stored.recommendations] == [10, 11, 12]
     assert _repo().recommendations("1") is None
 

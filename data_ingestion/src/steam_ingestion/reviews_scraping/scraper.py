@@ -26,6 +26,7 @@ from typing import Any
 import boto3
 import polars as pl
 
+from steam_ingestion.anonymize import hash_user_id, resolve_user_id_key
 from steam_ingestion.config import IngestionSettings, ScrapeTaskSettings, configure_logging
 from steam_ingestion.models import REVIEWS_PARTITION_RE, ReviewRecord
 from steam_ingestion.schemas import REVIEWS_SCHEMA
@@ -64,12 +65,16 @@ def _capped(stored: int | None, max_stored: int) -> bool:
     return bool(max_stored and stored is not None and stored >= max_stored)
 
 
-def build_review_record(appid: int, raw: dict[str, Any], scrape_date: date) -> ReviewRecord:
+def build_review_record(
+    appid: int, raw: dict[str, Any], scrape_date: date, user_id_key: bytes
+) -> ReviewRecord:
+    """The SteamID64 of the author is replaced by its keyed hash here (spec 13): it never
+    reaches the buffer, a parquet file or a log line."""
     author = raw.get("author") or {}
     score = raw.get("weighted_vote_score")
     return ReviewRecord(
         rec_id=int(raw["recommendationid"]),
-        author_id=int(author["steamid"]),
+        user_id=hash_user_id(int(author["steamid"]), user_id_key),
         appid=appid,
         playtime_forever=_int(author.get("playtime_forever")),
         playtime_last_two_weeks=_int(author.get("playtime_last_two_weeks")),
@@ -100,6 +105,8 @@ def scrape_partition(
     client: SteamClient,
     s3: Any,
     dynamodb: Any,
+    *,
+    user_id_key: bytes,
     today: date | None = None,
     shutdown: Shutdown | None = None,
 ) -> bool:
@@ -144,7 +151,7 @@ def scrape_partition(
             if walk.total is None:
                 walk.total = page.total_reviews
             for raw in page.reviews:
-                record = build_review_record(appid, raw, today)
+                record = build_review_record(appid, raw, today, user_id_key)
                 buffer.append(record)
                 walk.add(record.timestamp_created)
             if len(buffer) >= settings.reviews_flush_rows:
@@ -253,6 +260,7 @@ def main() -> int:
     settings = IngestionSettings()
     task = ScrapeTaskSettings()
     configure_logging(settings.log_level)
+    user_id_key = resolve_user_id_key(settings)  # fails the task: never the raw ids
     shutdown = Shutdown()
     shutdown.install()
     client = SteamClient(
@@ -269,6 +277,7 @@ def main() -> int:
             client,
             boto3.client("s3"),
             boto3.resource("dynamodb"),
+            user_id_key=user_id_key,
             shutdown=shutdown,
         )
     except ShutdownRequested:

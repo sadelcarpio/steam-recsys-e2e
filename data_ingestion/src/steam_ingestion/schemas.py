@@ -49,7 +49,7 @@ GAME_TAGS_SCHEMA = pl.Schema(
 REVIEWS_SCHEMA = pl.Schema(
     {
         "rec_id": pl.Int64,
-        "author_id": pl.Int64,
+        "user_id": pl.Int64,  # pseudonymous (spec 13), never the SteamID64
         "appid": pl.Int64,
         "playtime_forever": pl.Int64,
         "playtime_last_two_weeks": pl.Int64,

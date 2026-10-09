@@ -16,8 +16,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 POPULAR_USER_ID = "__popular__"
-# Steam 64-bit account ids (a string: exceeds JavaScript's safe integers).
-USER_ID_PATTERN = r"^[0-9]{1,20}$"
+# The path of /users/{user_idx}/recommendations: the demo user number of spec 13 (1 = most
+# active user), never a Steam id. The stored user_id (a pseudonymous 63-bit id) stays a string:
+# it exceeds JavaScript's safe integers.
+USER_IDX_PATTERN = r"^[1-9][0-9]{0,9}$"
 
 
 class _Stored(BaseModel):
@@ -99,6 +101,10 @@ class RecommendationsResponse(_Response):
     # POST /recommendations only: liked games that made up the history / that were unknown
     used_game_ids: list[int] | None = None
     ignored_game_ids: list[int] | None = None
+    # GET /users/{user_idx}/recommendations only: the requested demo user number and the
+    # highest one (user_idx is reassigned every pipeline run)
+    user_idx: int | None = None
+    max_user: int | None = None
 
 
 class ErrorResponse(_Response):

@@ -36,6 +36,17 @@ resource "aws_s3_bucket_lifecycle_configuration" "model_artifacts" {
       noncurrent_days = 90
     }
   }
+  # The demo user index (spec 13, ~300 MB) is rewritten every run: keep old versions a week only.
+  rule {
+    id     = "expire-old-user-indexes"
+    status = "Enabled"
+    filter {
+      prefix = "serving/users/"
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
   # Checkpoints are deleted when training finishes; this only clears abandoned runs.
   rule {
     id     = "expire-abandoned-checkpoints"

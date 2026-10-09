@@ -2,7 +2,8 @@
 
 Specs: `specs/1-scraping-implementation.md`, `specs/6-reviews-backfill.md` (backfill of older
 reviews), `specs/8-game-tags.md` (Steam user tags), `specs/10-coming-soon-games.md`
-(re-scrape of released coming-soon games). Human docs: `README.md`.
+(re-scrape of released coming-soon games), `specs/13-anonymize-user-ids.md` (pseudonymous user
+ids). Human docs: `README.md`.
 
 ## Layout
 
@@ -28,6 +29,10 @@ reviews), `specs/8-game-tags.md` (Steam user tags), `specs/10-coming-soon-games.
   - `tags_scraping/scraper.py`: one task per run, every `scraped` / `pending` appid, tags via
     `SteamClient.get_game_tags` (GetItems, ≤ 200 ids per call) + `get_tag_list` (names). Both
     endpoints are keyless and undocumented; responses are validated (`GameTagsRecord`)
+  - `anonymize.py`: `hash_user_id` (HMAC-SHA256 of the SteamID64, 63 bits) and
+    `resolve_user_id_key` (secret `data-ingestion/user-id-hmac-key`, or `USER_ID_HMAC_KEY`)
+  - `anonymize_raw_reviews.py`: one-off (ECS task `anonymize-raw-reviews`), rewrites the raw
+    review files that still have `author_id` in place, then checks every file
   - `shutdown.py`: SIGTERM flag + interruptible sleep (Fargate Spot interruptions)
   - `seed_backfill.py`: one-off, seeds the backfill fields of older cursors from Athena
     (`run_query`: Athena rows as strings)
@@ -70,6 +75,10 @@ reviews), `specs/8-game-tags.md` (Steam user tags), `specs/10-coming-soon-games.
   tag id without a name is dropped, a game without tags writes no row.
 - Partition keys: `games/<run_id>/appids-NNN.json`, `reviews/<run_id>/part-NNN.json`.
   The worker id in the output names comes from `NNN`.
+- No SteamID64 is ever stored or logged: `build_review_record` hashes the author into
+  `user_id` (raw schema column `user_id`, never `author_id`), and the scraper refuses to start
+  without the HMAC key. Never rotate the key (a new key splits every history). The anonymize
+  one-off is the only code that overwrites raw files.
 - Steam API key only in Secrets Manager (`data-ingestion/steam-api-key`) or the local
   `STEAM_API_KEY` env. Never log it.
 

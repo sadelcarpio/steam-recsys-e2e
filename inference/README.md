@@ -21,6 +21,7 @@ steam_marts (Iceberg, pyiceberg)
   item embeddings ─► S3 serving/online/ catalog.npz + manifest.json (serving's online endpoint,
                     with the model's models/<id>/user_tower.npz from training)
   catalog names    ─► S3 serving/search/games.json (the frontend's in-browser game search)
+  user_index       ─► S3 serving/users/ index.bin + index.json (demo user numbers for serving)
 ```
 
 1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
@@ -67,7 +68,10 @@ steam_marts (Iceberg, pyiceberg)
    the hash of its new content differs: the model, the rerank flag, and the ordered games with
    their names and explanations. Scores are left out of the hash, because the weekly
    `reviews_ratio` updates move every score a little. Stored users that no longer get
-   recommendations are deleted, but only on full runs (`MAX_USERS=0`). A new champion changes
+   recommendations are deleted, but only on full runs (`MAX_USERS=0`), or with
+   `PRUNE_UNSEEN=true` (a one-off, e.g. the run that rekeyed the table with the pseudonymous
+   ids of spec 13: users past the cap then get the popular list until scored again). A new
+   champion changes
    `model_id`, so it rewrites every user. The run logs `written` / `unchanged` / `deleted`.
    Users with only negative reviews have no `user_features` row and get no item.
 5. **Popularity fallback.** The reserved item `user_id = "__popular__"` holds the `TOP_K`
@@ -116,12 +120,20 @@ steam_marts (Iceberg, pyiceberg)
    ~180k games); the frontend downloads it through CloudFront and searches it in the browser.
    To publish it without a run (from the catalog already in S3, counts from one Athena query):
    `uv run python scripts/publish_search_index.py [--dry-run]`.
+10. **Demo user index (spec 13).** Also with a bundle store (even when the model has no numpy
+   user tower), the mart `user_index` is published as `serving/users/index.bin`: the user ids as
+   little-endian int64 in `user_idx` order (user `i` at byte `(i - 1) * 8`, about 305 MB for
+   38M users), then `index.json` (`contracts.UserIndexManifest`: `max_user`, pinned to the
+   file's S3 version). Serving resolves `/users/{user_idx}/...` with one 8-byte range read.
+   `user_idx` (1 = most reviews, ties by lowest id) is the order `MAX_USERS` and the rerank
+   already use, so users 1..~1000 are the reranked ones. Skipped while the mart is missing; a
+   gap or duplicate in `user_idx` fails the run.
 
 ## Output contract (`src/steam_inference/contracts.py`)
 
 ```json
 {
-  "user_id": "76561198027267313",
+  "user_id": "4559049361332948866",
   "recommendations": [
     {"game_id": 63910, "name": "King's Bounty: Crossworlds", "score": 0.4127,
      "explanation": "Como fan de la estrategia y los RPG como Dungeons 2, ..."},
@@ -158,8 +170,9 @@ item with the serving package, so a contract change that breaks serving fails he
 otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
 The first `EXPLAIN_TOP_N` entries of a reranked list always have an `explanation` (written in
 Spanish, set in the prompts in `rerank.py`), and only those. `score` and
-`generated_at` are as of the last write: an unchanged list keeps them. `user_id` is a string,
-because Steam ids exceed JavaScript's safe integers.
+`generated_at` are as of the last write: an unchanged list keeps them. `user_id` is the
+pseudonymous id of spec 13 (a keyed hash of the SteamID64, never the SteamID itself) as a
+string, because it exceeds JavaScript's safe integers.
 
 ## LLM choice and cost
 
@@ -202,9 +215,11 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `ONLINE_BUNDLE_ENABLED` / `ONLINE_BUNDLE_PREFIX` | true / `serving/online` | Online catalog + manifest (dry runs: `online/` next to `OUTPUT_PATH`) |
 | `EXCLUDE_ADULT` | true | Leave adult games out of recommendations, the popular list, the online catalog and search (`adult.py`) |
 | `SEARCH_INDEX_KEY` | `serving/search/games.json` | Frontend search index, written with the online catalog (dry runs: `online/games.json.gz`) |
+| `USER_INDEX_PREFIX` | `serving/users` | Demo user index (spec 13), `index.bin` + `index.json` (dry runs: `online/index.*`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user |
 | `MAX_USERS` | 0 (all) | Only the N most active users. Scheduled runs: 1000000 (SSM, `inference_max_users`) |
+| `PRUNE_UNSEEN` | false | Also delete the stored users a capped run did not write (one-off: the spec 13 rekey) |
 | `RERANK_ENABLED` | true | |
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |

@@ -134,11 +134,11 @@ URL=$(aws lambda get-function-url-config --function-name recsys-serving --query 
 curl -s "${URL}health" | jq
 curl -s "${URL}popular?limit=5" | jq
 
-# Recomendaciones precalculadas de un usuario (con detalles de cada juego)
-curl -s "${URL}users/76561198312196006/recommendations?limit=5" | jq
+# Recomendaciones precalculadas del usuario n.º 1 (el más activo), con detalles de cada juego
+curl -s "${URL}users/1/recommendations?limit=5" | jq
 
 # Solo puesto, nombre y explicación del LLM
-curl -s "${URL}users/76561198312196006/recommendations?limit=5&details=false" \
+curl -s "${URL}users/1/recommendations?limit=5&details=false" \
   | jq '.recommendations[] | {rank, name, explanation}'
 
 # Recomendaciones en línea a partir de juegos que te gustan (Portal 2 y Stardew Valley)
@@ -150,35 +150,23 @@ curl -s -X POST "${URL}recommendations" -H 'content-type: application/json' \
 curl -s "${URL}games/620" | jq
 ```
 
-Usuarios de ejemplo (reseñadores públicos de Steam). El modelo usa sus últimos 5 juegos con
-reseña positiva. Los usuarios más activos (`RERANK_MAX_USERS`, 1.000 por defecto) reciben además
-el reordenamiento del LLM (`"reranked": true`), con una explicación para las 5 primeras
-recomendaciones:
-
-| Steam id            | Qué muestra                                                                                                     |
-|---------------------|-----------------------------------------------------------------------------------------------------------------|
-| `76561198312196006` | Aventura / indie; 5 explicaciones del LLM basadas en sus juegos (Mad Father, ANNO: Mutationem, Coffin of Ashes) |
-| `76561198385306369` | Acción AAA; 5 explicaciones del LLM (Marvel's Spider-Man 2, Ghost of Tsushima, God of War Ragnarök)             |
-| `76561198809192947` | Puzles y narrativa; 5 explicaciones del LLM (The Stanley Parable, The Witness, The Talos Principle)             |
-| `76561198833304945` | Acción reciente; 5 explicaciones del LLM (007 First Light, Stellar Blade, DOOM: The Dark Ages)                  |
-| `76561198422199704` | Solo el modelo, sin LLM (juegos *idle* y de granja)                                                             |
-
-Para buscar otros usuarios con explicaciones:
-
-```bash
-aws dynamodb scan --table-name game-explainable-recommendations \
-  --filter-expression "reranked = :t" --expression-attribute-values '{":t":{"BOOL":true}}' \
-  --projection-expression user_id --max-items 10 --query 'Items[].user_id.S' --output text
-```
-
-Un id desconocido recibe la lista popular (`"source": "popular"`). El detalle de cada endpoint
+Los usuarios se piden por **número de usuario** (spec 13): 1 es quien más reseñas escribió, 2 el
+siguiente, y así hasta `max_user`. No se guarda ningún ID de Steam: el `user_id` de las
+respuestas es un seudónimo (un hash con clave del ID), y la numeración se recalcula en cada
+corrida del pipeline. El modelo usa los últimos 5 juegos con reseña positiva de cada usuario.
+Los más activos (`RERANK_MAX_USERS`, 1.000 por defecto), es decir, aproximadamente los números
+del 1 al 1.000, reciben además el reordenamiento del LLM (`"reranked": true`), con una
+explicación para las 5 primeras recomendaciones: cualquier número de ese rango sirve para una
+demo. Un usuario sin lista (solo reseñas negativas, o fuera de los `MAX_USERS` calculados)
+recibe la lista popular (`"source": "popular"`), y un número mayor que `max_user`, un 404. El detalle de cada endpoint
 está en [`serving/README.md`](serving/README.md).
 
 ### 10. Frontend
 
 Una app web estática (S3 + CloudFront) sobre la misma API: buscar juegos, elegir los que te
-gustaron y recibir recomendaciones como tarjetas, o abrir `/u/<steam id>` para ver las
-recomendaciones precalculadas de un usuario. La URL es la salida `frontend_url` del
+gustaron y recibir recomendaciones como tarjetas, o abrir `/u/<número>` para ver las
+recomendaciones precalculadas de un usuario (con enlaces al anterior, al siguiente y a uno al
+azar). La URL es la salida `frontend_url` del
 **infrastructure CD** (o el resumen del **frontend CD**). La búsqueda corre en el navegador
 sobre un índice que escribe cada corrida de inferencia. Detalles y dominio propio:
 [`frontend/README.md`](frontend/README.md).

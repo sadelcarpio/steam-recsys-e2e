@@ -52,6 +52,9 @@ def test_layers(manifest):
     for m in models.values():
         if m.config.schema == "staging":
             assert m.config.materialized == "view"
+        elif m.name == "user_index":  # spec 13: rebuilt every run (a demo rank, not a feature)
+            assert m.config.materialized == "table"
+            assert m.config.get("table_type") == "iceberg"
         else:
             assert m.config.materialized == "incremental", m.name
             assert m.config.get("table_type") == "iceberg", m.name
@@ -78,3 +81,8 @@ def test_interactions_depend_on_feature_tables(manifest):
 def test_history_length_matches_contract():
     project = yaml.safe_load((DEFAULT_DBT_PROJECT_DIR / "dbt_project.yml").read_text())
     assert project["vars"]["user_history_length"] == USER_HISTORY_LENGTH
+
+
+def test_user_index_is_ranked_from_interactions(manifest):
+    deps = _models(manifest)["user_index"].depends_on.nodes
+    assert deps == ["model.steam_recsys.interactions"]

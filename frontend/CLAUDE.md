@@ -1,6 +1,7 @@
 # frontend
 
-Spec: `specs/6-recsys-frontend.md`. Human docs: `README.md`.
+Specs: `specs/6-recsys-frontend.md`, `specs/13-anonymize-user-ids.md` (user numbers).
+Human docs: `README.md`.
 
 ## Layout
 
@@ -14,8 +15,8 @@ Spec: `specs/6-recsys-frontend.md`. Human docs: `README.md`.
   - `src/cards.ts`: DOM rendering (`h` helper, cards, details dialog, summaries)
   - `src/liked.ts`: picked games, most recent first, at most `MAX_LIKED_GAMES`, in
     localStorage (best effort)
-  - `src/router.ts`: `/` and `/u/<id>` (history API; CloudFront serves index.html for
-    extensionless paths)
+  - `src/router.ts`: `/` and `/u/<user number>` (history API; CloudFront serves index.html for
+    extensionless paths), `neighbours` / `randomUser` (user page links)
   - `src/main.ts`: app shell and pages
 - `tests/`: vitest + jsdom. `cloudfront.test.ts` evaluates `infrastructure/cloudfront/*.js`
   (the CloudFront Functions), so frontend CI also runs on changes there.
@@ -33,7 +34,9 @@ Spec: `specs/6-recsys-frontend.md`. Human docs: `README.md`.
   history length (training `USER_HISTORY_LENGTH`), enforced by `LikedGames`; serving accepts
   up to 100.
 - `SEARCH_INDEX_FORMAT` must match inference's `SEARCH_INDEX_FORMAT`: change both together.
-- Steam user ids stay strings (they exceed JavaScript's safe integers).
+- Users are addressed by demo user number (`USER_IDX_PATTERN`, serving's
+  `USER_IDX_PATTERN`), never by Steam id (spec 13). The `user_id` in responses is pseudonymous
+  and stays a string (it exceeds JavaScript's safe integers).
 
 ## Commands
 

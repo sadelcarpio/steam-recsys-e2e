@@ -104,7 +104,17 @@ def make_marts() -> dict[str, pa.Table]:
         "game_features": pa.Table.from_pylist(game_features),
         "user_features": pa.Table.from_pylist(user_features, schema=schema_uf),
         "interactions": pa.Table.from_pylist(interactions),
+        "user_index": user_index_table(REVIEWS),
     }
+
+
+def user_index_table(reviews: dict[int, list[tuple[int, bool]]]) -> pa.Table:
+    """Mart user_index (spec 13): user_idx 1 = most reviews, ties by lowest user id. Rows are
+    stored out of order, as Iceberg may return them."""
+    ranked = sorted(reviews, key=lambda u: (-len(reviews[u]), u))
+    rows = [{"user_idx": i, "user_id": u} for i, u in enumerate(ranked, start=1)]
+    schema = pa.schema([("user_idx", pa.int64()), ("user_id", pa.int64())])
+    return pa.Table.from_pylist(rows[::-1], schema=schema)
 
 
 N_TAGS = 8

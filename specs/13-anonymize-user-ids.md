@@ -22,11 +22,13 @@ Goals:
 - `user_id = int.from_bytes(HMAC-SHA256(key, str(steamid)).digest()[:8], "big") >> 1`: a
   63-bit non-negative integer, so it stays `bigint` in every schema, still matches the digit
   patterns in serving and the frontend, and training and inference keep their int64 arrays.
-  Collisions are negligible (~1e-7 at 1M users).
+  Collisions are negligible (~1e-4 over the 38M users of `interactions` in 2026-10).
 - HMAC, not a plain salted hash: without the key, the ~2^32 range of real SteamIDs can't be
   enumerated to rebuild the mapping.
-- Key: Secrets Manager `data-ingestion/user-id-hmac-key` (32 random bytes, base64; created by
-  Terraform with `random_password`, so it is never typed by hand). It is read only by
+- Key: Secrets Manager `data-ingestion/user-id-hmac-key`, a 64-character random string used as
+  UTF-8 bytes (at least 32 characters are enforced). Terraform generates it with the ephemeral
+  `aws_secretsmanager_random_password` and writes it with `secret_string_wo`, so it is never
+  typed by hand and is in neither the plan nor the state. It is read only by
   `reviews-scraping` and the one-off migration task.
 - **The key is never rotated.** A new key would split every user's history between the old and
   new ids. Rotating it means re-running the migration over all raw data (see below) and a full
@@ -44,20 +46,24 @@ Goals:
 - `ReviewRecord.author_id` is renamed to `user_id`, as are the raw schema (`schemas.py`) and the
   Glue table `steam_raw.reviews`. The rename makes any consumer that still expects a SteamID
   fail loudly instead of silently reading hashes.
-- Config: `UserIdHashSettings` (Pydantic), with `user_id_hmac_key: SecretStr` loaded from the
-  secret at startup. The task fails to start without the secret: it never falls back to the raw
-  id.
+- Config: `IngestionSettings.user_id_key_secret_id` (SSM `USER_ID_KEY_SECRET_ID`) and the
+  local / test override `USER_ID_HMAC_KEY` (`SecretStr`), resolved by
+  `anonymize.resolve_user_id_key` at startup. The task fails to start without the key: it never
+  falls back to the raw id.
 - `reviews-state-cursor` and `game-ids-state` hold no user ids (unchanged).
 
 ### Migration of existing raw data (one-off)
 
-- New entrypoint `python -m steam_ingestion.anonymize_raw_reviews`. It uses the same image and
-  runs as a one-off ECS `run-task` from the `data-ingestion CD` workflow (`workflow_dispatch`
-  input `anonymize_raw=true`).
+- New entrypoint `python -m steam_ingestion.anonymize_raw_reviews`. It uses the scraping image,
+  with its own task definition `anonymize-raw-reviews` (2 vCPU / 8 GB, a role that can only
+  read and rewrite `reviews/*` and read the key), started by hand with `aws ecs run-task`
+  (docs/deployment.md), like a manual dbt run. In region, because the raw reviews are about
+  17 GB (2,446 files in 2026-10). No CD workflow change.
 - For every `raw-steam-data-*/reviews/*.parquet`: read it, replace `author_id` with the hashed
-  `user_id`, write it to the same key and verify the row count. Files that already have a
-  `user_id` column are skipped, so the task is idempotent and resumable. Files are processed in
-  parallel (`MIGRATION_WORKERS`).
+  `user_id` (each distinct author hashed once, column position kept), check the rewritten
+  bytes (same row count, no `author_id`) and write them to the same key. Files that already
+  have a `user_id` column are skipped, so the task is idempotent and resumable. Files are
+  processed in parallel (`--workers`, 4); `--dry-run` rewrites in memory only.
 - The raw bucket has no versioning (only `model-artifacts` does), so overwriting purges the
   SteamIDs. The task ends by asserting that no `reviews/` object still has an `author_id`
   column.
@@ -69,7 +75,8 @@ Goals:
 - `stg_steam__reviews`: `user_id` is read as is (no more `cast(author_id …)`), and the column
   docs say "keyed hash of the Steam author id (spec 13)".
 - `interactions`, `user_features` and `int_review_events`: no SQL change; same column, new
-  values. One `dbt run --full-refresh` rebuilds them under the new ids.
+  values. One `dbt run --full-refresh` rebuilds them under the new ids. The replaced Iceberg
+  data files go with the post-hook `VACUUM` (Athena's default snapshot retention, 5 days).
 - **New mart `user_index`** (a plain Iceberg `table`, rebuilt every run, not incremental):
 
   | column             | type        | meaning                                                          |
@@ -79,12 +86,13 @@ Goals:
   | `num_reviews`      | bigint      | reviews in `interactions` (kept games)                           |
   | `num_positive`     | bigint      | positive reviews                                                 |
   | `last_reviewed_at` | timestamp(6)| latest review                                                    |
-  | `_batch_at`        | timestamp(6)| run timestamp                                                    |
+  | `_batch_at`        | timestamp(6)| latest `_batch_at` of the user's rows (a rerun changes nothing)  |
 
   `user_idx = row_number() over (order by num_reviews desc, user_id)`. This is the same order
   inference already uses (`Activity.most_active` and `select_rerank_users`: most reviews first,
   ties by lowest id, over `interactions`), so the index and the scored or reranked users agree.
-  The ordering is total, so a rebuild over the same data gives the same numbers.
+  The ordering is total, so a rebuild over the same data gives the same numbers. Over the 38M
+  users of 2026-10 Athena ranks them in about 90 s (checked with a read-only query).
 - **`user_idx` is not stable across runs**: new reviews reorder users. This is acceptable for
   demo queries and is stated in the mart docs. It must not be stored next to anything
   persistent: it is not in the recommendations items or the training data, and not in a future
@@ -98,11 +106,15 @@ Goals:
   writes:
   - `s3://model-artifacts-*/serving/users/index.bin`: the `user_id`s as little-endian int64 in
     `user_idx` order. User `i` sits at byte offset `(i - 1) * 8`. That is 8 MB per million
-    users, rewritten every run.
+    users (about 305 MB for 38M users), rewritten every run.
   - `s3://model-artifacts-*/serving/users/index.json`: a `UserIndexManifest` (Pydantic,
     contract in `inference/contracts.py`, mirrored in serving): `max_user`, `generated_at`,
-    `bin_key`, `bin_sha256`. It is written after the `.bin`, so a reader never sees a manifest
-    newer than its data.
+    `index_key`, `index_version_id`, `index_sha256`. It is written after the `.bin` and pinned
+    to its S3 version (like the online catalog), so a reader never mixes a manifest with
+    another run's file.
+- Published with the online catalog (`BundleStore.publish_user_index`), but even when the model
+  has no numpy user tower: the index does not depend on the model. Skipped (with a warning)
+  while the mart is missing.
 - Lifecycle rule on `serving/users/`: noncurrent versions expire after 7 days (the bucket is
   versioned).
 - Rerank selection (`select_rerank_users`) and `MAX_USERS` (`Activity.most_active`) already
@@ -116,22 +128,24 @@ Goals:
 
 - The route becomes `GET /users/{user_idx}/recommendations`, with `user_idx` matching
   `^[1-9][0-9]{0,9}$`. Resolving it:
-  1. `index.json`, cached per container for `USER_INDEX_TTL_SECONDS` (300). If
-     `user_idx > max_user`, return 404 `unknown user`.
-  2. A ranged `GetObject` on `index.bin`, `Range: bytes=(i-1)*8-(i*8-1)`, gives the `user_id`.
+  1. `index.json`, cached per container for `USER_INDEX_REFRESH_SECONDS` (300; a failed
+     refresh keeps the cached one). None published: 503. If `user_idx > max_user`, return 404
+     `unknown user`.
+  2. A ranged `GetObject` on `index.bin` at the manifest's version,
+     `Range: bytes=(i-1)*8-(i*8-1)`, gives the `user_id`.
   3. DynamoDB `get_item(user_id=str(user_id))` as today, with the same popularity fallback.
 - Response: adds `user_idx` and `max_user`, and keeps `user_id` (now the hash, harmless).
   Contracts are updated in `serving/contracts.py` and `frontend/src/api.ts`.
-- IAM: `s3:GetObject` on `serving/users/*`.
+- IAM: `s3:GetObject` / `GetObjectVersion` on `serving/users/*`.
 - The SteamID lookup is dropped on purpose. If serving could hash an incoming SteamID, anyone
   could look up a real person's activity through the public site, which undoes the
   anonymization.
 
 ### Frontend
 
-- `/u/<user_idx>` (pattern `^[1-9][0-9]{0,9}$`). The header shows "Usuario #12 de 1.234.567"
-  with ← / → links to the neighbours, plus a "usuario al azar" link (`1..min(max_user, 1000)`,
-  the reranked range).
+- `/u/<user_idx>` (pattern `^[1-9][0-9]{0,9}$`). The header shows "Usuario n.º 12 de
+  38.096.542" with ← / → links to the neighbours, plus a "usuario al azar" link
+  (`1..min(max_user, 1000)`, the reranked range). The header box takes a user number.
 - README demo table: the five SteamIDs are replaced by "pick any of `/u/1`…`/u/1000`". Fixed
   numbers would point to different users after the next run.
 
@@ -252,25 +266,30 @@ erDiagram
 - `data_ingestion`: `hash_user_id` is deterministic, 63-bit, non-negative and key-dependent
   (known vector); the scraper output has no `author_id` and no raw id; the migration is
   idempotent (a second run skips files), keeps row counts and fails on a leftover `author_id`.
-- `etl`: dbt tests above; a seed-based unit test that ties and ordering produce the expected
-  `user_idx`.
-- `inference`: `index.bin` round-trip (offset → id); the manifest is written after the bin;
-  the `user_index` order matches `Activity.most_active` / `select_rerank_users`.
-- `serving`: idx → id via a stubbed S3 range read, `> max_user` → 404, a bad pattern → 400,
-  manifest TTL caching.
-- `frontend`: route parsing of `/u/<idx>`, prev / next bounds.
+- `etl`: dbt tests above; the Athena integration test checks the ranking (ties by lowest id),
+  the counts and that incremental equals full refresh; `dbt parse` checks the materialization.
+- `inference`: `index.bin` round-trip (offset → id); the manifest is pinned to the bin's
+  version; a gap or duplicate in `user_idx` fails; the `user_index` order matches
+  `Activity.most_active` / `select_rerank_users`; `PRUNE_UNSEEN` deletes stale keys in a capped
+  run; serving reads what inference publishes (`test_serving_contract.py`).
+- `serving`: idx → id via a ranged read on versioned moto S3 (pinned version, refresh, a broken
+  refresh keeps the cached manifest), `> max_user` → 404, a bad pattern or a Steam id → 400, no
+  index → 503.
+- `frontend`: route parsing of `/u/<idx>`, prev / next bounds, the random user range.
 
 ### Rollout
 
 1. Disable the EventBridge schedule.
-2. Infrastructure apply: secret + key, Glue `reviews.user_id`, serving IAM, S3 lifecycle.
-3. Data-ingestion CD (new scraper), then the migration run (`anonymize_raw=true`), which
-   asserts that no `author_id` is left.
+2. Infrastructure apply: secret + key, Glue `reviews.user_id`, the `anonymize-raw-reviews`
+   task definition, scraping / inference / serving IAM, SSM, S3 lifecycle.
+3. Data-ingestion CD (new scraper image), then the migration task (`aws ecs run-task
+   --task-definition anonymize-raw-reviews`), which exits 1 when any `author_id` is left.
 4. ETL CD, then one `dbt run --full-refresh` (rebuilds every user-keyed mart).
-5. Inference CD with `run_now` and **`MAX_USERS=0`**: rekeys DynamoDB. Users that are gone are
-   deleted only on full runs (inference invariant), and that deletion removes every SteamID
-   key. The run also publishes `serving/users/`. Later runs can go back to a capped
-   `MAX_USERS`.
+5. Inference CD with `run_now` and `env_overrides: PRUNE_UNSEEN=true`: rekeys DynamoDB. A run
+   capped by `MAX_USERS` (1M of 38M users; a full run exceeds the job's maximum runtime)
+   normally keeps the stored users it did not write. `PRUNE_UNSEEN` (new inference setting,
+   default false) deletes them, which removes every SteamID key. The run also publishes
+   `serving/users/`. Later runs go back to the default.
 6. Serving + frontend CD. Re-enable the schedule.
 7. Check: scan DynamoDB for 17-digit `user_id`s starting with `7656119` (the SteamID64 shape),
    which must find none, and run an Athena check on `steam_raw.reviews`.

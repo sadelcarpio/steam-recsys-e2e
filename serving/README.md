@@ -23,7 +23,7 @@ All endpoints are `GET` and return JSON. Null fields are left out.
 
 | Path | |
 |---|---|
-| `/users/{user_id}/recommendations` | The user's list (`source: "personalized"`). Users without one (cold start, unknown id) get the popularity list (`source: "popular"`) |
+| `/users/{user_idx}/recommendations` | The list of **demo user number** `user_idx` (spec 13: 1 = the most active user ... `max_user`), `source: "personalized"`. Users without one (only negative reviews, or past `MAX_USERS`) get the popularity list (`source: "popular"`). Steam ids are not accepted: no SteamID is stored, and the numbers are reassigned every pipeline run |
 | `/popular` | The popularity list (the most reviewed-positive games of the last 90 days of reviews) |
 | `/games/{game_id}` | Details of one game |
 | `/health` | Liveness check, no DynamoDB call |
@@ -34,13 +34,15 @@ Query parameters of the two lists:
 - `details`: `true` or `false`, default true. Adds each game's details.
 
 ```bash
-curl "$URL/users/76561198027267313/recommendations?limit=3"
+curl "$URL/users/12/recommendations?limit=3"
 ```
 
 ```json
 {
   "source": "personalized",
-  "user_id": "76561198027267313",
+  "user_id": "4559049361332948866",
+  "user_idx": 12,
+  "max_user": 38096542,
   "model_id": "a1b2c3d",
   "generated_at": "2026-09-24T17:40:00Z",
   "reranked": true,
@@ -66,12 +68,18 @@ curl "$URL/users/76561198027267313/recommendations?limit=3"
 - `score` is the two-tower cosine similarity for personalized lists, and the share of the top
   game's positive reviews for the popular list.
 - `details` is omitted for a game with no `game-details` item.
+- `user_id` is the pseudonymous id the user number resolved to (a keyed hash of the SteamID,
+  a string: it exceeds JavaScript's safe integers). Resolving a number is one 8-byte range read
+  of `serving/users/index.bin` (written by inference with its manifest `index.json`, pinned to
+  the file's version and cached for `USER_INDEX_REFRESH_SECONDS`).
 - Errors return `{"error": ..., "detail": ...}` with one of these statuses:
-  - 400: invalid id, limit, details value or body.
-  - 404: unknown route or game, or no popular list written yet.
+  - 400: invalid user number (digits from 1, no leading zero, at most 10 digits), id, limit,
+    details value or body.
+  - 404: unknown route or game, a user number past `max_user`, or no popular list written yet.
   - 405: any method other than GET (except `POST /recommendations`).
   - 500: an unhandled error, returned without internals.
-  - 503: online model not available (no catalog published yet).
+  - 503: online model not available (no catalog published yet), or user index not available
+    (none published yet, or `MODEL_ARTIFACTS_BUCKET` unset).
 - Successful list and game responses send `Cache-Control: public, max-age=300`, because the
   data changes weekly.
 
@@ -154,9 +162,11 @@ Lambda).
 | `DEFAULT_LIMIT` / `MAX_LIMIT` | 10 / 30 | List length (inference writes 30 per user) |
 | `INCLUDE_DETAILS` | true | Default of the `details` parameter |
 | `CACHE_MAX_AGE_SECONDS` | 300 | |
-| `MODEL_ARTIFACTS_BUCKET` | – | SSM. Bucket of the online model; unset disables `POST /recommendations` (503) |
+| `MODEL_ARTIFACTS_BUCKET` | – | SSM. Bucket of the online model and the user index; unset disables `POST /recommendations` and `GET /users/...` (503) |
 | `ONLINE_BUNDLE_PREFIX` | `serving/online` | SSM |
 | `ONLINE_REFRESH_SECONDS` | 300 | Manifest re-check interval of a warm container |
+| `USER_INDEX_PREFIX` | `serving/users` | SSM. Demo user index (spec 13) |
+| `USER_INDEX_REFRESH_SECONDS` | 300 | Its manifest re-check interval |
 | `MAX_LIKED_GAMES` | 100 | |
 
 ## Development

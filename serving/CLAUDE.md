@@ -1,6 +1,7 @@
 # serving
 
-Spec: `specs/5-recsys-serving.md`. Human docs: `README.md`.
+Specs: `specs/5-recsys-serving.md`, `specs/13-anonymize-user-ids.md` (demo user numbers).
+Human docs: `README.md`.
 
 ## Layout
 
@@ -16,6 +17,8 @@ Spec: `specs/5-recsys-serving.md`. Human docs: `README.md`.
     (+ the catalog from inference: exact top K, `recommend`, refuses mismatched model ids),
     `BundleLoader` (manifest -> pinned catalog version + the model's user tower, periodic
     refresh, user tower reused while the model is unchanged, keeps the old model on failure)
+  - `users.py`: `UserIndex` (demo user index of spec 13: cached `index.json` manifest, one
+    8-byte ranged GetObject of `index.bin` at the manifest's version per lookup)
   - `app.py`: `App.handle(event)`: routing of Function URL events (payload 2.0), validation,
     the popularity fallback, `POST /recommendations` (online), and JSON responses with
     Cache-Control
@@ -29,8 +32,8 @@ Spec: `specs/5-recsys-serving.md`. Human docs: `README.md`.
 ## Invariants
 
 - Read-only: the Lambda role only has GetItem / BatchGetItem, GetObject(Version) on
-  `serving/online/*` and GetObject on `models/*/user_tower.npz`. Inference owns the tables and
-  the catalog; training owns the user towers.
+  `serving/online/*` and `serving/users/*`, and GetObject on `models/*/user_tower.npz`.
+  Inference owns the tables, the catalog and the user index; training owns the user towers.
 - `UserTower.embed` must equal torch's `UserTower.forward` (training/model.py). When the user
   tower changes, change `steam_training.export` (`USER_TOWER_NUMPY_FORMAT`) and this module
   together. When the catalog changes, change `steam_inference.online` / `ONLINE_BUNDLE_FORMAT`
@@ -42,8 +45,10 @@ Spec: `specs/5-recsys-serving.md`. Human docs: `README.md`.
 - The source of truth for the item shape is `inference/src/steam_inference/contracts.py`.
   Stored models ignore unknown fields. When they change, run inference's
   `tests/test_serving_contract.py`, which imports this package.
-- `user_id` must be 1-20 digits, so the reserved `__popular__` item is reachable only as the
-  fallback or through `/popular`.
+- `GET /users/{user_idx}` takes a demo user number (`USER_IDX_PATTERN`, 1..`max_user`), never a
+  Steam id: accepting a SteamID would let anyone look up a real person (spec 13). The reserved
+  `__popular__` item is reachable only as the fallback or through `/popular`. The index format
+  is inference's (`steam_inference.user_index`, `UserIndexManifest`): change both together.
 - Never leak internals: unhandled errors return a generic 500 and are logged.
 - One DynamoDB round trip per table per request. `MAX_LIMIT` stays <= 100 (the BatchGetItem
   limit).

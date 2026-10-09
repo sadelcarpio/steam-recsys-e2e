@@ -9,6 +9,7 @@ import pytest
 import responses
 from responses import matchers
 
+from steam_ingestion.anonymize import hash_user_id
 from steam_ingestion.config import IngestionSettings
 from steam_ingestion.models import PartitionFile
 from steam_ingestion.reviews_scraping.scraper import build_review_record, scrape_partition
@@ -18,7 +19,7 @@ from steam_ingestion.state import ReviewCursor, ReviewsCursorState, backfill_bud
 from steam_ingestion.steam_api import SteamClient
 from steam_ingestion.storage import list_keys, write_partition
 
-from .conftest import PARTITIONS_BUCKET, RAW_BUCKET
+from .conftest import PARTITIONS_BUCKET, RAW_BUCKET, USER_KEY
 
 TODAY = date(2026, 9, 24)
 KEY = "reviews/run-1/part-002.json"
@@ -99,8 +100,9 @@ def _cursor(aws: SimpleNamespace, appid: int) -> dict | None:
 
 
 def test_build_review_record_matches_schema() -> None:
-    record = build_review_record(10, _review(1, 100), TODAY)
-    assert record.author_id == 76561197960287930
+    record = build_review_record(10, _review(1, 100), TODAY, USER_KEY)
+    assert record.user_id == hash_user_id(76561197960287930, USER_KEY)
+    assert "author_id" not in record.model_dump()
     assert record.weighted_vote_score == 0.523809552192687988
     df = pl.DataFrame([record.model_dump()], schema=REVIEWS_SCHEMA)
     assert df.schema == REVIEWS_SCHEMA
@@ -114,11 +116,15 @@ def test_first_run_scrapes_all_and_saves_cursors(
     _mock_reviews(10, [[_review(3, 300), _review(2, 200)], [_review(1, 100)]])
     _mock_reviews(20, [[_review(4, 400)]])
 
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     df = _rows(aws)
     assert df.schema == REVIEWS_SCHEMA
     assert sorted(df["rec_id"].to_list()) == [1, 2, 3, 4]
+    # spec 13: only the keyed hash of the author is stored
+    assert set(df["user_id"].to_list()) == {hash_user_id(76561197960287930, USER_KEY)}
     assert int(_cursor(aws, 10)["last_review_ts"]) == 300
     assert int(_cursor(aws, 10)["total_reviews"]) == 3
     assert int(_cursor(aws, 20)["last_review_ts"]) == 400
@@ -134,7 +140,7 @@ def test_incremental_run_only_fetches_new_reviews(
     )
     _mock_reviews(10, [[_review(3, 300), _review(2, 200), _review(1, 100)]])
 
-    scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY)
 
     assert _rows(aws)["rec_id"].to_list() == [3]
     assert int(_cursor(aws, 10)["last_review_ts"]) == 300
@@ -150,7 +156,9 @@ def test_no_new_reviews_keeps_cursor_and_writes_nothing(
         {10: ReviewCursor(last_review_ts=300, total_reviews=1)}
     )
     _mock_reviews(10, [[_review(3, 300)]])
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
     assert list_keys(aws.s3, RAW_BUCKET, "reviews/") == []
     assert int(_cursor(aws, 10)["last_review_ts"]) == 300
 
@@ -177,7 +185,7 @@ def test_mid_game_flush_does_not_advance_cursor_of_unfinished_game(
         url, match=[matchers.query_param_matcher({"cursor": "c1"}, strict_match=False)], status=503
     )
 
-    scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY)
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [1, 4, 5]  # flushed mid-game
     assert int(_cursor(aws, 10)["last_review_ts"]) == 100  # finished before the flush
@@ -191,7 +199,7 @@ def test_retry_continues_part_numbering(
     _seed(aws, [10])
     aws.s3.put_object(Bucket=RAW_BUCKET, Key=f"{PREFIX}0000.parquet", Body=b"previous attempt")
     _mock_reviews(10, [[_review(1, 100)]])
-    scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY)
     assert sorted(list_keys(aws.s3, RAW_BUCKET, PREFIX)) == [
         f"{PREFIX}0000.parquet",
         f"{PREFIX}0001.parquet",
@@ -220,7 +228,9 @@ def test_first_scrape_within_the_cap_is_complete(
     _seed(aws, [10])
     _mock_reviews(10, [[_review(2, 200), _review(1, 100)]])
     capped = settings.model_copy(update={"max_reviews_per_game": 5})
-    assert scrape_partition(KEY, capped, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, capped, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
     assert _backfill_state(_cursor(aws, 10)) == (100, True)
     assert len(responses.calls) == 1  # no backfill request
 
@@ -235,7 +245,9 @@ def test_first_scrape_truncated_by_the_cap_backfills_in_the_same_run(
     _mock_reviews(10, [[_review(4, 400), _review(3, 300)], [_review(2, 200)]], until=400)
     run = settings.model_copy(update={"max_reviews_per_game": 2, "backfill_reviews_per_run": 3})
 
-    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, run, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 3, 4, 4, 5]
     cursor = _cursor(aws, 10)
@@ -254,7 +266,9 @@ def test_pending_backfill_continues_and_completes(
     _mock_reviews(10, [[_review(6, 600), _review(5, 500)]])  # forward: one new review
     _mock_reviews(10, [[_review(3, 300), _review(2, 200)], [_review(1, 100)]], until=300)
 
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [1, 2, 3, 6]
     cursor = _cursor(aws, 10)
@@ -275,7 +289,9 @@ def test_complete_and_legacy_cursors_are_not_backfilled(
     )
     _mock_reviews(10, [[_review(3, 300)]])
     _mock_reviews(20, [[_review(13, 300)]])
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
     assert len(responses.calls) == 2  # forward passes only
     assert _backfill_state(_cursor(aws, 10)) == (100, True)
     assert _backfill_state(_cursor(aws, 20)) == (None, False)
@@ -305,7 +321,9 @@ def test_failed_backfill_keeps_forward_progress_and_what_was_fetched(
     )
 
     # a failed backfill does not count as a failed game
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 6]
     cursor = _cursor(aws, 10)
@@ -323,7 +341,9 @@ def test_ignored_date_range_does_not_complete_the_backfill(
     )
     _mock_reviews(10, [[_review(5, 500)]])
     _mock_reviews(10, [[_review(5, 500)]], until=300)  # Steam returned the newest instead
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
     assert list_keys(aws.s3, RAW_BUCKET, "reviews/") == []
     assert _backfill_state(_cursor(aws, 10)) == (300, False)
 
@@ -338,7 +358,9 @@ def test_backfill_disabled_with_a_zero_budget(
     )
     _mock_reviews(10, [[_review(5, 500)]])
     off = settings.model_copy(update={"backfill_reviews_per_run": 0})
-    assert scrape_partition(KEY, off, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, off, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
     assert len(responses.calls) == 1
 
 
@@ -369,7 +391,14 @@ def test_stop_during_a_forward_pass_flushes_finished_games_only(
 
     with pytest.raises(ShutdownRequested):
         scrape_partition(
-            KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY, shutdown=shutdown
+            KEY,
+            settings,
+            client,
+            aws.s3,
+            aws.dynamodb,
+            user_id_key=USER_KEY,
+            today=TODAY,
+            shutdown=shutdown,
         )
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [1, 3]  # the buffer is written
@@ -394,7 +423,14 @@ def test_stop_during_a_backfill_commits_what_was_fetched(
 
     with pytest.raises(ShutdownRequested):
         scrape_partition(
-            KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY, shutdown=shutdown
+            KEY,
+            settings,
+            client,
+            aws.s3,
+            aws.dynamodb,
+            user_id_key=USER_KEY,
+            today=TODAY,
+            shutdown=shutdown,
         )
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 3, 6]
@@ -444,7 +480,9 @@ def test_first_scrape_counts_the_stored_reviews(
 ) -> None:
     _seed(aws, [10])
     _mock_reviews(10, [[_review(2, 200), _review(1, 100)]])
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
     cursor = _cursor(aws, 10)
     assert int(cursor["stored_reviews"]) == 2
     assert "backfill_run_id" not in cursor  # complete on its first scrape: no backfill
@@ -460,7 +498,9 @@ def test_backfill_stops_at_the_stored_cap_but_new_reviews_keep_coming(
     _mock_reviews(10, [[_review(3, 300), _review(2, 200)], [_review(1, 100)]], until=300)
     run = settings.model_copy(update={"backfill_max_reviews_per_game": 10})
 
-    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, run, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 3, 6]  # budget 2 = 10 - 8
     cursor = _cursor(aws, 10)
@@ -478,7 +518,9 @@ def test_game_at_the_stored_cap_only_fetches_new_reviews(
     _mock_reviews(10, [[_review(6, 600)]])
     run = settings.model_copy(update={"backfill_max_reviews_per_game": 10})
 
-    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, run, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     assert len(responses.calls) == 1  # forward pass only
     cursor = _cursor(aws, 10)
@@ -496,7 +538,9 @@ def test_unseeded_stored_count_is_not_capped(
     _mock_reviews(10, [[_review(3, 300), _review(2, 200)]], until=300)
     run = settings.model_copy(update={"backfill_max_reviews_per_game": 1})
 
-    assert scrape_partition(KEY, run, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, run, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     cursor = _cursor(aws, 10)
     assert _backfill_state(cursor) == (200, True)  # the range ran out
@@ -515,7 +559,9 @@ def test_retried_task_does_not_backfill_twice_in_a_run(
     _mock_reviews(20, [[_review(16, 600)]])
     _mock_reviews(20, [[_review(13, 300), _review(12, 200)]], until=300)
 
-    assert scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
 
     assert sorted(_rows(aws)["rec_id"].to_list()) == [6, 12, 13, 16]
     first, other = _cursor(aws, 10), _cursor(aws, 20)

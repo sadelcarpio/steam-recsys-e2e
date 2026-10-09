@@ -1,13 +1,14 @@
 # Frontend
 
 Static web app over the serving API, in Spanish: search Steam games, pick up to 5 you liked,
-and get recommendations as game cards. Or open a Steam user's precomputed recommendations at
-`/u/<steam id>`. No login.
+and get recommendations as game cards. Or open a user's precomputed recommendations by user
+number at `/u/<n>` (1 = the most active reviewer; spec 13: no Steam id is stored or accepted).
+No login.
 
 | Page          | What it does                                                        | API                                          |
 |---------------|---------------------------------------------------------------------|----------------------------------------------|
 | `/`           | Search, pick up to 5 liked games (the model reads the last 5), **Recomendar** | `POST /api/recommendations`         |
-| `/u/<id>`     | A user's recommendations (popular games for unknown users)          | `GET /api/users/<id>/recommendations`        |
+| `/u/<n>`      | Demo user `n`'s recommendations (popular games for users without a list), with ← / → and a random user among the first 1000 (the ones with LLM explanations). Numbers are reassigned every pipeline run | `GET /api/users/<n>/recommendations` |
 | card click    | Game details dialog + Steam store link                              | details come with the list (`details=true`)  |
 
 ## How it is served
