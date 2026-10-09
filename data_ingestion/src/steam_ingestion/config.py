@@ -66,6 +66,9 @@ class IngestionSettings(BaseSettings):
     steam_api_key_secret_id: str = "data-ingestion/steam-api-key"
     # Local-dev / test fallback: when set, Secrets Manager is never called.
     steam_api_key: SecretStr | None = None
+    # HMAC key of the pseudonymous user ids (spec 13, anonymize.py); same local fallback.
+    user_id_key_secret_id: str = "data-ingestion/user-id-hmac-key"
+    user_id_hmac_key: SecretStr | None = None
 
     num_review_workers: int = Field(20, ge=1)
     # Pending games are split across this many games-scraping tasks (each its own egress IP),

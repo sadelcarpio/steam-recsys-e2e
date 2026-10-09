@@ -3,7 +3,14 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from steam_etl.contracts import OOV_ID, PADDING_ID, GameTagsRow, InteractionRow, LookupRow
+from steam_etl.contracts import (
+    OOV_ID,
+    PADDING_ID,
+    GameTagsRow,
+    InteractionRow,
+    LookupRow,
+    UserIndexRow,
+)
 
 NOW = datetime(2026, 1, 1)
 
@@ -44,6 +51,7 @@ def test_valid_row():
         {"game_reviews_ratio": None},
         {"game_positive_reviews": 3},  # raw counts are not a feature
         {"game_review_score": 8},  # scraped once: would leak future reviews
+        {"user_id": -1},  # pseudonymous ids are 63-bit, never negative (spec 13)
         {"unexpected": 1},
     ],
 )
@@ -87,3 +95,28 @@ def test_game_tags_row():
 def test_game_tags_rejects(overrides):
     with pytest.raises(ValidationError):
         game_tags(**overrides)
+
+
+def user_index(**overrides):
+    row = {
+        "_batch_at": NOW,
+        "user_idx": 1,
+        "user_id": 4559049361332948866,
+        "num_reviews": 3,
+        "num_positive": 2,
+        "last_reviewed_at": NOW,
+    }
+    return UserIndexRow.model_validate(row | overrides)
+
+
+def test_user_index_row():
+    assert user_index().user_idx == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"user_idx": 0}, {"num_positive": 4}, {"num_reviews": 0, "num_positive": 0}, {"user_id": -5}],
+)
+def test_user_index_rejects(overrides):
+    with pytest.raises(ValidationError):
+        user_index(**overrides)

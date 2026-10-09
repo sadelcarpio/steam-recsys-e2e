@@ -58,7 +58,7 @@ GAMES_SCHEMA = pa.schema(
 REVIEWS_SCHEMA = pa.schema(
     [
         ("rec_id", pa.int64()),
-        ("author_id", pa.int64()),
+        ("user_id", pa.int64()),  # pseudonymous (spec 13)
         ("appid", pa.int64()),
         ("playtime_forever", pa.int64()),
         ("playtime_last_two_weeks", pa.int64()),
@@ -119,7 +119,7 @@ def _game(appid, name, *, scrape_date, type_="game", devs=(), pubs=(), genres=()
 def _review(rec_id, user, appid, positive, dt, *, scrape_date, updated=None):
     return {
         "rec_id": rec_id,
-        "author_id": user,
+        "user_id": user,
         "appid": appid,
         "voted_up": positive,
         "timestamp_created": T0 + dt,

@@ -5,21 +5,28 @@ export const LOCALE = "es";
 
 export const t = {
   brand: "🎮 Recomendador de juegos de Steam",
-  userIdPlaceholder: "ID de usuario de Steam",
-  userIdLabel: "ID de usuario de Steam",
+  userIdPlaceholder: "Usuario n.º (1 = el más activo)",
+  userIdLabel: "Número de usuario",
   userIdSubmit: "Ver recomendaciones",
-  userIdInvalid: "Un ID de cuenta de Steam: de 1 a 20 dígitos",
+  userIdInvalid: "Un número de usuario: 1, 2, 3…",
   notFound: "Página no encontrada. ",
   goHome: "Volver al inicio",
   loading: "Cargando…",
   loadingRecommendations: "Cargando recomendaciones…",
   close: "Cerrar",
-  userTitle: "Recomendaciones para ",
+  userTitle: (n: number) => `Usuario n.º ${n.toLocaleString(LOCALE)}`,
+  userOf: (max: number) => ` de ${max.toLocaleString(LOCALE)}`,
+  userHint:
+    "Los usuarios se numeran por actividad: el 1 es quien más reseñas escribió. La numeración " +
+    "se recalcula en cada actualización de los datos, y los IDs de Steam no se guardan.",
+  previousUser: "← Anterior",
+  nextUser: "Siguiente →",
+  randomUser: "Usuario al azar",
   discoverTitle: "Encuentra tu próximo juego",
   discoverLead: (max: number) =>
     `Busca y elige hasta ${max} juegos que te gustaron, y el modelo de dos torres te ` +
-    "recomendará otros. También puedes ver las recomendaciones de un jugador con su ID de " +
-    "Steam, arriba.",
+    "recomendará otros. También puedes ver las recomendaciones de un jugador por su número, " +
+    "arriba (1 = el más activo).",
   searchLoading: "Cargando el catálogo de juegos…",
   searchPlaceholder: (size: number) => `Buscar entre ${size.toLocaleString(LOCALE)} juegos…`,
   searchFull: (max: number) => `Máximo ${max} juegos: quita uno para elegir otro`,

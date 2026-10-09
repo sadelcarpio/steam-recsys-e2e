@@ -15,6 +15,9 @@ from steam_serving.repository import DynamoRepository
 RECS_TABLE = "game-explainable-recommendations"
 DETAILS_TABLE = "game-details"
 GENERATED_AT = "2026-09-24T17:00:00+00:00"
+# Demo user index (spec 13): user_idx -> pseudonymous user_id. Users 1 and 2 have stored
+# recommendations, user 3 has none (popular fallback).
+USERS = {1: "4559049361332948866", 2: "1234567890123456789", 3: "42"}
 
 
 def user_item(user_id: str, games: list[int], *, reranked: bool) -> dict:
@@ -98,8 +101,8 @@ def aws(monkeypatch):
 def tables(aws):
     dynamodb = boto3.resource("dynamodb")
     recs, details = dynamodb.Table(RECS_TABLE), dynamodb.Table(DETAILS_TABLE)
-    recs.put_item(Item=user_item("76561198000000001", list(range(10, 40)), reranked=True))
-    recs.put_item(Item=user_item("76561198000000002", [10, 11, 12], reranked=False))
+    recs.put_item(Item=user_item(USERS[1], list(range(10, 40)), reranked=True))
+    recs.put_item(Item=user_item(USERS[2], [10, 11, 12], reranked=False))
     recs.put_item(Item=popular_item(list(range(100, 130))))
     for game_id in [*range(10, 40), *range(100, 105)]:  # no details for 105..129
         details.put_item(Item=details_item(game_id))
@@ -111,9 +114,35 @@ def settings() -> ServingSettings:
     return ServingSettings()
 
 
+class FakeUsers:
+    """In-memory `steam_serving.users.UserIndex` (its S3 reads are tested in test_users.py)."""
+
+    def __init__(self, users: dict[int, str] | None = None) -> None:
+        from steam_serving.users import UserIndexManifest
+
+        self.users = USERS if users is None else users
+        self._manifest = (
+            UserIndexManifest(
+                format_version=1,
+                generated_at=GENERATED_AT,
+                max_user=len(self.users),
+                index_key="serving/users/index.bin",
+            )
+            if self.users
+            else None
+        )
+
+    def manifest(self):
+        return self._manifest
+
+    def user_id(self, manifest, user_idx: int) -> str:
+        return self.users[user_idx]
+
+
 @pytest.fixture
 def app(tables, settings) -> App:
-    return App(settings, DynamoRepository(RECS_TABLE, DETAILS_TABLE, region="us-east-1"))
+    repo = DynamoRepository(RECS_TABLE, DETAILS_TABLE, region="us-east-1")
+    return App(settings, repo, users=FakeUsers())
 
 
 # ---- online bundle -----------------------------------------------------------------------------
@@ -197,6 +226,26 @@ def make_manifest(catalog: bytes, model_id: str = "abc123", **changes) -> dict:
         "user_tower_key": f"models/{model_id}/user_tower.npz",
         **changes,
     }
+
+
+def publish_user_index(s3, user_ids: list[int], prefix: str = "serving/users") -> dict:
+    """serving/users/index.bin + index.json as inference writes them (steam_inference.online)."""
+    import hashlib
+
+    import numpy as np
+
+    payload = np.asarray(user_ids, dtype="<i8").tobytes()
+    put = s3.put_object(Bucket=BUNDLE_BUCKET, Key=f"{prefix}/index.bin", Body=payload)
+    manifest = {
+        "format_version": 1,
+        "generated_at": GENERATED_AT,
+        "max_user": len(user_ids),
+        "index_key": f"{prefix}/index.bin",
+        "index_version_id": put.get("VersionId"),
+        "index_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    s3.put_object(Bucket=BUNDLE_BUCKET, Key=f"{prefix}/index.json", Body=json.dumps(manifest))
+    return manifest
 
 
 def publish_bundle(s3, seed: int = 0, model_id: str = "abc123") -> dict:

@@ -37,3 +37,20 @@ def test_handler_without_bucket_disables_online(tables):
     request["body"] = '{"liked_game_ids": [12]}'
     assert handler.handler(request, None)["statusCode"] == 503
     handler.app.cache_clear()
+
+
+def test_handler_serves_demo_users_from_s3(tables, monkeypatch):
+    import boto3
+    from conftest import BUNDLE_BUCKET, USERS, publish_user_index
+
+    s3 = boto3.client("s3")
+    s3.create_bucket(Bucket=BUNDLE_BUCKET)
+    s3.put_bucket_versioning(Bucket=BUNDLE_BUCKET, VersioningConfiguration={"Status": "Enabled"})
+    publish_user_index(s3, [int(u) for u in USERS.values()])
+    handler.app.cache_clear()
+    monkeypatch.setenv("MODEL_ARTIFACTS_BUCKET", BUNDLE_BUCKET)
+    response = handler.handler(event("/users/2/recommendations"), None)
+    data = body(response)
+    assert response["statusCode"] == 200 and data["source"] == "personalized"
+    assert (data["user_id"], data["user_idx"], data["max_user"]) == (USERS[2], 2, 3)
+    handler.app.cache_clear()

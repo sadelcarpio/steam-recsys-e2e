@@ -12,6 +12,7 @@ from steam_ingestion.steam_api import SteamClient
 
 RAW_BUCKET = "raw-steam-data-test"
 PARTITIONS_BUCKET = "game-partitions-test"
+USER_KEY = b"k" * 32  # HMAC key of the pseudonymous user ids (spec 13)
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +36,7 @@ def settings() -> IngestionSettings:
         reviews_flush_rows=3,
         max_reviews_per_game=0,
         steam_api_key="test-key",
+        user_id_hmac_key=USER_KEY.decode(),
     )
 
 

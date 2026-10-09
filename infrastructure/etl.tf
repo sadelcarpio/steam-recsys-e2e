@@ -31,7 +31,7 @@ locals {
       ["review_score_desc", "string"], ["scrape_date", "date"],
     ]
     reviews = [
-      ["rec_id", "bigint"], ["author_id", "bigint"], ["appid", "bigint"],
+      ["rec_id", "bigint"], ["user_id", "bigint"], ["appid", "bigint"],
       ["playtime_forever", "bigint"], ["playtime_last_two_weeks", "bigint"],
       ["playtime_at_review", "bigint"], ["num_games_owned", "bigint"], ["num_reviews", "bigint"],
       ["last_played", "bigint"], ["language", "string"], ["review", "string"],

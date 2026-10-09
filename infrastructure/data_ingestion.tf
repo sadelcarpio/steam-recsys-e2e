@@ -28,6 +28,7 @@ resource "aws_ssm_parameter" "ingestion" {
     GAME_IDS_TABLE                = aws_dynamodb_table.game_ids_state.name
     REVIEWS_CURSOR_TABLE          = aws_dynamodb_table.reviews_state_cursor.name
     STEAM_API_KEY_SECRET_ID       = aws_secretsmanager_secret.steam_api_key.name
+    USER_ID_KEY_SECRET_ID         = aws_secretsmanager_secret.user_id_hmac_key.name
     NUM_REVIEW_WORKERS            = tostring(var.num_review_workers)
     NUM_GAMES_WORKERS             = tostring(var.num_games_workers)
     GAMES_PER_TASK                = tostring(var.games_per_task)
@@ -55,6 +56,30 @@ resource "aws_secretsmanager_secret_version" "steam_api_key" {
   lifecycle {
     ignore_changes = [secret_string]
   }
+}
+
+# HMAC key of the pseudonymous user ids (spec 13, steam_ingestion/anonymize.py), read by
+# reviews-scraping and the one-off anonymize-raw-reviews task. Generated once and written
+# write-only: it is in neither the plan nor the state. Never rotate it (bumping
+# secret_string_wo_version would): a new key splits every user's history in two.
+ephemeral "aws_secretsmanager_random_password" "user_id_hmac_key" {
+  password_length     = 64
+  exclude_punctuation = true
+}
+
+resource "aws_secretsmanager_secret" "user_id_hmac_key" {
+  name                    = "data-ingestion/user-id-hmac-key"
+  description             = "HMAC key of the pseudonymous user ids (spec 13). Never rotate."
+  recovery_window_in_days = 30
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "user_id_hmac_key" {
+  secret_id                = aws_secretsmanager_secret.user_id_hmac_key.id
+  secret_string_wo         = ephemeral.aws_secretsmanager_random_password.user_id_hmac_key.random_password
+  secret_string_wo_version = 1
 }
 
 # ---- ECR -----------------------------------------------------------------------------------
@@ -257,6 +282,11 @@ data "aws_iam_policy_document" "scraping_task" {
     actions   = ["ssm:GetParametersByPath"]
     resources = local.ingestion_ssm_arns
   }
+  statement {
+    sid       = "UserIdKey"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.user_id_hmac_key.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "scraping_task" {
@@ -294,6 +324,74 @@ resource "aws_ecs_task_definition" "scraping" {
         awslogs-group         = aws_cloudwatch_log_group.scraping.name
         awslogs-region        = local.region
         awslogs-stream-prefix = each.value.name
+      }
+    }
+  }])
+}
+
+# ---- One-off: anonymize-raw-reviews (spec 13) -------------------------------------------------
+
+# Rewrites the raw review files written before the scraper hashed the author id (author_id ->
+# user_id, in place). Started by hand (docs/deployment.md), in region: about 17 GB.
+resource "aws_iam_role" "anonymize_raw_reviews" {
+  name               = "${var.project}-anonymize-raw-reviews"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
+}
+
+data "aws_iam_policy_document" "anonymize_raw_reviews" {
+  statement {
+    sid       = "ListRaw"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.raw_steam_data.arn]
+  }
+  statement {
+    sid       = "RewriteRawReviews"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.raw_steam_data.arn}/reviews/*"]
+  }
+  statement {
+    sid       = "Config"
+    actions   = ["ssm:GetParametersByPath"]
+    resources = local.ingestion_ssm_arns
+  }
+  statement {
+    sid       = "UserIdKey"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.user_id_hmac_key.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "anonymize_raw_reviews" {
+  role   = aws_iam_role.anonymize_raw_reviews.id
+  policy = data.aws_iam_policy_document.anonymize_raw_reviews.json
+}
+
+resource "aws_ecs_task_definition" "anonymize_raw_reviews" {
+  family                   = "anonymize-raw-reviews"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 2048
+  memory                   = 8192
+  execution_role_arn       = aws_iam_role.scraping_execution.arn
+  task_role_arn            = aws_iam_role.anonymize_raw_reviews.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([{
+    name        = "anonymize-raw-reviews"
+    image       = "${aws_ecr_repository.data_ingestion.repository_url}:${var.scraping_image_tag}"
+    essential   = true
+    command     = ["python", "-m", "steam_ingestion.anonymize_raw_reviews", "--workers", "4"]
+    environment = [{ name = "USE_SSM", value = "true" }]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.scraping.name
+        awslogs-region        = local.region
+        awslogs-stream-prefix = "anonymize-raw-reviews"
       }
     }
   }])

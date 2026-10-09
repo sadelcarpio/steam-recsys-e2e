@@ -3,7 +3,9 @@ import type { RecommendationsResponse, SearchIndex } from "../src/api";
 // Shaped like the serving API's JSON (exclude_none: absent optional fields).
 export const personalized: RecommendationsResponse = {
   source: "personalized",
-  user_id: "76561198312196006",
+  user_id: "4559049361332948866",
+  user_idx: 12,
+  max_user: 38096542,
   model_id: "local-e61c060-val1",
   generated_at: "2026-09-25T20:00:00Z",
   reranked: true,

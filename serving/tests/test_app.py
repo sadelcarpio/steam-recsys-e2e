@@ -1,9 +1,9 @@
 import pytest
-from conftest import GENERATED_AT, body, event
+from conftest import GENERATED_AT, USERS, FakeUsers, body, event
 
 from steam_serving.contracts import GameDetails, RecommendationsResponse
 
-USER = "76561198000000001"
+USER = "1"  # demo user number (spec 13) of USERS[1]
 
 
 def test_health_needs_no_tables(settings):
@@ -20,7 +20,8 @@ def test_user_recommendations_with_details(app):
     assert response["headers"]["Content-Type"] == "application/json"
     assert response["headers"]["Cache-Control"] == "public, max-age=300"
     data = RecommendationsResponse.model_validate_json(response["body"])
-    assert (data.source, data.user_id, data.model_id) == ("personalized", USER, "abc123")
+    assert (data.source, data.user_id, data.model_id) == ("personalized", USERS[1], "abc123")
+    assert (data.user_idx, data.max_user) == (1, 3)
     assert data.reranked and data.rerank_model == "us.amazon.nova-2-lite-v1:0"
     assert data.generated_at.isoformat() == GENERATED_AT
     recs = data.recommendations
@@ -46,14 +47,15 @@ def test_limit_and_no_details(app):
 
 
 def test_short_list_is_returned_whole(app):
-    data = body(app.handle(event("/users/76561198000000002/recommendations", {"limit": "20"})))
+    data = body(app.handle(event("/users/2/recommendations", {"limit": "20"})))
     assert [r["game_id"] for r in data["recommendations"]] == [10, 11, 12]
     assert data["reranked"] is False and "rerank_model" not in data
 
 
 def test_unknown_user_gets_the_popularity_fallback(app):
-    data = body(app.handle(event("/users/123/recommendations", {"limit": "7"})))
-    assert (data["source"], data["user_id"], data["model_id"]) == ("popular", "123", "popularity")
+    data = body(app.handle(event("/users/3/recommendations", {"limit": "7"})))
+    assert (data["source"], data["user_id"], data["model_id"]) == ("popular", "42", "popularity")
+    assert data["user_idx"] == 3
     recs = data["recommendations"]
     assert [r["game_id"] for r in recs] == list(range(100, 107))
     assert "details" in recs[4] and "details" not in recs[5]  # 105+ have no details item
@@ -68,7 +70,7 @@ def test_popular(app):
 def test_nothing_written_yet_is_404(app, tables):
     recs, _ = tables
     recs.delete_item(Key={"user_id": "__popular__"})
-    for path in ("/popular", "/users/123/recommendations"):
+    for path in ("/popular", "/users/3/recommendations"):
         response = app.handle(event(path))
         assert response["statusCode"] == 404
         assert body(response)["error"] == "no recommendations"
@@ -101,7 +103,11 @@ def test_game(app):
         ("/games/²", None, 400),
         (f"/users/{USER}/recommendations", {"details": "maybe"}, 400),
         ("/users/12a/recommendations", None, 400),
-        ("/users/123456789012345678901/recommendations", None, 400),
+        ("/users/0/recommendations", None, 400),  # user numbers start at 1
+        ("/users/01/recommendations", None, 400),
+        ("/users/12345678901/recommendations", None, 400),
+        ("/users/76561198000000001/recommendations", None, 400),  # Steam ids are not accepted
+        ("/users/4/recommendations", None, 404),  # past max_user
         ("/nope", None, 404),
         ("/", None, 404),
     ],
@@ -128,3 +134,14 @@ def test_internal_errors_are_500_without_details(settings):
     response = App(settings, Broken()).handle(event("/popular"))
     assert response["statusCode"] == 500
     assert body(response) == {"error": "internal error"}
+
+
+@pytest.mark.parametrize("users", [None, FakeUsers({})])
+def test_no_user_index_is_503(tables, settings, users):
+    from steam_serving.app import App
+    from steam_serving.repository import DynamoRepository
+
+    repo = DynamoRepository("game-explainable-recommendations", "game-details", region="us-east-1")
+    response = App(settings, repo, users=users).handle(event(f"/users/{USER}/recommendations"))
+    assert response["statusCode"] == 503
+    assert body(response)["error"] == "user index not available"
