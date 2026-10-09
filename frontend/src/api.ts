@@ -138,9 +138,15 @@ export async function searchIndex(): Promise<SearchIndex> {
   return index;
 }
 
-// Steam's CDN image of a game without stored details.
-export function headerImage(game: { game_id: number; details?: GameDetails }): string {
+// A game's stored header image (a recommendation's `details`, or the details themselves), else
+// Steam's legacy CDN path (newer games only have hashed image paths: it can 404).
+export function headerImage(game: {
+  game_id: number;
+  header_image?: string;
+  details?: GameDetails;
+}): string {
   return (
+    game.header_image ??
     game.details?.header_image ??
     `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.game_id}/header.jpg`
   );

@@ -34,7 +34,12 @@ export function priceLabel(details?: GameDetails): string | null {
   return `$${details.price.toFixed(2)}`;
 }
 
-function image(game: { game_id: number; name: string; details?: GameDetails }): HTMLImageElement {
+function image(game: {
+  game_id: number;
+  name: string;
+  header_image?: string;
+  details?: GameDetails;
+}): HTMLImageElement {
   const img = h("img", { src: headerImage(game), alt: game.name, loading: "lazy" });
   img.addEventListener("error", () => img.classList.add("missing"), { once: true });
   return img;

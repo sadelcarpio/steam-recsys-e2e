@@ -30,6 +30,7 @@ resource "aws_ssm_parameter" "ingestion" {
     STEAM_API_KEY_SECRET_ID       = aws_secretsmanager_secret.steam_api_key.name
     USER_ID_KEY_SECRET_ID         = aws_secretsmanager_secret.user_id_hmac_key.name
     NUM_REVIEW_WORKERS            = tostring(var.num_review_workers)
+    NUM_GAMES_WORKERS             = tostring(var.num_games_workers)
     GAMES_PER_TASK                = tostring(var.games_per_task)
     MAX_REVIEWS_PER_GAME          = tostring(var.max_reviews_per_game)
     BACKFILL_REVIEWS_PER_RUN      = tostring(var.backfill_reviews_per_run)

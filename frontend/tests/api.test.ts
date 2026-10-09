@@ -77,6 +77,9 @@ describe("api", () => {
 
   it("falls back to Steam's CDN image without details", () => {
     expect(headerImage(personalized.recommendations[0])).toBe("https://cdn.example/620/header.jpg");
+    expect(headerImage(personalized.recommendations[0].details!)).toBe(
+      "https://cdn.example/620/header.jpg",
+    );
     expect(headerImage({ game_id: 400 })).toMatch(/\/apps\/400\/header\.jpg$/);
   });
 });

@@ -15,7 +15,7 @@ EventBridge Scheduler ─► Step Functions
 
 | Piece | Entry point | What it does |
 |---|---|---|
-| Lambda `list-partition-game-ids` | `steam_ingestion.list_partition_game_ids.handler.handler` | GetAppList (games only, `if_modified_since` = stored catalog cursor), registers new appids as `pending` in `game-ids-state` and re-queues changed coming-soon games (below), writes game partitions (pending appids, ≤ `GAMES_PER_TASK` each) and review partitions (all known released games, balanced by estimated request count across `NUM_REVIEW_WORKERS`). |
+| Lambda `list-partition-game-ids` | `steam_ingestion.list_partition_game_ids.handler.handler` | GetAppList (games only, `if_modified_since` = stored catalog cursor), registers new appids as `pending` in `game-ids-state` and re-queues changed coming-soon games (below), writes game partitions (pending appids across `NUM_GAMES_WORKERS`, ≤ `GAMES_PER_TASK` each) and review partitions (all known released games, balanced by estimated request count across `NUM_REVIEW_WORKERS`). |
 | ECS `games-scraping` | `python -m steam_ingestion.games_scraping` | `appdetails` + review summary for each appid → `games/<scrape-date>-<n>-<part>.parquet`; marks appids `scraped` (with `coming_soon`) / `unavailable` / retries up to `MAX_GAME_ATTEMPTS`. |
 | ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor (uncapped by default: `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. The author is stored only as a pseudonymous `user_id` (below). |
 
@@ -120,7 +120,8 @@ SSM `/data-ingestion/<ENV_VAR>` (only read when `USE_SSM=true`, as in AWS).
 | `STEAM_API_KEY` | unset | Local fallback, skips Secrets Manager |
 | `USER_ID_KEY_SECRET_ID` | `data-ingestion/user-id-hmac-key` | HMAC key of the pseudonymous user ids (spec 13, ≥ 32 characters) |
 | `USER_ID_HMAC_KEY` | unset | Local / test fallback of that key, skips Secrets Manager |
-| `NUM_REVIEW_WORKERS` | 10 | |
+| `NUM_REVIEW_WORKERS` | 20 | Review partitions (= reviews tasks) |
+| `NUM_GAMES_WORKERS` | 5 | Game partitions (= games tasks); more when one would exceed `GAMES_PER_TASK` |
 | `GAMES_PER_TASK` | 8000 | ~7 h per task at the store rate limit (2 requests per game) |
 | `REQUEST_INTERVAL_SECONDS` | 1.5 | Pacing per task (≈200 req / 5 min per IP) |
 | `THROTTLE_COOLDOWN_SECONDS` | 60 | Minimum wait after an HTTP 429 (or `Retry-After` if longer), so retries outlast the throttle window |

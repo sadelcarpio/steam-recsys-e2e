@@ -32,7 +32,7 @@ aws stepfunctions start-execution --state-machine-arn <arn> --input '{"run_id": 
 ```
 
 Set `schedule_enabled = false` to pause the weekly schedule. Tunables are in `variables.tf`
-(`num_review_workers`, `games_per_task`, `max_reviews_per_game`, ...).
+(`num_review_workers`, `num_games_workers`, `games_per_task`, `max_reviews_per_game`, ...).
 
 ## CI/CD
 

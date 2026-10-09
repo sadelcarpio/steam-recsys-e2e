@@ -70,7 +70,10 @@ class IngestionSettings(BaseSettings):
     user_id_key_secret_id: str = "data-ingestion/user-id-hmac-key"
     user_id_hmac_key: SecretStr | None = None
 
-    num_review_workers: int = Field(10, ge=1)
+    num_review_workers: int = Field(20, ge=1)
+    # Pending games are split across this many games-scraping tasks (each its own egress IP),
+    # more only when a task would get over games_per_task (initial backfill).
+    num_games_workers: int = Field(5, ge=1)
     games_per_task: int = Field(8000, ge=1)
 
     # Steam store endpoints throttle at roughly 200 requests / 5 min per IP.
