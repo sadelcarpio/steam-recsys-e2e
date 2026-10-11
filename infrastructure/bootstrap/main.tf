@@ -187,8 +187,10 @@ resource "aws_iam_role_policy_attachment" "github_plan_read_only" {
   policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
-# What a plan needs beyond ReadOnlyAccess: the state lock file (use_lockfile) and the values of
-# the secret versions terraform manages (refresh reads them; ReadOnlyAccess cannot).
+# What a plan needs beyond ReadOnlyAccess: the state lock file (use_lockfile), the values of
+# the secret versions terraform manages (refresh reads them; ReadOnlyAccess cannot), and
+# GetRandomPassword: a plan opens ephemeral resources too (the HMAC key in data_ingestion.tf).
+# It only returns random bytes and has no resource ARN.
 data "aws_iam_policy_document" "github_plan" {
   statement {
     sid       = "TerraformStateLock"
@@ -199,6 +201,11 @@ data "aws_iam_policy_document" "github_plan" {
     sid       = "ManagedSecretValues"
     actions   = ["secretsmanager:GetSecretValue"]
     resources = ["arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:data-ingestion/*"]
+  }
+  statement {
+    sid       = "EphemeralRandomPassword"
+    actions   = ["secretsmanager:GetRandomPassword"]
+    resources = ["*"]
   }
 }
 
