@@ -69,6 +69,9 @@ class InferenceSettings(BaseSettings):
     online_bundle_prefix: str = "serving/online"
     # Game search index of the frontend, published with the online catalog (same bucket).
     search_index_key: str = "serving/search/games.json"
+    # Demo user index for serving (spec 13): mart user_index -> <prefix>/index.bin + index.json
+    # (same bucket), published with the online catalog.
+    user_index_prefix: str = "serving/users"
     # Adult games (adult.py): never recommended, in the popular list, the online catalog or search.
     exclude_adult: bool = True
     # Local file: write the items as JSON lines there instead of DynamoDB (dry runs).
@@ -120,6 +123,10 @@ class InferenceSettings(BaseSettings):
     # Parallel DynamoDB scan segments / batch writers. Only changed items are written; stored
     # users without recommendations are deleted (full runs only, i.e. MAX_USERS=0).
     write_concurrency: int = Field(8, ge=1)
+    # Delete the stored users this run did not write even when MAX_USERS caps it (a capped run
+    # otherwise keeps them). One-off, e.g. the run that rekeys the table (spec 13): the users
+    # past the cap get the popular fallback until they are scored again.
+    prune_unseen: bool = False
 
     log_level: str = "INFO"
 

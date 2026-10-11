@@ -13,6 +13,16 @@ def test_chunk_by_size_uses_fewest_balanced_chunks() -> None:
     assert chunk_by_size([1, 2], 8000) == [[1, 2]]
 
 
+def test_chunk_by_size_splits_across_min_chunks() -> None:
+    chunks = chunk_by_size(list(range(12)), 8000, min_chunks=5)
+    assert [len(c) for c in chunks] == [3, 3, 2, 2, 2]
+    assert sum(chunks, []) == list(range(12))
+    # never an empty chunk: fewer items than min_chunks -> one item each
+    assert chunk_by_size([1, 2], 8000, min_chunks=5) == [[1], [2]]
+    # max_size still wins over min_chunks (initial backfill)
+    assert len(chunk_by_size(list(range(30)), 4, min_chunks=5)) == 8
+
+
 def test_balance_by_weight_spreads_heavy_items_and_drops_empty() -> None:
     weights = {1: 100.0, 2: 90.0, 3: 10.0, 4: 10.0}
     bins = balance_by_weight([1, 2, 3, 4], weights, 2)

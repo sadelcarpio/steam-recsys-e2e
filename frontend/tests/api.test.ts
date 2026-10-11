@@ -41,12 +41,11 @@ describe("api", () => {
     expect(Object.keys(headers).map((h) => h.toLowerCase())).not.toContain("authorization");
   });
 
-  it("asks for a user's list with details, id kept as a string", async () => {
+  it("asks for a demo user's list with details, by user number", async () => {
     const fetch = mockFetch(200, personalized);
-    await userRecommendations("76561198312196006");
-    expect(fetch.mock.calls[0][0]).toBe(
-      "/api/users/76561198312196006/recommendations?limit=30&details=true",
-    );
+    const response = await userRecommendations(12);
+    expect(fetch.mock.calls[0][0]).toBe("/api/users/12/recommendations?limit=30&details=true");
+    expect(response.user_id).toBe("4559049361332948866"); // pseudonymous id, kept as a string
   });
 
   it("turns API errors into a Spanish message, keeping the server's in detail", async () => {
@@ -65,7 +64,7 @@ describe("api", () => {
       "fetch",
       vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))),
     );
-    const err = await userRecommendations("1").catch((e) => e);
+    const err = await userRecommendations(1).catch((e) => e);
     expect([err.status, err.message]).toEqual([0, "No se pudo conectar con el servidor."]);
   });
 

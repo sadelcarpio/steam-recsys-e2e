@@ -20,6 +20,7 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
                                            interactions                  training examples (ASOF join)
                                            game_details                  human-readable details (serving)
                                            game_tags                     current Steam user tags per game
+                                           user_index                    demo user numbers (rebuilt every run)
 ```
 
 ## Marts
@@ -32,6 +33,10 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
 | `game_details` | one current catalog game (the same rows as `int_games__deduplicated`) | `game_id`, `game_name_key`, `game_name`, `game_short_description`, `game_header_image` (URL), `game_release_date` (text as shown on Steam), `game_is_free`, `game_price`, `game_developers` / `_publishers` / `_genres` / `_categories` (**names**), `game_coming_soon` (unreleased at its latest scrape, spec 10: inference never recommends or indexes these). Not a model feature: inference loads it into DynamoDB `game-details` for serving. |
 | `game_tags` | one catalog game with tags (spec 8) | `game_idx`, `game_tags` (`lkp_tags` ids, weight descending), `game_tag_weights` (Steam's weights, same order), `scraped_at`, `scrape_date`. The latest tags scrape: a static feature like the genres, not time-versioned (later votes leak into older training rows, accepted) |
 | `interactions` | `review_id` | `timestamp`, `user_id`, `game_id`, `is_positive` (label) + all user and game features **as of strictly before** the review |
+| `user_index` | one user of `interactions` (spec 13) | `user_idx` (1 = most reviews ... `count(*)`, ties by lowest `user_id`: the order inference uses for `MAX_USERS` and the rerank), `user_id`, `num_reviews`, `num_positive`, `last_reviewed_at`. A plain Iceberg table **rebuilt every run**: `user_idx` changes as reviews arrive, so it is for demo queries only (`/u/<user_idx>`), never a join key or an export column. Inference publishes it for serving. |
+
+`user_id` is pseudonymous everywhere (spec 13): the scraper stores a keyed hash of the Steam
+author id (63-bit, non-negative), never the SteamID64.
 
 The latest `game_features` / `user_features` row per key is the current state (for inference).
 

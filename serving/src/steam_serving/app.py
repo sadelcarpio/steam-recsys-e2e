@@ -1,7 +1,8 @@
 """HTTP API of the `recsys-serving` Lambda (Function URL events, payload format 2.0).
 
     GET /health                              liveness (no DynamoDB call)
-    GET /users/{user_id}/recommendations     the user's list, else the popularity fallback
+    GET /users/{user_idx}/recommendations    the list of demo user number `user_idx` (spec 13:
+                                             1 = most active user), else the popularity fallback
     GET /popular                             the popularity list
     GET /games/{game_id}                     details of one game
     POST /recommendations                    online: for the liked games in the body
@@ -26,7 +27,7 @@ from pydantic import BaseModel, ValidationError
 from steam_serving.config import ServingSettings
 from steam_serving.contracts import (
     POPULAR_USER_ID,
-    USER_ID_PATTERN,
+    USER_IDX_PATTERN,
     ErrorResponse,
     GameDetails,
     OnlineRequest,
@@ -36,12 +37,13 @@ from steam_serving.contracts import (
 )
 from steam_serving.online import OnlineModel
 from steam_serving.repository import Repository
+from steam_serving.users import UserIndex
 
 log = logging.getLogger(__name__)
 
 USER_RECOMMENDATIONS = re.compile(r"^/users/([^/]+)/recommendations/?$")
 GAME = re.compile(r"^/games/([^/]+)/?$")
-_USER_ID = re.compile(USER_ID_PATTERN)
+_USER_IDX = re.compile(USER_IDX_PATTERN)
 _TRUE, _FALSE = {"true", "1", "yes"}, {"false", "0", "no"}
 
 
@@ -58,10 +60,12 @@ class App:
         settings: ServingSettings,
         repository: Repository,
         online: Callable[[], OnlineModel | None] | None = None,
+        users: UserIndex | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.online = online  # the current online model (None: endpoint disabled)
+        self.users = users  # demo user index (None: GET /users/... disabled)
 
     def handle(self, event: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
@@ -107,14 +111,23 @@ class App:
             return self.game(match.group(1)), True
         raise HttpError(404, "not found", f"no route for {path}")
 
-    def user_recommendations(self, user_id: str, query: dict[str, str]) -> RecommendationsResponse:
-        if not _USER_ID.match(user_id):
-            raise HttpError(400, "invalid user_id", "a Steam account id: 1 to 20 digits")
+    def user_recommendations(self, user_idx: str, query: dict[str, str]) -> RecommendationsResponse:
+        if not _USER_IDX.match(user_idx):
+            raise HttpError(400, "invalid user_idx", "a user number from 1, up to 10 digits")
         limit, details = self._list_options(query)
+        manifest = self.users.manifest() if self.users else None
+        if self.users is None or manifest is None:
+            raise HttpError(503, "user index not available", "no user index published yet")
+        idx = int(user_idx)
+        if idx > manifest.max_user:
+            raise HttpError(404, "unknown user", f"user numbers go from 1 to {manifest.max_user}")
+        user_id = self.users.user_id(manifest, idx)
         stored = self.repository.recommendations(user_id)
         if stored is not None:
-            return self._recommendations("personalized", user_id, stored, limit, details)
-        return self._recommendations("popular", user_id, self._popular(), limit, details)
+            response = self._recommendations("personalized", user_id, stored, limit, details)
+        else:
+            response = self._recommendations("popular", user_id, self._popular(), limit, details)
+        return response.model_copy(update={"user_idx": idx, "max_user": manifest.max_user})
 
     def popular(self, query: dict[str, str]) -> RecommendationsResponse:
         limit, details = self._list_options(query)

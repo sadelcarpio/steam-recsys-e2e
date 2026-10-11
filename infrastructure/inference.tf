@@ -21,6 +21,9 @@ locals {
   # Game search index of the frontend, written with the catalog, served by CloudFront (frontend.tf).
   search_index_prefix = "serving/search"
   search_index_key    = "${local.search_index_prefix}/games.json"
+  # Demo user index (spec 13): user_idx -> pseudonymous user_id, written by inference, read by
+  # serving.
+  user_index_prefix = "serving/users"
 }
 
 # ---- Output: recommendations table -----------------------------------------------------------
@@ -62,6 +65,7 @@ resource "aws_ssm_parameter" "inference" {
     GAME_DETAILS_TABLE     = aws_dynamodb_table.game_details.name
     ONLINE_BUNDLE_PREFIX   = local.online_bundle_prefix
     SEARCH_INDEX_KEY       = local.search_index_key
+    USER_INDEX_PREFIX      = local.user_index_prefix
     BEDROCK_MODEL_ID       = var.inference_bedrock_model_id
     MAX_USERS              = tostring(var.inference_max_users)
     RERANK_MAX_USERS       = tostring(var.inference_rerank_max_users)
@@ -135,6 +139,7 @@ data "aws_iam_policy_document" "inference" {
     resources = [
       "${aws_s3_bucket.model_artifacts.arn}/${local.online_bundle_prefix}/*",
       "${aws_s3_bucket.model_artifacts.arn}/${local.search_index_key}",
+      "${aws_s3_bucket.model_artifacts.arn}/${local.user_index_prefix}/*",
     ]
   }
   statement {

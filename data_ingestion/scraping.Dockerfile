@@ -2,6 +2,7 @@
 #   games:   ["python", "-m", "steam_ingestion.games_scraping"]
 #   reviews: ["python", "-m", "steam_ingestion.reviews_scraping"]
 #   tags:    ["python", "-m", "steam_ingestion.tags_scraping"]
+#   one-off: ["python", "-m", "steam_ingestion.anonymize_raw_reviews"] (spec 13)
 # Build from data_ingestion/: docker build -f scraping.Dockerfile -t data-ingestion .
 FROM ghcr.io/astral-sh/uv:0.8 AS uv
 

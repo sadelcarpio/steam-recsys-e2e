@@ -10,7 +10,7 @@ component, described below:
 | Training       | @training       | Responsible of taking the processed Iceberg tables from the ETL in order to train the recommender model (currently only retrieval since there is not enough user signal). Output artifacts are the User and Item tower.                                                                                                                                                                                                                                              |
 | Inference      | @inference      | Includes the Inference Pipeline which reads the necessary features from the Iceberg Tables, runs the two tower model and reranks the top N items with an LLM, including a natural text paragraph on why the recommendation was chosen                                                                                                                                                                                                                                |
 | Serving        | @serving        | Lightweight lambda app to serve the final recommender system. Fetch the recommendations for each user directly from DynamoDB's `game-explainable-recommendations` table (popularity fallback for unknown users), enriched with the `game-details` table, behind a Lambda Function URL (auth `AWS_IAM` or `NONE`)                                                                                                                                                                         |
-| Frontend       | @frontend       | Static web app (Vite + TypeScript) on S3 behind CloudFront: in-browser game search over a search index written by inference, liked games → online recommendations, `/u/<steam id>` for a user's precomputed recommendations. CloudFront routes `/api/*` to the serving Function URL (signed with OAC, so it can stay `AWS_IAM`) and `/data/*` to the search index                                                    |
+| Frontend       | @frontend       | Static web app (Vite + TypeScript) on S3 behind CloudFront: in-browser game search over a search index written by inference, liked games → online recommendations, `/u/<user number>` for a demo user's precomputed recommendations (spec 13: users are numbered by activity, no Steam id is stored). CloudFront routes `/api/*` to the serving Function URL (signed with OAC, so it can stay `AWS_IAM`) and `/data/*` to the search index                                                    |
 | Infrastructure | @infrastructure | Necessary AWS infrastructure (terraform), including AWS Lambda for serving, EventBridge to schedule the Step Function to handle the full ingestion to recs pipeline. Since doing batch retrieval recommendation recomputation triggers as new data arrives in batch.                                                                                                                                                                                                 |
 
 ## General Outlines
@@ -55,9 +55,9 @@ variables or a CD workflow.
 
 1. Lambda `list-partition-game-ids`: pulls game IDs from Steam API, emits game ID partitions
 2. Parallel (Distributed Maps over the partition files in S3):
-    - ECS Fargate `games-scraping` (Distributed Map, 1 task per ≤8k new game ids: 1 task normally, ~17 on the initial
-      backfill)
-    - ECS Fargate `reviews-scraping` (×N tasks, one per partition; public subnet,
+    - ECS Fargate `games-scraping` (×5 tasks: pending game ids split across `num_games_workers`;
+      more partitions of ≤8k each, still 5 at a time, on an initial backfill)
+    - ECS Fargate `reviews-scraping` (×20 tasks, one per partition; public subnet,
       assignPublicIp=ENABLED, so each task has a distinct egress IP to avoid per-IP throttling)
     - ECS Fargate `tags-scraping` (1 task: Steam user tags of every known game, spec 8; best
       effort, a failure keeps the previous tags)
@@ -76,14 +76,15 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - scraping tasks ↔ DynamoDB `game-ids-state`, `reviews-state-cursor` (read/write scrape state)
 - scraping tasks → S3 `raw-steam-data-<account-id>/games/*.parquet`, `raw-steam-data-<account-id>/reviews/*.parquet`
   (reviews: newest first, then a per-run backfill of older reviews, spec 6), `raw-steam-data-<account-id>/game_tags/*.parquet`
-  (Steam user tags, spec 8)
+  (Steam user tags, spec 8). Review authors are stored only as a pseudonymous `user_id` (keyed
+  hash of the SteamID64, spec 13)
 
 ### Data lake
 
 - S3 raw parquet (Glue `steam_raw`) → Athena → modeled tables → S3 `processed-steam-data-<account-id>/iceberg/`
   (Glue `steam_staging` / `steam_intermediate` / `steam_marts`)
 - dbt (3) runs its models via Athena (workgroup `steam-recsys-etl`)
-- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `user_features`, `lkp_*` (see `etl/README.md`)
+- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `user_features`, `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
 
 ### Training (outside the Step Functions workflow)
 
@@ -98,14 +99,18 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - SageMaker Inference Pipeline → top-K recs (changed users only) + `__popular__` fallback → DynamoDB
   `game-explainable-recommendations`
 - S3 (Iceberg `game_details`) → SageMaker Inference Pipeline → new games only → DynamoDB `game-details`
+- S3 (Iceberg `user_index`) → SageMaker Inference Pipeline → demo user index → S3
+  `model-artifacts-<account-id>/serving/users/` (spec 13)
 - SageMaker Inference Pipeline → online catalog (current item embeddings) → S3
   `model-artifacts-<account-id>/serving/online/` (the user tower comes from training:
   `models/<sha>/user_tower.npz`)
 
 ### Serving (online path)
 
-- User → user id → Lambda Function URL → Lambda `recsys-serving` → reads DynamoDB
-  `game-explainable-recommendations` (+ `game-details`) → recommendations → User
+- User → user number → Lambda Function URL → Lambda `recsys-serving` → S3
+  `model-artifacts-<account-id>/serving/users/index.bin` (user number → pseudonymous user id,
+  spec 13) → reads DynamoDB `game-explainable-recommendations` (+ `game-details`) →
+  recommendations → User
 - User → liked game ids → `POST /recommendations` → Lambda `recsys-serving` (the model's numpy user
   tower over the online catalog's item embeddings, exact top K) → recommendations → User
 - No LB in front of the Lambda; the diagram shows the Lambda called directly (Function URL, auth

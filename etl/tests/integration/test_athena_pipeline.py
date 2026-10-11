@@ -68,6 +68,7 @@ KEYS = {
     "game_tags": ("game_id",),
     "user_features": ("user_id", "timestamp"),
     "interactions": ("review_id",),
+    "user_index": ("user_idx",),
 }
 Snapshot = dict[str, list[dict[str, Any]]]
 
@@ -227,6 +228,7 @@ def test_incremental_matches_full_refresh(runs):
         "game_tags",
         "user_features",
         "interactions",
+        "user_index",
     ):
         assert without_batch(runs["full"][table]) == without_batch(runs["batch2"][table]), table
     for table in MART_CONTRACTS:
@@ -402,3 +404,19 @@ def test_interactions_use_features_strictly_before_the_review(runs):
     assert rows[907]["games_reviewed_positive"] == [9, 8, 7, 6, 5]
     assert rows[3]["is_positive"] is False and rows[2]["is_positive"] is True
     assert set(rows) == {r["review_id"] for r in runs["batch2"]["int_review_events"]}
+
+
+def test_user_index_ranks_users_by_reviews_then_id(runs):
+    for run in ("batch1", "batch2", "full"):
+        counts: dict[int, list[int]] = {}
+        for r in runs[run]["interactions"]:
+            counts.setdefault(r["user_id"], []).append(r["is_positive"])
+        expected = sorted(counts, key=lambda u: (-len(counts[u]), u))
+        rows = runs[run]["user_index"]  # sorted by user_idx
+        assert [r["user_idx"] for r in rows] == list(range(1, len(expected) + 1)), run
+        assert [r["user_id"] for r in rows] == expected, run
+        for r in rows:
+            assert (r["num_reviews"], r["num_positive"]) == (
+                len(counts[r["user_id"]]),
+                sum(counts[r["user_id"]]),
+            )

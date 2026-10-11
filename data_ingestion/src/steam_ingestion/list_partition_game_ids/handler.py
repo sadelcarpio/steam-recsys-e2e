@@ -4,7 +4,8 @@
 2. Register unseen appids as `pending` in `game-ids-state`, and put known coming-soon games
    that GetAppList reports as modified (usually their release) back to `pending` (spec 10).
 3. Write `games/<run_id>/appids-<n>.json`: every pending appid (new + retries + re-scrapes),
-   ≤ games_per_task per file, one games-scraping task per file.
+   split across num_games_workers files (more when a file would get over games_per_task), one
+   games-scraping task per file.
 4. Write `reviews/<run_id>/part-<n>.json`: every known scrapable, released appid, balanced across
    num_review_workers by estimated request count (including this run's backfill of older
    reviews). `etl_full_refresh` tells the pipeline to rebuild the marts: backfilled reviews are
@@ -86,7 +87,8 @@ def run(
     )
     games_keys = []
     delete_prefix(s3, settings.partitions_bucket, f"games/{run_id}/")
-    for n, chunk in enumerate(chunk_by_size(pending, settings.games_per_task)):
+    chunks = chunk_by_size(pending, settings.games_per_task, settings.num_games_workers)
+    for n, chunk in enumerate(chunks):
         key = f"games/{run_id}/appids-{n:03d}.json"
         write_partition(
             s3, settings.partitions_bucket, key, PartitionFile(run_id=run_id, appids=chunk)
