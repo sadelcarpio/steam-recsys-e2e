@@ -91,7 +91,7 @@ jobs:
   data-ingestion:
     needs: [changes, guard, infrastructure]
     if: >-
-      always() && needs.guard.result == 'success' && needs.changes.outputs.data-ingestion == 'true'
+      !cancelled() && needs.guard.result == 'success' && needs.changes.outputs.data-ingestion == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
     uses: ./.github/workflows/data-ingestion-cd.yml
     permissions:
@@ -101,7 +101,7 @@ jobs:
   etl:
     needs: [changes, guard, infrastructure]
     if: >-
-      always() && needs.guard.result == 'success' && needs.changes.outputs.etl == 'true'
+      !cancelled() && needs.guard.result == 'success' && needs.changes.outputs.etl == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
     uses: ./.github/workflows/etl-cd.yml
     permissions:
@@ -111,7 +111,7 @@ jobs:
   inference:
     needs: [changes, guard, infrastructure]
     if: >-
-      always() && needs.guard.result == 'success' && needs.changes.outputs.inference == 'true'
+      !cancelled() && needs.guard.result == 'success' && needs.changes.outputs.inference == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
     uses: ./.github/workflows/inference-cd.yml
     permissions:
@@ -121,7 +121,7 @@ jobs:
   serving:
     needs: [changes, guard, infrastructure]
     if: >-
-      always() && needs.guard.result == 'success' && needs.changes.outputs.serving == 'true'
+      !cancelled() && needs.guard.result == 'success' && needs.changes.outputs.serving == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
     uses: ./.github/workflows/serving-cd.yml
     permissions:
@@ -131,7 +131,7 @@ jobs:
   frontend:
     needs: [changes, guard, infrastructure]
     if: >-
-      always() && needs.guard.result == 'success' && needs.changes.outputs.frontend == 'true'
+      !cancelled() && needs.guard.result == 'success' && needs.changes.outputs.frontend == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
     uses: ./.github/workflows/frontend-cd.yml
     permissions:
