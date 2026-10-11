@@ -10,7 +10,10 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
 - Component config goes in SSM `/<component-kebab>/<ENV_VAR>` and secrets go in Secrets
   Manager `<component-kebab>/<name>`. Secret values are dummy placeholders with
   `ignore_changes`, and the real values are set out of band. Never put real secrets in code
-  or tfvars.
+  or tfvars. The one exception is a generated key, `data-ingestion/user-id-hmac-key` (spec 13):
+  ephemeral `aws_secretsmanager_random_password` + `secret_string_wo` (in neither plan nor
+  state), `prevent_destroy`. Never bump its `secret_string_wo_version`: a new key splits every
+  user's history.
 - Application code is deployed by the component CD workflows, not by Terraform. The Lambdas
   (`list-partition-game-ids`, `recsys-serving`) use a placeholder zip plus
   `ignore_changes = [filename, source_code_hash]`, and ECS task definitions use

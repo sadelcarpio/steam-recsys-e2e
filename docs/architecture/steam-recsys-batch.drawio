@@ -253,7 +253,7 @@
         <mxCell id="27hQy9bwfdpKXOzjaASy-1" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" target="qQ_05n8uxreXFBnJPeQ2-88" value="">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="27hQy9bwfdpKXOzjaASy-2" connectable="0" parent="27hQy9bwfdpKXOzjaASy-1" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="load&#xa;cold start online path" vertex="1">
+        <mxCell id="27hQy9bwfdpKXOzjaASy-2" connectable="0" parent="27hQy9bwfdpKXOzjaASy-1" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="loadvalue="load&#xa;cold start online path"#xa;cold start online pathvalue="load&#xa;cold start online path"#xa;+ user index" vertex="1">
           <mxGeometry relative="1" x="0.3464" as="geometry">
             <mxPoint y="10" as="offset" />
           </mxGeometry>
@@ -275,7 +275,7 @@
         <mxCell id="27hQy9bwfdpKXOzjaASy-16" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-54" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" target="qQ_05n8uxreXFBnJPeQ2-40" value="">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="27hQy9bwfdpKXOzjaASy-17" connectable="0" parent="27hQy9bwfdpKXOzjaASy-16" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="item embeddings&#xa;+&#xa;search index" vertex="1">
+        <mxCell id="27hQy9bwfdpKXOzjaASy-17" connectable="0" parent="27hQy9bwfdpKXOzjaASy-16" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="item embeddingsvalue="item embeddings&#xa;+&#xa;search index"#xa;+ search indexvalue="item embeddings&#xa;+&#xa;search index"#xa;+ user index" vertex="1">
           <mxGeometry relative="1" x="0.5123" y="-1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
@@ -311,7 +311,7 @@
             <mxPoint x="1575.8999999999999" y="916.2249999999999" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-94" connectable="0" parent="qQ_05n8uxreXFBnJPeQ2-93" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="user id" vertex="1">
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-94" connectable="0" parent="qQ_05n8uxreXFBnJPeQ2-93" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="user number" vertex="1">
           <mxGeometry relative="1" x="0.0512" y="-1" as="geometry">
             <mxPoint x="-6" y="1" as="offset" />
           </mxGeometry>

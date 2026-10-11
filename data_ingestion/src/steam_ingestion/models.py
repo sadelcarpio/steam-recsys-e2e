@@ -123,7 +123,8 @@ class GameTagsRecord(_Strict):
 
 class ReviewRecord(_Strict):
     rec_id: int
-    author_id: int
+    # HMAC of the author's SteamID64 (spec 13, anonymize.py): the raw id is never stored
+    user_id: int = Field(ge=0)
     appid: int
     playtime_forever: int | None
     playtime_last_two_weeks: int | None

@@ -1,16 +1,19 @@
 # etl
 
-Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
+Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-coming-soon-games.md`,
+`specs/13-anonymize-user-ids.md`). Human docs: `README.md`.
 
 ## Layout
 
 - `dbt/` (project `steam_recsys`, dbt-core 1.12 + dbt-athena, Athena engine v3 / Trino SQL)
   - `models/staging` (views), `models/intermediate` and `models/marts` (incremental Iceberg),
-    `models/marts/lookups` (`lkp_*`, append-only, `full_refresh: false`)
+    `models/marts/lookups` (`lkp_*`, append-only, `full_refresh: false`), and `user_index`
+    (spec 13), the only `table` materialization (rebuilt every run)
   - `macros/helpers.sql`: run stamp `batch_timestamp()`, reserved `padding_id()` (0) / `oov_id()` (1),
     `clean_string_array`, `encode_array`, `pad_ids`, `incremental_max`
   - `macros/asof.sql` (ASOF join CTEs), `macros/lookups.sql` (dense id vocabularies)
-  - `tests/`: generic `unique_combination`, `expression_is_true` + singular leakage test
+  - `tests/`: generic `unique_combination`, `expression_is_true` + singular tests (label
+    leakage, `assert_user_index_is_dense`)
   - `profiles.yml`: env-var driven, one `athena` target
 - `src/steam_etl/`
   - `config.py`: `EtlSettings` (env > SSM `/etl/*` when `USE_SSM=true`)
@@ -46,6 +49,10 @@ Spec: `specs/2-data-transformation.md`. Human docs: `README.md`.
 - `game_name_key` is lower(name) of a game's **first** scrape (a stored winner keeps its key),
   so a rename (e.g. on release) never puts one appid under two keys and incremental equals
   full refresh.
+- `user_id` is the scraper's pseudonymous id (spec 13), never a SteamID64: the raw column is
+  `user_id`. `user_index.user_idx` is a demo rank (1..count, `num_reviews desc, user_id`, the
+  order of inference's `Activity.most_active`): never a join key, a feature or an export
+  column. Its `_batch_at` is the user's latest upstream `_batch_at`, so a rerun is identical.
 - Timestamps are `timestamp(6)` in Iceberg tables (Athena requirement), but plain `timestamp` in
   views: Athena stores view columns as Hive types and rejects `timestamp(6)` there. Changing a mart's columns means updating
   `contracts.py` and the integration test (`on_schema_change: fail`).

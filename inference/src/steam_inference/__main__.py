@@ -56,6 +56,7 @@ def main() -> None:
                 settings.online_bundle_prefix,
                 region=settings.aws_region,
                 search_key=settings.search_index_key,
+                user_index_prefix=settings.user_index_prefix,
             )
         )
     reranker = None

@@ -170,6 +170,18 @@ def test_partial_runs_never_delete(settings, source, store, champion):
     assert len(_items()) == 4
 
 
+def test_pruning_partial_run_deletes_every_user_it_did_not_write(settings, source, store, champion):
+    """Spec 13 rekey: stale SteamID keys go even though MAX_USERS caps the run."""
+    table = boto3.resource("dynamodb").Table(TABLE)
+    table.put_item(
+        Item={"user_id": "76561198000000001", "content_hash": "x", "recommendations": []}
+    )
+    pruning = settings.model_copy(update={"max_users": 2, "prune_unseen": True})
+    summary = run_inference(pruning, source, store, _writer(pruning), None, now=NOW)
+    assert summary.deleted == 1
+    assert set(_items()) == {"104", "101"}  # the 2 most active users
+
+
 def test_new_champion_rewrites_everyone(settings, source, store, champion):
     run_inference(settings, source, store, _writer(settings), None, now=NOW)
     model = make_model(seed=5)

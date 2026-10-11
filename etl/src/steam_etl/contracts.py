@@ -112,10 +112,14 @@ class GameTagsRow(_Row):
         return self
 
 
+# Pseudonymous user ids (spec 13): a keyed hash of the SteamID64, 63 bits, never negative.
+UserId = Annotated[int, Field(ge=0)]
+
+
 class UserFeaturesRow(_Row):
     """user_features: state of a user through `timestamp`."""
 
-    user_id: int
+    user_id: UserId
     timestamp: datetime
     # Most recent first, right-padded with PADDING_ID.
     games_reviewed_positive: History
@@ -126,10 +130,27 @@ class InteractionRow(_GameFeatures, _Row):
 
     review_id: int
     timestamp: datetime
-    user_id: int
+    user_id: UserId
     game_id: int
     is_positive: bool
     games_reviewed_positive: History
+
+
+class UserIndexRow(_Row):
+    """user_index (spec 13): demo rank of a user, 1 = most reviews. Rebuilt every run, so
+    `user_idx` is not stable across runs: never a join key."""
+
+    user_idx: Annotated[int, Field(ge=1)]
+    user_id: UserId
+    num_reviews: Annotated[int, Field(ge=1)]
+    num_positive: Annotated[int, Field(ge=0)]
+    last_reviewed_at: datetime
+
+    @model_validator(mode="after")
+    def _counts(self) -> UserIndexRow:
+        if self.num_positive > self.num_reviews:
+            raise ValueError("num_positive must be <= num_reviews")
+        return self
 
 
 MART_CONTRACTS: dict[str, type[_Row]] = {
@@ -144,4 +165,5 @@ MART_CONTRACTS: dict[str, type[_Row]] = {
     "game_tags": GameTagsRow,
     "user_features": UserFeaturesRow,
     "interactions": InteractionRow,
+    "user_index": UserIndexRow,
 }

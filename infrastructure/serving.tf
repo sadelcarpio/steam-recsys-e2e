@@ -23,6 +23,7 @@ resource "aws_ssm_parameter" "serving" {
     GAME_DETAILS_TABLE     = aws_dynamodb_table.game_details.name
     MODEL_ARTIFACTS_BUCKET = aws_s3_bucket.model_artifacts.bucket
     ONLINE_BUNDLE_PREFIX   = local.online_bundle_prefix
+    USER_INDEX_PREFIX      = local.user_index_prefix
   }
   name  = "${local.serving_ssm_prefix}/${each.key}"
   type  = "String"
@@ -57,6 +58,11 @@ data "aws_iam_policy_document" "serving" {
     sid       = "ReadOnlineCatalog"
     actions   = ["s3:GetObject", "s3:GetObjectVersion"]
     resources = ["${aws_s3_bucket.model_artifacts.arn}/${local.online_bundle_prefix}/*"]
+  }
+  statement {
+    sid       = "ReadUserIndex"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${aws_s3_bucket.model_artifacts.arn}/${local.user_index_prefix}/*"]
   }
   statement {
     sid       = "ReadUserTowers"

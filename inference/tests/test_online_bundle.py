@@ -59,7 +59,11 @@ def test_model_without_numpy_user_tower_publishes_nothing(settings, source, stor
     assert not summary.skipped and summary.written == 5  # the batch run still completes
     assert summary.online_bundle is None
     listed = boto3.client("s3").list_objects_v2(Bucket=BUCKET, Prefix="serving/")
-    assert listed["KeyCount"] == 0
+    # only the demo user index (spec 13), which does not depend on the model
+    assert {o["Key"] for o in listed["Contents"]} == {
+        "serving/users/index.bin",
+        "serving/users/index.json",
+    }
 
 
 def test_skipped_run_publishes_nothing(settings, source, store):

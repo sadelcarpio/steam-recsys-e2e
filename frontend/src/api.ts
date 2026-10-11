@@ -37,6 +37,9 @@ export interface RecommendationsResponse {
   recommendations: Recommendation[];
   used_game_ids?: number[];
   ignored_game_ids?: number[];
+  // GET /users/{user_idx}/recommendations: the demo user number and the highest one
+  user_idx?: number;
+  max_user?: number;
 }
 
 export interface SearchIndex {
@@ -51,7 +54,9 @@ export const LIMIT = 30; // serving MAX_LIMIT (inference writes 30 per user)
 // The user tower reads the last 5 liked games (training USER_HISTORY_LENGTH): more would be
 // ignored. Serving accepts up to 100.
 export const MAX_LIKED_GAMES = 5;
-export const USER_ID_PATTERN = /^[0-9]{1,20}$/; // Steam 64-bit account id (a string)
+// Demo user number (spec 13): 1 = the most active user. Never a Steam id; user_id in responses is
+// a pseudonymous id, kept as a string (it exceeds JavaScript's safe integers).
+export const USER_IDX_PATTERN = /^[1-9][0-9]{0,9}$/;
 
 export class ApiError extends Error {
   constructor(
@@ -90,9 +95,8 @@ async function json<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function userRecommendations(userId: string): Promise<RecommendationsResponse> {
-  const id = encodeURIComponent(userId);
-  return json(await request(`/api/users/${id}/recommendations?limit=${LIMIT}&details=true`));
+export async function userRecommendations(userIdx: number): Promise<RecommendationsResponse> {
+  return json(await request(`/api/users/${userIdx}/recommendations?limit=${LIMIT}&details=true`));
 }
 
 export async function popular(): Promise<RecommendationsResponse> {

@@ -1,7 +1,8 @@
 # inference
 
 Specs: `specs/4-inference-pipeline.md`, `specs/7-rerank-two-stage.md` (two-stage rerank +
-evaluation), `specs/10-coming-soon-games.md` (unreleased games).
+evaluation), `specs/10-coming-soon-games.md` (unreleased games),
+`specs/13-anonymize-user-ids.md` (pseudonymous user ids, demo user index).
 Human docs: `README.md`.
 
 ## Layout
@@ -42,6 +43,10 @@ Human docs: `README.md`.
   - `search.py`: the frontend's search index (`build_search_index` / `index_from_catalog`:
     catalog games as [appid, name, reviews], `encode_search_index`: gzipped JSON), published
     with the catalog
+  - `user_index.py`: `load_user_index` (mart `user_index` -> user ids in `user_idx` order;
+    None when missing / empty, raises when not exactly 1..n), `encode_user_index` (int64 LE),
+    published by `BundleStore.publish_user_index` (index.bin, then index.json pinned to its
+    version; `UserIndexManifest`)
   - `adult.py`: `adult_mask` / `is_adult` (Steam's "Sexual Content" / "Nudity" genres, an
     explicit word in the name, or the adult Steam tags of `ADULT_TAGS` / top `ADULT_TOP_TAGS`)
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
@@ -76,12 +81,18 @@ Human docs: `README.md`.
 - Only changed items are written: `UserRecommendations.content_hash` covers what the user
   sees, but not the scores or the time. A new visible field must go into the hash, or changes
   to it will never be written. Deletes of users that are gone happen only on full runs
-  (`MAX_USERS=0`). There is no TTL, because unchanged items are never rewritten.
+  (`MAX_USERS=0`) or with `PRUNE_UNSEEN=true` (one-off rekey, spec 13). There is no TTL,
+  because unchanged items are never rewritten.
 - Items are the Pydantic contracts (`UserRecommendations`, `GameDetails`). Serving reads them
   with its own tolerant models (`serving/src/steam_serving/contracts.py`): change both, plus
   the README. The contract test fails when serving can't read an item. `user_id` is a string,
   and numbers are `Decimal`.
-- `__popular__` is a reserved `user_id` (never a Steam id). It is always emitted, so it is
+- `user_id` is the pseudonymous id of spec 13 (keyed hash, 63-bit, from the scraper): no
+  SteamID64 reaches this pipeline. The demo user index follows the mart `user_index`, whose
+  order (num_reviews desc, user_id) must stay the order of `Activity.most_active` and
+  `select_rerank_users` (`tests/test_user_index.py`); serving reads it
+  (`serving/src/steam_serving/users.py`, `UserIndexManifest`): change both together.
+- `__popular__` is a reserved `user_id` (never a real user id). It is always emitted, so it is
   never deleted as a gone user.
 - `game-details` is insert-only: an existing game is never rewritten. To force a reload,
   delete the items (or the table) first. It holds released games only: stored unreleased ones

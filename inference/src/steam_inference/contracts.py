@@ -4,7 +4,8 @@ LLM reranking response. Serving reads both tables (serving/src/steam_serving/con
 
 DynamoDB table `game-explainable-recommendations`, one item per user. A run only (re)writes
 the users whose `content_hash` changed and deletes the users that are gone:
-    user_id          S   partition key (Steam 64-bit id as a string: exceeds JS safe integers)
+    user_id          S   partition key: the pseudonymous user id (spec 13: 63-bit keyed hash of
+                         the SteamID64) as a string, since it exceeds JS safe integers
     recommendations  L   of M, best first: {game_id N, name S, score N, explanation S (top N only)}
     model_id         S   model that retrieved the candidates
     generated_at     S   ISO-8601 UTC time of the run
@@ -31,6 +32,11 @@ training/src/steam_training/export.py).
 
 Search index (`search.py`), for the frontend: s3://<model-artifacts>/serving/search/games.json
 (`SearchIndex`, gzipped), the same games as the online catalog, served by CloudFront.
+
+Demo user index (`user_index.py`, spec 13), for serving's /users/{user_idx}/...:
+s3://<model-artifacts>/serving/users/index.bin, the user ids of the mart `user_index` as
+little-endian int64 in user_idx order (user i at byte offset (i - 1) * 8), and index.json
+(`UserIndexManifest`) pinned to that file's S3 version. user_idx changes every run.
 """
 
 from __future__ import annotations
@@ -168,6 +174,22 @@ class OnlineBundleManifest(_Frozen):
     user_tower_key: str  # models/<model_id>/user_tower.npz, same bucket
 
 
+USER_INDEX_FORMAT = 1
+
+
+class UserIndexManifest(_Frozen):
+    """serving/users/index.json (spec 13). Keep in sync with serving/src/steam_serving/users.py.
+    Pinned to the index file's S3 version, so a reader never mixes a new manifest with an older
+    file."""
+
+    format_version: int = USER_INDEX_FORMAT
+    generated_at: datetime
+    max_user: int = Field(ge=1)  # user_idx runs from 1 to max_user
+    index_key: str
+    index_version_id: str | None = None  # None: unversioned storage (local dry runs)
+    index_sha256: str
+
+
 SEARCH_INDEX_FORMAT = 1
 
 
@@ -250,5 +272,6 @@ class InferenceSummary(_Frozen):
     game_details_deleted: int = 0  # unreleased games removed from game-details (spec 10)
     online_bundle: str | None = None
     search_index: str | None = None
+    user_index: str | None = None  # the manifest of the demo user index (spec 13)
     snapshots: dict[str, int | None] = Field(default_factory=dict)
     seconds: float = 0.0

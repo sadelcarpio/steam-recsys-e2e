@@ -1,7 +1,7 @@
 """Batch inference: champion model -> top K per user -> LLM rerank (top reviewers) -> DynamoDB
 (only the users whose recommendations changed are written), plus the popularity fallback item
-the details of new games (insert-only) and the online catalog (item embeddings of the current
-catalog, for the serving Lambda's POST /recommendations)."""
+the details of new games (insert-only), the online catalog (item embeddings of the current
+catalog, for the serving Lambda's POST /recommendations) and the demo user index (spec 13)."""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ from steam_inference.rerank import (
 )
 from steam_inference.retrieval import Candidates, retrieve
 from steam_inference.search import build_search_index, encode_search_index
+from steam_inference.user_index import encode_user_index, load_user_index
 from steam_inference.writer import Writer
 
 log = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ def run_inference(
     written = writer.write(changes)
     deleted = 0
     gone = stored.keys() - changes.seen
-    if gone and settings.max_users:
+    if gone and settings.max_users and not settings.prune_unseen:
         log.info("partial run (MAX_USERS=%d): %d stored users kept", settings.max_users, len(gone))
     elif gone:
         deleted = writer.delete(sorted(gone))
@@ -186,6 +187,13 @@ def run_inference(
         details_written, details_deleted, details_snapshot = sync_game_details(
             source, details_writer
         )
+    user_index = None
+    if bundle_store is not None:
+        user_ids = load_user_index(source)
+        if user_ids is not None:
+            user_index = bundle_store.publish_user_index(
+                encode_user_index(user_ids), max_user=len(user_ids), generated_at=now
+            )
     summary = InferenceSummary(
         model_id=metadata.model_id,
         skipped=False,
@@ -207,6 +215,7 @@ def run_inference(
         game_details_deleted=details_deleted,
         online_bundle=online_bundle,
         search_index=search_index,
+        user_index=user_index,
         snapshots={**data.snapshots, "game_details": details_snapshot},
         seconds=round(time.monotonic() - started, 1),
     )

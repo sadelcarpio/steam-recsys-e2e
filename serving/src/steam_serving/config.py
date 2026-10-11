@@ -69,11 +69,16 @@ class ServingSettings(BaseSettings):
     cache_max_age_seconds: int = Field(300, ge=0)
 
     # ---- online recommendations (POST /recommendations) ----
-    # Bucket of the online bundle written by the inference pipeline; unset = endpoint disabled.
+    # Bucket of the online bundle written by the inference pipeline; unset = endpoint disabled
+    # (and the demo user index below, so GET /users/... too).
     model_artifacts_bucket: str | None = None
     online_bundle_prefix: str = "serving/online"
     # A warm container re-reads the manifest at most this often (a new bundle is loaded then).
     online_refresh_seconds: int = Field(300, ge=0)
+    # Demo user index (spec 13, same bucket): GET /users/{user_idx}/recommendations; its
+    # manifest is re-read at most this often.
+    user_index_prefix: str = "serving/users"
+    user_index_refresh_seconds: int = Field(300, ge=0)
     # Liked games accepted per request (only the first HISTORY_LENGTH known ones feed the model;
     # all of them are excluded from the results).
     max_liked_games: int = Field(100, ge=1, le=1000)

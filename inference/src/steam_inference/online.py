@@ -6,7 +6,8 @@ Written every run, after retrieval (item embeddings depend on the weekly `review
 new games): catalog.npz (`contracts.ONLINE_BUNDLE_ARRAYS`) first, then manifest.json pinned to
 the new catalog's S3 version id and naming the user tower. Skipped (the previous manifest stays)
 when the model has no numpy user tower yet. Old catalog versions expire with the bucket's
-noncurrent-version lifecycle.
+noncurrent-version lifecycle. The demo user index (user_index.py, spec 13) is published the same
+way: index.bin, then index.json pinned to its version.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Protocol
 import boto3
 import numpy as np
 
-from steam_inference.contracts import ONLINE_BUNDLE_ARRAYS, OnlineBundleManifest
+from steam_inference.contracts import ONLINE_BUNDLE_ARRAYS, OnlineBundleManifest, UserIndexManifest
 from steam_inference.features import Games
 
 log = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ log = logging.getLogger(__name__)
 CATALOG_NAME = "catalog.npz"
 MANIFEST_NAME = "manifest.json"
 SEARCH_INDEX_NAME = "games.json"
+USER_INDEX_NAME = "index.bin"
+USER_INDEX_MANIFEST_NAME = "index.json"
 
 
 def build_catalog(
@@ -96,6 +99,11 @@ class BundleStore(Protocol):
         """Store the gzipped search index (`search.encode_search_index`); return where."""
         ...
 
+    def publish_user_index(self, payload: bytes, *, max_user: int, generated_at: datetime) -> str:
+        """Store the demo user index (`user_index.encode_user_index`), then its manifest; return
+        where the manifest is."""
+        ...
+
 
 def _manifest(payload: bytes, key: str, version_id: str | None, **fields) -> OnlineBundleManifest:
     return OnlineBundleManifest(
@@ -106,13 +114,31 @@ def _manifest(payload: bytes, key: str, version_id: str | None, **fields) -> Onl
     )
 
 
+def _user_index_manifest(
+    payload: bytes, key: str, version_id: str | None, **fields
+) -> UserIndexManifest:
+    return UserIndexManifest(
+        index_key=key,
+        index_version_id=version_id,
+        index_sha256=hashlib.sha256(payload).hexdigest(),
+        **fields,
+    )
+
+
 class S3BundleStore:
     def __init__(
-        self, bucket: str, prefix: str, *, region: str, search_key: str | None = None
+        self,
+        bucket: str,
+        prefix: str,
+        *,
+        region: str,
+        search_key: str | None = None,
+        user_index_prefix: str = "serving/users",
     ) -> None:
         self.bucket = bucket
         self.prefix = prefix.strip("/")
         self.search_key = search_key or f"serving/search/{SEARCH_INDEX_NAME}"
+        self.user_index_prefix = user_index_prefix.strip("/")
         self.s3 = boto3.client("s3", region_name=region)
 
     def publish(self, payload: bytes, **fields) -> str:
@@ -145,6 +171,24 @@ class S3BundleStore:
         log.info("search index: %.1f MB gzipped, %s", len(payload) / 1e6, uri)
         return uri
 
+    def publish_user_index(self, payload: bytes, **fields) -> str:
+        key = f"{self.user_index_prefix}/{USER_INDEX_NAME}"
+        put = self.s3.put_object(
+            Bucket=self.bucket, Key=key, Body=payload, ContentType="application/octet-stream"
+        )
+        manifest = _user_index_manifest(payload, key, put.get("VersionId"), **fields)
+        manifest_key = f"{self.user_index_prefix}/{USER_INDEX_MANIFEST_NAME}"
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=manifest_key,
+            Body=manifest.model_dump_json(indent=2).encode(),
+            ContentType="application/json",
+        )
+        uri = f"s3://{self.bucket}/{manifest_key}"
+        mb = len(payload) / 1e6
+        log.info("user index: %d users, %.1f MB, manifest %s", manifest.max_user, mb, uri)
+        return uri
+
 
 class LocalBundleStore:
     """Dry runs: the catalog and its manifest in a local directory."""
@@ -164,4 +208,12 @@ class LocalBundleStore:
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.directory / f"{SEARCH_INDEX_NAME}.gz"
         path.write_bytes(payload)
+        return str(path)
+
+    def publish_user_index(self, payload: bytes, **fields) -> str:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        (self.directory / USER_INDEX_NAME).write_bytes(payload)
+        manifest = _user_index_manifest(payload, USER_INDEX_NAME, None, **fields)
+        path = self.directory / USER_INDEX_MANIFEST_NAME
+        path.write_text(manifest.model_dump_json(indent=2))
         return str(path)
