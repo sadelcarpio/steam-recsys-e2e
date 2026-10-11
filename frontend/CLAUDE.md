@@ -16,7 +16,7 @@ Human docs: `README.md`.
   - `src/liked.ts`: picked games, most recent first, at most `MAX_LIKED_GAMES`, in
     localStorage (best effort)
   - `src/router.ts`: `/` and `/u/<user number>` (history API; CloudFront serves index.html for
-    extensionless paths), `neighbours` / `randomUser` (user page links)
+    extensionless paths), `neighbours` (user page ← / → links)
   - `src/main.ts`: app shell and pages
 - `tests/`: vitest + jsdom. `cloudfront.test.ts` evaluates `infrastructure/cloudfront/*.js`
   (the CloudFront Functions), so frontend CI also runs on changes there.

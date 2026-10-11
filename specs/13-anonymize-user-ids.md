@@ -144,8 +144,7 @@ Goals:
 ### Frontend
 
 - `/u/<user_idx>` (pattern `^[1-9][0-9]{0,9}$`). The header shows "Usuario n.º 12 de
-  38.096.542" with ← / → links to the neighbours, plus a "usuario al azar" link
-  (`1..min(max_user, 1000)`, the reranked range). The header box takes a user number.
+  38.096.542" with ← / → links to the neighbours. The header box takes a user number.
 - README demo table: the five SteamIDs are replaced by "pick any of `/u/1`…`/u/1000`". Fixed
   numbers would point to different users after the next run.
 
@@ -275,7 +274,7 @@ erDiagram
 - `serving`: idx → id via a ranged read on versioned moto S3 (pinned version, refresh, a broken
   refresh keeps the cached manifest), `> max_user` → 404, a bad pattern or a Steam id → 400, no
   index → 503.
-- `frontend`: route parsing of `/u/<idx>`, prev / next bounds, the random user range.
+- `frontend`: route parsing of `/u/<idx>`, prev / next bounds.
 
 ### Rollout
 

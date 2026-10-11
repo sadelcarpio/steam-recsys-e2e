@@ -20,22 +20,10 @@ export function userPath(userIdx: number): string {
   return `/u/${userIdx}`;
 }
 
-// The users with LLM explanations are the most active ones (inference RERANK_MAX_USERS).
-export const RANDOM_USER_RANGE = 1000;
-
 /** Neighbours of user `userIdx` among 1..maxUser (absent at the ends). */
 export function neighbours(userIdx: number, maxUser: number): { prev?: number; next?: number } {
   return {
     ...(userIdx > 1 ? { prev: Math.min(userIdx - 1, maxUser) } : {}),
     ...(userIdx < maxUser ? { next: userIdx + 1 } : {}),
   };
-}
-
-/** A random user among the first RANDOM_USER_RANGE (the reranked ones), other than `current`. */
-export function randomUser(maxUser: number, current?: number, random = Math.random): number {
-  const range = Math.min(maxUser, RANDOM_USER_RANGE);
-  if (range <= 1) return 1;
-  let pick = 1 + Math.floor(random() * range);
-  if (pick === current) pick = (pick % range) + 1;
-  return pick;
 }
