@@ -131,8 +131,9 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
 
 ## Auth
 
-The Function URL auth type is the Terraform variable `serving_auth_type`, chosen with the
-`serving_auth_type` input of the **infrastructure CD** on every run:
+The Function URL auth type is the Terraform variable `serving_auth_type`, set by the
+`SERVING_AUTH_TYPE` repository variable on every **infrastructure CD** run (a manual run may
+override it with its `serving_auth_type` input):
 
 - **`AWS_IAM`** (default): requests must be SigV4-signed (service `lambda`) by a principal
   allowed `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the function. Terraform

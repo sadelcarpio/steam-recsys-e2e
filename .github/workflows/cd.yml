@@ -1,0 +1,139 @@
+name: CD
+
+# On every merge to main: deploys the components whose files changed (manual run: all of them).
+# Order: pipeline guard (fails while the steam-recsys pipeline runs: a deploy mid-run would mix
+# image versions) -> infrastructure (plan, then apply in `prod`) -> component CDs (in `prod`).
+# Every `prod` job waits for the environment's required reviewer: one review for the
+# infrastructure apply (after its plan is in the summary), one for the component deploys (they
+# wait together). Training and promotion stay manual (training CD, training promote); so does an
+# inference run_now. A failed guard: re-run the failed jobs once the pipeline finishes.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      any: ${{ steps.diff.outputs.any }}
+      data-ingestion: ${{ steps.diff.outputs.data-ingestion }}
+      etl: ${{ steps.diff.outputs.etl }}
+      inference: ${{ steps.diff.outputs.inference }}
+      serving: ${{ steps.diff.outputs.serving }}
+      frontend: ${{ steps.diff.outputs.frontend }}
+      infrastructure: ${{ steps.diff.outputs.infrastructure }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Same patterns as ci.yml (minus training). A change to this file or to the pipeline
+      # guard, or a manual run, deploys everything.
+      - id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = push ] && git cat-file -e "${BEFORE}^{commit}" 2> /dev/null; then
+            files="$(git diff --name-only "$BEFORE" "$GITHUB_SHA")"
+          else
+            files=".github/workflows/cd.yml"
+          fi
+          printf '%s\n' "$files"
+          changed() {
+            if grep -qE "^(\.github/workflows/cd\.yml$|\.github/actions/pipeline-guard/|$1)" <<<"$files"; then echo true; else echo false; fi
+          }
+          {
+            echo "data-ingestion=$(changed 'data_ingestion/|\.github/workflows/data-ingestion-[^/]*\.yml$')"
+            echo "etl=$(changed 'etl/|\.github/workflows/etl-[^/]*\.yml$')"
+            echo "inference=$(changed 'inference/|training/src/|training/pyproject\.toml$|serving/src/|serving/pyproject\.toml$|\.github/workflows/inference-[^/]*\.yml$')"
+            echo "serving=$(changed 'serving/|\.github/workflows/serving-[^/]*\.yml$')"
+            echo "frontend=$(changed 'frontend/|infrastructure/cloudfront/|\.github/workflows/frontend-[^/]*\.yml$')"
+            echo "infrastructure=$(changed 'infrastructure/|\.github/workflows/infrastructure-[^/]*\.yml$')"
+          } | tee -a "$GITHUB_OUTPUT" > outputs.txt
+          echo "any=$(grep -q '=true$' outputs.txt && echo true || echo false)" | tee -a "$GITHUB_OUTPUT"
+
+  # First step of every deploy: no pipeline execution running (read-only plan role, no review).
+  guard:
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: ./.github/actions/pipeline-guard
+
+  infrastructure:
+    needs: [changes, guard]
+    if: needs.changes.outputs.infrastructure == 'true'
+    uses: ./.github/workflows/infrastructure-cd.yml
+    with:
+      action: apply
+    permissions:
+      id-token: write
+      contents: read
+
+  # Components: after the infrastructure (applied, or nothing to apply), so a merge that adds a
+  # resource and its code deploys them in order.
+  data-ingestion:
+    needs: [changes, guard, infrastructure]
+    if: >-
+      always() && needs.guard.result == 'success' && needs.changes.outputs.data-ingestion == 'true'
+      && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
+    uses: ./.github/workflows/data-ingestion-cd.yml
+    permissions:
+      id-token: write
+      contents: read
+
+  etl:
+    needs: [changes, guard, infrastructure]
+    if: >-
+      always() && needs.guard.result == 'success' && needs.changes.outputs.etl == 'true'
+      && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
+    uses: ./.github/workflows/etl-cd.yml
+    permissions:
+      id-token: write
+      contents: read
+
+  inference:
+    needs: [changes, guard, infrastructure]
+    if: >-
+      always() && needs.guard.result == 'success' && needs.changes.outputs.inference == 'true'
+      && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
+    uses: ./.github/workflows/inference-cd.yml
+    permissions:
+      id-token: write
+      contents: read
+
+  serving:
+    needs: [changes, guard, infrastructure]
+    if: >-
+      always() && needs.guard.result == 'success' && needs.changes.outputs.serving == 'true'
+      && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
+    uses: ./.github/workflows/serving-cd.yml
+    permissions:
+      id-token: write
+      contents: read
+
+  frontend:
+    needs: [changes, guard, infrastructure]
+    if: >-
+      always() && needs.guard.result == 'success' && needs.changes.outputs.frontend == 'true'
+      && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
+    uses: ./.github/workflows/frontend-cd.yml
+    permissions:
+      id-token: write
+      contents: read

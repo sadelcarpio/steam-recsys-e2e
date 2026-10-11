@@ -20,6 +20,12 @@ variable "github_repository_immutable" {
   default     = "sadelcarpio@70857703/steam-recsys-e2e@1384979753"
 }
 
+variable "github_prod_environment" {
+  description = "GitHub environment (required reviewer, main only) whose jobs may assume the deploy role."
+  type        = string
+  default     = "prod"
+}
+
 variable "create_github_oidc_provider" {
   description = "false when the account already has the token.actions.githubusercontent.com provider."
   type        = bool

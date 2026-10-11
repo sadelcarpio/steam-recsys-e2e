@@ -4,7 +4,7 @@ Terraform for the whole project (AWS, `us-east-1`).
 
 | Path                | Contents                                                                                                                                                                                                                                        |
 |---------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `bootstrap/`        | Terraform state bucket `tf-state-<acct>`, deploy role `steam-recsys-github-deploy`. Reuses the account's existing GitHub OIDC provider (set `create_github_oidc_provider = true` in an account without one). Local state, applied once by hand. |
+| `bootstrap/`        | Terraform state bucket `tf-state-<acct>`, deploy role `steam-recsys-github-deploy` (`prod` environment only), read-only plan role `steam-recsys-github-plan` (`main`). Reuses the account's existing GitHub OIDC provider (set `create_github_oidc_provider = true` in an account without one). Local state, applied once by hand. |
 | `network.tf`        | VPC with 2 public subnets and an IGW, no NAT. Egress-only security group.                                                                                                                                                                       |
 | `storage.tf`        | S3 `raw-steam-data-<acct>`, `game-partitions-<acct>` (30-day expiry). DynamoDB `game-ids-state`, `reviews-state-cursor`.                                                                                                                        |
 | `data_ingestion.tf` | ECR `data-ingestion`, ECS cluster (FARGATE + FARGATE_SPOT providers; scraping on `scraping_capacity_provider`) and task definitions `games-scraping` / `reviews-scraping` / `tags-scraping` (+ the one-off `anonymize-raw-reviews`, spec 13), Lambda `list-partition-game-ids`, SSM `/data-ingestion/*`, secrets `data-ingestion/steam-api-key` and `data-ingestion/user-id-hmac-key` (generated, write-only), IAM.                                            |
@@ -37,12 +37,17 @@ Set `schedule_enabled = false` to pause the weekly schedule. Tunables are in `va
 ## CI/CD
 
 - `infrastructure CI`: `fmt -check` and `validate` for both roots, on changes under `infrastructure/`.
-- `infrastructure CD` (manual): `plan`, or `plan` + `apply`, through OIDC. The deploy role only
-  trusts `refs/heads/main`. Input `serving_auth_type` (`AWS_IAM` / `NONE`) sets the serving
+- `CD` (`cd.yml`, every merge to `main`): pipeline guard, then `infrastructure CD` when
+  `infrastructure/` changed, then the changed components' CDs.
+- `infrastructure CD` (from `CD`, or manual `plan` / `apply`): `plan` with the read-only role
+  `steam-recsys-github-plan` (trusts `main`), then `apply` in the `prod` GitHub environment
+  (required reviewer) with `steam-recsys-github-deploy` (trusts only that environment), which
+  re-plans and applies only the reviewed plan (same hash). The repository variable
+  `SERVING_AUTH_TYPE` (`AWS_IAM` / `NONE`; a manual run may override it) sets the serving
   Function URL auth on every run. Repository variables `FRONTEND_DOMAIN_NAME` /
   `FRONTEND_CERTIFICATE_ARN` (optional) set the frontend's custom domain.
-- `etl CI` assumes `steam-recsys-etl-ci`, which trusts pull requests and `main` of this repo but
-  can only touch the CI bucket, the CI workgroup and `ci_*` Glue databases.
+- `etl CI` assumes `steam-recsys-etl-ci` from its `dev` GitHub environment job (the only subject
+  it trusts); the role can only touch the CI bucket, the CI workgroup and `ci_*` Glue databases.
 - `inference CD` pushes the image and, with `run_now`, starts the `Infer` processing job once.
 - `serving CD` uploads the `recsys-serving` zip and smoke-tests it.
 - `training CD` / `training promote` use the deploy role to push the image and start SageMaker

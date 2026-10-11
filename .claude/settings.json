@@ -1,0 +1,55 @@
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Read(//**/*.env)",
+      "Read(//**/.env.*)",
+      "Edit(//**/*.env)",
+      "Edit(//**/.env.*)",
+      "Edit(.claude/**)",
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/settings.local.json)",
+      "Edit(~/.claude/hooks/**)",
+      "Edit(~/.claude/skills/**)",
+      "Edit(~/.claude/agents/**)",
+      "Edit(~/.claude/commands/**)",
+      "Edit(~/.claude.json)",
+      "Edit(.mcp.json)",
+      "Bash(gh pr merge *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py\""
+          }
+        ]
+      }
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": ["~/**/.env", "~/**/*.env", "~/**/.env.*"],
+      "denyWrite": ["~/**/.env", "~/**/*.env", "~/**/.env.*"]
+    },
+    "network": {
+      "allowedDomains": ["github.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]
+    }
+  },
+  "autoMode": {
+    "hard_deny": [
+      "$defaults",
+      "Never read, print, source, copy, or modify any .env or .env.* file, directly or through a shell command or script.",
+      "Never push to or merge into main or master. All changes go through a feature branch that is updated from main.",
+      "Never modify any .claude directory, ~/.claude/settings.json, ~/.claude.json, or hook scripts."
+    ]
+  }
+}

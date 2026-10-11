@@ -1,6 +1,10 @@
 name: infrastructure CD
 
-# Manual plan/apply of infrastructure/ (bootstrap/ is applied locally, once).
+# Plan/apply of infrastructure/ (bootstrap/ is applied locally, once). Called by cd.yml on merges
+# to main (action=apply), or run manually. `plan` runs with the read-only plan role: pipeline
+# guard first, then `terraform plan` (in the job summary). `apply` runs in the `prod` environment
+# (required reviewer): it re-plans with the deploy role and applies only when the plan matches the
+# one shown by `plan` (no plan file is passed between jobs: it would hold secret values).
 on:
   workflow_dispatch:
     inputs:
@@ -12,11 +16,19 @@ on:
       serving_auth_type:
         description: >-
           Auth of the recsys-serving Function URL: AWS_IAM (SigV4-signed callers only; the
-          frontend still works, CloudFront signs its calls) or NONE (URL public too). Every apply
-          sets it, so pick NONE on each apply to keep it public.
+          frontend still works, CloudFront signs its calls) or NONE (URL public too). `variable`
+          = the SERVING_AUTH_TYPE repository variable (AWS_IAM when unset), as merges apply it.
         type: choice
-        options: [AWS_IAM, NONE]
-        default: AWS_IAM
+        options: [variable, AWS_IAM, NONE]
+        default: variable
+  workflow_call:
+    inputs:
+      action:
+        type: string
+        default: apply
+      serving_auth_type:
+        type: string
+        default: variable
 
 permissions:
   id-token: write
@@ -30,31 +42,97 @@ defaults:
   run:
     working-directory: infrastructure
 
+env:
+  TF_VAR_serving_auth_type: >-
+    ${{ (inputs.serving_auth_type == 'AWS_IAM' || inputs.serving_auth_type == 'NONE')
+    && inputs.serving_auth_type || vars.SERVING_AUTH_TYPE || 'AWS_IAM' }}
+  # Optional custom domain of the frontend (repository variables; unset = *.cloudfront.net)
+  TF_VAR_frontend_domain_name: ${{ vars.FRONTEND_DOMAIN_NAME }}
+  TF_VAR_frontend_certificate_arn: ${{ vars.FRONTEND_CERTIFICATE_ARN }}
+  # Optional monthly cost alert (unset = no budget)
+  TF_VAR_budget_alert_email: ${{ vars.BUDGET_ALERT_EMAIL }}
+  # Changes of the plan, hashed: `apply` refuses a plan that differs from the reviewed one.
+  PLAN_CHANGES: >-
+    [.resource_changes[]? | select(.change.actions != ["no-op"])
+    | {address, actions: .change.actions, after: .change.after, after_unknown: .change.after_unknown}]
+
 jobs:
-  terraform:
+  plan:
     runs-on: ubuntu-latest
-    env:
-      TF_VAR_serving_auth_type: ${{ inputs.serving_auth_type }}
-      # Optional custom domain of the frontend (repository variables; unset = *.cloudfront.net)
-      TF_VAR_frontend_domain_name: ${{ vars.FRONTEND_DOMAIN_NAME }}
-      TF_VAR_frontend_certificate_arn: ${{ vars.FRONTEND_CERTIFICATE_ARN }}
-      # Optional monthly cost alert (unset = no budget)
-      TF_VAR_budget_alert_email: ${{ vars.BUDGET_ALERT_EMAIL }}
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+      plan_hash: ${{ steps.plan.outputs.plan_hash }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "^1.10.0"
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - if: inputs.action == 'apply'
+        uses: ./.github/actions/pipeline-guard
+      - run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+      - id: plan
+        run: |
+          set +e
+          terraform plan -input=false -lock-timeout=5m -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          [ "$code" = 0 ] || [ "$code" = 2 ] || exit "$code"
+          hash="$(terraform show -json tfplan | jq -cS "$PLAN_CHANGES" | sha256sum | cut -d' ' -f1)"
+          summary="$(terraform show -no-color tfplan | grep -E '^(Plan:|No changes)' || true)"
+          {
+            echo "### Terraform plan (serving auth: ${TF_VAR_serving_auth_type}): ${summary}"
+            echo "Plan hash \`${hash:0:12}\`"
+            if [ "$code" = 2 ]; then
+              echo '<details><summary>Changes</summary>'
+              echo
+              echo '```'
+              terraform show -no-color tfplan | head -c 60000
+              echo '```'
+              echo '</details>'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -qE ', [1-9][0-9]* to destroy' <<< "$summary"; then
+            echo "::warning title=Destroys resources::${summary}"
+          fi
+          echo "changes=$([ "$code" = 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "plan_hash=${hash}" >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: plan
+    if: inputs.action == 'apply' && needs.plan.outputs.changes == 'true'
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "^1.10.0"
+          terraform_wrapper: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+      # again: the approval may have waited for hours
+      - uses: ./.github/actions/pipeline-guard
       - run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-      - run: terraform plan -input=false -out=tfplan
-      - if: inputs.action == 'apply'
-        run: terraform apply -input=false tfplan
-      - name: Outputs (values for the GitHub repository variables, see docs/deployment.md)
-        if: inputs.action == 'apply'
+      - name: Re-plan and check it is the reviewed plan
+        env:
+          REVIEWED: ${{ needs.plan.outputs.plan_hash }}
+        run: |
+          terraform plan -input=false -lock-timeout=5m -out=tfplan > /dev/null
+          hash="$(terraform show -json tfplan | jq -cS "$PLAN_CHANGES" | sha256sum | cut -d' ' -f1)"
+          if [ "$hash" != "$REVIEWED" ]; then
+            echo "::error title=Plan changed::the plan differs from the reviewed one (${REVIEWED:0:12} -> ${hash:0:12}): re-run the workflow to review the new plan"
+            terraform show -no-color tfplan
+            exit 1
+          fi
+      - run: terraform apply -input=false tfplan
+      - name: Outputs (values for the GitHub variables, see docs/deployment.md)
         run: |
           {
             echo "### Terraform outputs (serving auth: ${TF_VAR_serving_auth_type})"

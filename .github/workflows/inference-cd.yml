@@ -1,6 +1,6 @@
 name: inference CD
 
-# Manual: tests, then pushes `inference:<sha>` and `inference:latest` to ECR. The pipeline's
+# On merges to main (cd.yml) or manual: tests, then pushes `inference:<sha>` and `inference:latest` to ECR. The pipeline's
 # last step (`Infer`, a SageMaker Processing job) runs `:latest`. Optionally runs that job once
 # right away (e.g. after a promotion) instead of waiting for the weekly pipeline. Infrastructure
 # must be applied first.
@@ -19,6 +19,7 @@ on:
         description: "run_now only: minutes to watch the job (the deploy role's credentials last 1 h)"
         type: number
         default: 45
+  workflow_call: # cd.yml, on merges to main: image only (run_now stays manual)
 
 permissions:
   id-token: write
@@ -35,6 +36,7 @@ defaults:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: prod
     timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +50,8 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: ./.github/actions/pipeline-guard
 
       - name: Log in to ECR
         id: ecr

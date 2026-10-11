@@ -1,6 +1,6 @@
 name: data-ingestion CD
 
-# Manual deploy of the scraping image (ECR `data-ingestion`) and the
+# Deploy (on merges to main through cd.yml, or manual) of the scraping image (ECR `data-ingestion`) and the
 # `list-partition-game-ids` Lambda code. Infrastructure must be applied first.
 on:
   workflow_dispatch:
@@ -9,6 +9,11 @@ on:
         description: What to deploy
         type: choice
         options: [all, scraping-image, lambda]
+        default: all
+  workflow_call: # cd.yml, on merges to main
+    inputs:
+      target:
+        type: string
         default: all
 
 permissions:
@@ -26,6 +31,7 @@ defaults:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: prod
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -35,6 +41,8 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: ./.github/actions/pipeline-guard
 
       - name: Log in to ECR
         if: inputs.target != 'lambda'

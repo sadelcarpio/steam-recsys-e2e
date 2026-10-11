@@ -209,7 +209,7 @@ variable "inference_rerank_shuffle" {
 # ---- serving -------------------------------------------------------------------------------
 
 variable "serving_auth_type" {
-  description = "Auth of the recsys-serving Function URL: AWS_IAM (SigV4) or NONE (public demo). Set by the infrastructure CD input."
+  description = "Auth of the recsys-serving Function URL: AWS_IAM (SigV4) or NONE (public demo). Set by the infrastructure CD (SERVING_AUTH_TYPE variable)."
   type        = string
   default     = "AWS_IAM"
   validation {

@@ -1,0 +1,29 @@
+name: pipeline guard
+description: >-
+  Fails while an execution of the steam-recsys pipeline (Step Functions) is running: its ECS
+  tasks and the Infer job resolve `:latest` (and the champion) when they start, so a deploy
+  mid-run would mix versions within one run. Needs AWS credentials (states:ListExecutions) and
+  passes when the state machine does not exist yet (first deploy).
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        account="$(aws sts get-caller-identity --query Account --output text)"
+        sfn="arn:aws:states:${AWS_REGION}:${account}:stateMachine:steam-recsys-pipeline"
+        err="$(mktemp)"
+        if ! running="$(aws stepfunctions list-executions --state-machine-arn "$sfn" \
+            --status-filter RUNNING --query 'executions[].[name, startDate]' --output text 2> "$err")"; then
+          grep -q StateMachineDoesNotExist "$err" || { cat "$err"; exit 1; }
+          echo "no pipeline state machine yet: nothing to guard"
+          exit 0
+        fi
+        if [ -n "$running" ]; then
+          msg="the pipeline is running ($(tr '\t\n' '  ' <<< "$running")): re-run this workflow's failed jobs once it finishes"
+          echo "::error title=Pipeline running::${msg}"
+          echo "### Deploy blocked: ${msg}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        echo "no pipeline execution running"

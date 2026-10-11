@@ -22,7 +22,10 @@ component, described below:
   usage and human readable documentation. Brief, informative, what it does, how to do it.
 - Every component must be fully deployable via AUtomated CI/CD Pipelines on github workflows, as part of each spec /
   feature request. CI can run in parallel only in code changes of specific paths (on PRs through the `ci.yml` gate,
-  whose `ci-passed` job is the required check on `main`). CD manually triggered, separated by component.
+  whose `ci-passed` job is the required check on `main`). CD runs on every merge to `main`
+  (`cd.yml`: pipeline guard → infrastructure plan/apply → changed components), separated by
+  component, every deploy job in the `prod` GitHub environment (required reviewer); CI jobs that
+  use AWS run in `dev`. Training / promotion / inference `run_now` stay manual.
 - All sensitive information such as API Keys or username / passwords must live in AWS Secrets Manager, env variables
   under AWS Parameter Store, with the convention following the directory name (kebab-case) and the env variable name.
   Each component
@@ -40,7 +43,7 @@ component, described below:
 
 ## Deployment
 
-Runbook (bootstrap, GitHub repository variables, apply, secrets, component CDs, first run):
+Runbook (bootstrap, GitHub environments and variables, apply, secrets, component CDs, first run):
 [`docs/deployment.md`](docs/deployment.md). Keep it updated when a feature adds infrastructure,
 variables or a CD workflow.
 

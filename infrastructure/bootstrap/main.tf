@@ -1,6 +1,7 @@
 # One-off bootstrap, applied locally with your own admin credentials (local state):
 #   terraform init && terraform apply
-# Creates the remote-state bucket for ../ and the GitHub OIDC role used by the CD workflows.
+# Creates the remote-state bucket for ../ and the GitHub OIDC roles of the CD workflows (deploy:
+# `prod` environment only; plan: read-only, from main).
 
 terraform {
   required_version = ">= 1.10"
@@ -79,6 +80,14 @@ locals {
   : data.aws_iam_openid_connect_provider.github[0].arn)
 }
 
+# GitHub sends either the legacy `repo:owner/repo` subject or the immutable
+# `repo:owner@<id>/repo@<id>` one; every trust below accepts both.
+locals {
+  github_repositories = [var.github_repository, var.github_repository_immutable]
+}
+
+# Deploys only from jobs of the `prod` GitHub environment (required reviewer, `main` only): a
+# job that targets an environment gets the subject `repo:<repo>:environment:<name>`.
 data "aws_iam_policy_document" "github_trust" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -91,15 +100,10 @@ data "aws_iam_policy_document" "github_trust" {
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
-    # Deploys only from main (workflow_dispatch on main). GitHub may send either the legacy
-    # `repo:owner/repo` subject or the immutable `repo:owner@<id>/repo@<id>` one; accept both.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:${var.github_repository}:ref:refs/heads/main",
-        "repo:${var.github_repository_immutable}:ref:refs/heads/main",
-      ]
+      values   = [for repo in local.github_repositories : "repo:${repo}:environment:${var.github_prod_environment}"]
     }
   }
 }
@@ -146,4 +150,60 @@ resource "aws_iam_role_policy" "github_iam" {
   name   = "project-iam-and-state"
   role   = aws_iam_role.github_deploy.id
   policy = data.aws_iam_policy_document.github_iam.json
+}
+
+# ---- GitHub plan role (read-only) -------------------------------------------------------
+
+# Runs before the `prod` approval: the pipeline guard and `terraform plan` of the CD, so the
+# reviewer approves a plan they have seen. Read-only, from jobs on `main` without an environment.
+data "aws_iam_policy_document" "github_plan_trust" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [local.github_oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = [for repo in local.github_repositories : "repo:${repo}:ref:refs/heads/main"]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_plan" {
+  name                 = "${var.project}-github-plan"
+  assume_role_policy   = data.aws_iam_policy_document.github_plan_trust.json
+  max_session_duration = 3600
+}
+
+resource "aws_iam_role_policy_attachment" "github_plan_read_only" {
+  role       = aws_iam_role.github_plan.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+# What a plan needs beyond ReadOnlyAccess: the state lock file (use_lockfile) and the values of
+# the secret versions terraform manages (refresh reads them; ReadOnlyAccess cannot).
+data "aws_iam_policy_document" "github_plan" {
+  statement {
+    sid       = "TerraformStateLock"
+    actions   = ["s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.tf_state.arn}/*.tflock"]
+  }
+  statement {
+    sid       = "ManagedSecretValues"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:data-ingestion/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "github_plan" {
+  name   = "state-lock-and-secrets"
+  role   = aws_iam_role.github_plan.id
+  policy = data.aws_iam_policy_document.github_plan.json
 }

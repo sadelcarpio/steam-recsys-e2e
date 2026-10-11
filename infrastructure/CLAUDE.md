@@ -23,8 +23,9 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
   dbt keeps `LaunchType = "FARGATE"`. Their `States.TaskFailed` retries cover interruptions.
 - The deploy role has no `iam:CreatePolicy`: use inline role policies
   (`aws_iam_role_policy`), not managed policies.
-- `var.serving_auth_type` comes from the infrastructure CD input (`TF_VAR_serving_auth_type`),
-  so a plan without it falls back to `AWS_IAM`. A public URL (`NONE`) needs both
+- `var.serving_auth_type` comes from the infrastructure CD (`TF_VAR_serving_auth_type`: the
+  `SERVING_AUTH_TYPE` repository variable, or a manual run's input), so a plan without it falls
+  back to `AWS_IAM`. A public URL (`NONE`) needs both
   `aws_lambda_permission`s (`InvokeFunctionUrl` + `InvokeFunction` via the function URL).
 - `frontend.tf` owns the only bucket policy of `model-artifacts` (CloudFront reads
   `serving/search/*`): add statements there rather than a second `aws_s3_bucket_policy`. The
