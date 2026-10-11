@@ -21,7 +21,6 @@ export const t = {
     "se recalcula en cada actualización de los datos, y los IDs de Steam no se guardan.",
   previousUser: "← Anterior",
   nextUser: "Siguiente →",
-  randomUser: "Usuario al azar",
   discoverTitle: "Encuentra tu próximo juego",
   discoverLead: (max: number) =>
     `Busca y elige hasta ${max} juegos que te gustaron, y el modelo de dos torres te ` +

@@ -13,7 +13,7 @@ import {
 import { cardGrid, detailsView, h, responseSummary } from "./cards";
 import { t } from "./i18n";
 import { LikedGames } from "./liked";
-import { neighbours, parseRoute, randomUser, userPath } from "./router";
+import { neighbours, parseRoute, userPath } from "./router";
 import type { GameHit } from "./search";
 
 const main = document.querySelector<HTMLElement>("#main")!;
@@ -129,7 +129,6 @@ function userPage(userIdx: number): void {
           h("a", { href: userPath(n), "data-nav": "" }, text);
         nav.replaceChildren(
           ...(prev ? [link(prev, t.previousUser)] : []),
-          link(randomUser(max, userIdx), t.randomUser),
           ...(next ? [link(next, t.nextUser)] : []),
         );
       }

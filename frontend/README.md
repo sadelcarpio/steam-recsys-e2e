@@ -8,7 +8,7 @@ No login.
 | Page          | What it does                                                        | API                                          |
 |---------------|---------------------------------------------------------------------|----------------------------------------------|
 | `/`           | Search, pick up to 5 liked games (the model reads the last 5), **Recomendar** | `POST /api/recommendations`         |
-| `/u/<n>`      | Demo user `n`'s recommendations (popular games for users without a list), with ← / → and a random user among the first 1000 (the ones with LLM explanations). Numbers are reassigned every pipeline run | `GET /api/users/<n>/recommendations` |
+| `/u/<n>`      | Demo user `n`'s recommendations (popular games for users without a list), with ← / → links to the neighbouring users. Numbers are reassigned every pipeline run | `GET /api/users/<n>/recommendations` |
 | card click    | Game details dialog + Steam store link                              | details come with the list (`details=true`)  |
 
 ## How it is served
