@@ -277,6 +277,38 @@ img.missing {
   border-left: 3px solid var(--accent);
   padding-left: 0.6rem;
 }
+.model {
+  margin: 0.3rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-align: right;
+}
+.details .model {
+  margin-top: -0.7rem;
+  margin-bottom: 1rem;
+}
+
+.history h2 {
+  margin: 1.5rem 0 0.25rem;
+  font-size: 1.2rem;
+}
+.history .hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+}
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.75rem;
+}
+.card.mini h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.card.mini .card-body {
+  padding: 0.5rem;
+}
 
 dialog {
   width: min(640px, calc(100vw - 32px));

@@ -83,6 +83,17 @@ def test_writes_every_user_and_reranks_the_active_ones(settings, source, store, 
     assert [r["score"] for r in reranked] == sorted(r["score"] for r in reranked)
 
 
+def test_items_carry_the_users_liked_games(settings, source, store, champion):
+    run_inference(settings, source, store, _writer(settings), ReverseLlm(), now=NOW)
+    items = _items()
+    # 101 liked games 2, 3, 5, 6, 7 (oldest first): the history, most recent first
+    assert items["101"]["liked"] == [
+        {"game_id": 1000 + g, "name": f"Game {g}"} for g in (7, 6, 5, 3, 2)
+    ]
+    assert [g["game_id"] for g in items["103"]["liked"]] == [1002]
+    assert all(len(item["liked"]) <= 5 for item in items.values())
+
+
 def test_rerank_prompt_games_carry_their_short_description(settings, source, store, champion):
     llm = ReverseLlm()
     run_inference(settings, source, store, _writer(settings), llm, now=NOW)

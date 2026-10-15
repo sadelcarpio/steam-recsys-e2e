@@ -33,7 +33,6 @@
     ]
   },
   "sandbox": {
-    "excludedCommands": ["terraform"],
     "enabled": true,
     "failIfUnavailable": true,
     "allowUnsandboxedCommands": false,

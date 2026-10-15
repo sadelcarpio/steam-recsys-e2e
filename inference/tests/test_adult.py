@@ -11,7 +11,7 @@ from steam_inference.adult import adult_mask, is_adult
 from steam_inference.contracts import POPULAR_USER_ID, SearchIndex
 from steam_inference.features import load_inference_data
 from steam_inference.online import S3BundleStore, filter_catalog
-from steam_inference.pipeline import rerank_request, run_inference
+from steam_inference.pipeline import liked_games, rerank_request, run_inference
 from steam_inference.retrieval import retrieve
 from steam_inference.writer import DynamoWriter
 
@@ -121,6 +121,14 @@ def test_prompt_leaves_out_liked_adult_games(adult_marts, champion):
     )
     request = rerank_request(data, candidates, user, excluded)
     assert request.liked and not any("Hentai" in g.text for g in request.liked)
+
+
+def test_liked_games_shown_leave_out_adult_ones(adult_marts, champion):
+    data = load_inference_data(FakeSource(adult_marts))
+    user = int(np.flatnonzero(data.users.user_id == 101)[0])  # liked game_idx 3 ("Hentai Game")
+    assert any("Hentai" in g.name for g in liked_games(data, user))
+    shown = liked_games(data, user, adult_mask(data.games))
+    assert shown and not any("Hentai" in g.name for g in shown)
 
 
 def test_filter_catalog_keeps_names_aligned():

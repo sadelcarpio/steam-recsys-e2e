@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { cardGrid, detailsView, priceLabel, responseSummary } from "../src/cards";
+import { cardGrid, detailsView, likedStrip, priceLabel, responseSummary } from "../src/cards";
 import { personalized } from "./fixtures";
 
 describe("cards", () => {
@@ -26,6 +26,41 @@ describe("cards", () => {
     const explanation = grid.querySelector(".explanation")!;
     expect(explanation.textContent).toBe("You loved <b>puzzle</b> games like Portal.");
     expect(explanation.querySelector("b")).toBeNull();
+  });
+
+  it("names the model that wrote each explanation", () => {
+    const cards = cardGrid(personalized, () => {}).querySelectorAll(".card");
+    expect(cards[0].querySelector(".model")?.textContent).toBe(
+      "modelo: us.amazon.nova-2-lite-v1:0",
+    );
+    expect(cards[1].querySelector(".model")).toBeNull(); // no explanation
+    const unranked = cardGrid({ ...personalized, rerank_model: undefined }, () => {});
+    expect(unranked.querySelector(".model")).toBeNull();
+    const view = detailsView(personalized.recommendations[0].details!, "why", "ollama/qwen3:14b");
+    expect(view.querySelector(".model")?.textContent).toBe("modelo: ollama/qwen3:14b");
+    expect(
+      detailsView(personalized.recommendations[0].details!).querySelector(".model"),
+    ).toBeNull();
+  });
+
+  it("shows the user's liked games above the recommendations", () => {
+    const open = vi.fn();
+    const strip = likedStrip(personalized, open)!;
+    expect(strip.querySelector("h2")?.textContent).toBe("Sus últimos juegos favoritos");
+    const cards = strip.querySelectorAll(".card");
+    expect([...cards].map((c) => c.querySelector("h3")?.textContent)).toEqual([
+      "Half-Life",
+      "Half-Life 2",
+    ]);
+    expect(cards[0].querySelector("img")?.getAttribute("src")).toBe(
+      "https://cdn.example/70/header.jpg",
+    );
+    // no stored details: Steam's CDN path
+    expect(cards[1].querySelector("img")?.getAttribute("src")).toMatch(/\/apps\/220\/header\.jpg$/);
+    (cards[1] as HTMLElement).click();
+    expect(open.mock.calls[0][0].game_id).toBe(220);
+    expect(likedStrip({ ...personalized, liked: undefined }, open)).toBeNull();
+    expect(likedStrip({ ...personalized, liked: [] }, open)).toBeNull();
   });
 
   it("opens a card on click and Enter", () => {

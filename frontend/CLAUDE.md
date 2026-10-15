@@ -12,7 +12,8 @@ Human docs: `README.md`.
   - `src/i18n.ts`: every UI text (Spanish), genre name translations, date formatting
   - `src/search.ts`: `buildSearch` (MiniSearch, prefix + fuzzy, relevance only);
     `src/search.worker.ts` downloads `/data/games.json` and answers queries off the main thread
-  - `src/cards.ts`: DOM rendering (`h` helper, cards, details dialog, summaries)
+  - `src/cards.ts`: DOM rendering (`h` helper, cards with the explanation's model, the liked
+    games strip of `/u/<n>`, details dialog, summaries)
   - `src/liked.ts`: picked games, most recent first, at most `MAX_LIKED_GAMES`, in
     localStorage (best effort)
   - `src/router.ts`: `/` and `/u/<user number>` (history API; CloudFront serves index.html for

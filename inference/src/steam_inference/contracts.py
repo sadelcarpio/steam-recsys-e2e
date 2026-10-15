@@ -69,6 +69,11 @@ class Recommendation(_Frozen):
     explanation: str | None = None
 
 
+class LikedGame(_Frozen):
+    game_id: int  # Steam appid
+    name: str
+
+
 class UserRecommendations(_Frozen):
     user_id: str
     recommendations: list[Recommendation] = Field(min_length=1)
@@ -76,16 +81,21 @@ class UserRecommendations(_Frozen):
     generated_at: datetime
     reranked: bool
     rerank_model: str | None = None
+    # The user's last positively reviewed games (the user tower's history, the rerank prompt's
+    # liked games), most recent first, adult ones left out. Shown above the recommendations.
+    liked: list[LikedGame] = Field(default_factory=list)
 
     def content_hash(self) -> str:
-        """Hash of the visible content: model, rerank flag / model, and the ordered games with
-        their names and explanations. Scores and the generation time are left out."""
+        """Hash of the visible content: model, rerank flag / model, the ordered games with their
+        names and explanations, and the liked games. Scores and the generation time are left out."""
         content = {
             "model_id": self.model_id,
             "reranked": self.reranked,
             "rerank_model": self.rerank_model,
             "recommendations": [[r.game_id, r.name, r.explanation] for r in self.recommendations],
         }
+        if self.liked:  # absent from older items and the popularity fallback: same hash there
+            content["liked"] = [[g.game_id, g.name] for g in self.liked]
         payload = json.dumps(content, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
@@ -109,6 +119,8 @@ class UserRecommendations(_Frozen):
         }
         if self.rerank_model:
             item["rerank_model"] = self.rerank_model
+        if self.liked:
+            item["liked"] = [{"game_id": g.game_id, "name": g.name} for g in self.liked]
         return item
 
 

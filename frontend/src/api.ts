@@ -27,6 +27,13 @@ export interface Recommendation {
   details?: GameDetails;
 }
 
+// GET /users/{user_idx}/recommendations (personalized): a game the user liked
+export interface LikedGame {
+  game_id: number;
+  name: string;
+  details?: GameDetails;
+}
+
 export interface RecommendationsResponse {
   source: "personalized" | "popular" | "online";
   user_id?: string | null;
@@ -40,6 +47,8 @@ export interface RecommendationsResponse {
   // GET /users/{user_idx}/recommendations: the demo user number and the highest one
   user_idx?: number;
   max_user?: number;
+  // personalized only: the games the list was computed from, most recent first
+  liked?: LikedGame[];
 }
 
 export interface SearchIndex {

@@ -33,6 +33,18 @@ export const personalized: RecommendationsResponse = {
     },
     { rank: 2, game_id: 400, name: "Portal", score: 0.7 },
   ],
+  liked: [
+    {
+      game_id: 70,
+      name: "Half-Life",
+      details: {
+        game_id: 70,
+        name: "Half-Life",
+        header_image: "https://cdn.example/70/header.jpg",
+      },
+    },
+    { game_id: 220, name: "Half-Life 2" },
+  ],
 };
 
 export const index: SearchIndex = {

@@ -30,6 +30,7 @@ from steam_serving.contracts import (
     USER_IDX_PATTERN,
     ErrorResponse,
     GameDetails,
+    LikedGameOut,
     OnlineRequest,
     RecommendationOut,
     RecommendationsResponse,
@@ -235,7 +236,10 @@ class App:
         details: bool,
     ) -> RecommendationsResponse:
         recs = stored.recommendations[:limit]
-        games = self.repository.games(r.game_id for r in recs) if details and recs else {}
+        # personalized: the liked games too, in the same batch read (<= 30 + 5 keys)
+        liked = stored.liked if source == "personalized" else []
+        ids = [r.game_id for r in recs] + [g.game_id for g in liked]
+        games = self.repository.games(ids) if details and ids else {}
         return RecommendationsResponse(
             source=source,
             user_id=user_id,
@@ -254,6 +258,11 @@ class App:
                 )
                 for rank, r in enumerate(recs, start=1)
             ],
+            liked=[
+                LikedGameOut(game_id=g.game_id, name=g.name, details=games.get(g.game_id))
+                for g in liked
+            ]
+            or None,
         )
 
     def _response(self, status: int, body: BaseModel, cache: bool) -> dict[str, Any]:

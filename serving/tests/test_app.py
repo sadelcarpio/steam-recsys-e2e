@@ -38,6 +38,22 @@ def test_user_recommendations_with_details(app):
     assert "short_description" not in raw[0]["details"]
 
 
+def test_user_recommendations_show_the_liked_games(app):
+    data = body(app.handle(event(f"/users/{USER}/recommendations")))
+    liked = data["liked"]
+    assert [(g["game_id"], g["name"]) for g in liked] == [(100, "Game 100"), (200, "Game 200")]
+    assert liked[0]["details"]["header_image"] == "https://cdn/100.jpg"
+    assert "details" not in liked[1]  # no details stored for 200
+    bare = body(app.handle(event(f"/users/{USER}/recommendations", {"details": "false"})))
+    assert all("details" not in g for g in bare["liked"])
+
+
+def test_items_without_liked_games_omit_them(app):
+    assert "liked" not in body(app.handle(event("/users/2/recommendations")))  # older item
+    assert "liked" not in body(app.handle(event("/users/3/recommendations")))  # popular
+    assert "liked" not in body(app.handle(event("/popular")))
+
+
 def test_limit_and_no_details(app):
     data = body(
         app.handle(event(f"/users/{USER}/recommendations", {"limit": "30", "details": "false"}))
