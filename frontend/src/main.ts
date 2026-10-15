@@ -7,10 +7,10 @@ import {
   MAX_LIKED_GAMES,
   USER_IDX_PATTERN,
   ApiError,
-  type Recommendation,
+  type GameDetails,
   type RecommendationsResponse,
 } from "./api";
-import { cardGrid, detailsView, h, responseSummary } from "./cards";
+import { cardGrid, detailsView, h, likedStrip, responseSummary } from "./cards";
 import { t } from "./i18n";
 import { LikedGames } from "./liked";
 import { neighbours, parseRoute, userPath } from "./router";
@@ -62,12 +62,16 @@ function render(): void {
 
 // ---- shared ------------------------------------------------------------------------------
 
-async function openDetails(rec: Recommendation): Promise<void> {
+// A recommendation or a liked game; `model` wrote the explanation (if any).
+async function openDetails(
+  rec: { game_id: number; details?: GameDetails; explanation?: string },
+  model?: string,
+): Promise<void> {
   dialog.replaceChildren(h("p", { class: "status" }, t.loading));
   dialog.showModal();
   try {
     const details = rec.details ?? (await game(rec.game_id));
-    dialog.replaceChildren(detailsView(details, rec.explanation), closeButton());
+    dialog.replaceChildren(detailsView(details, rec.explanation, model), closeButton());
   } catch (err) {
     dialog.replaceChildren(h("p", { class: "error" }, errorText(err)), closeButton());
   }
@@ -89,19 +93,22 @@ function errorText(err: unknown): string {
   return err instanceof ApiError ? err.message : t.errors.unknown;
 }
 
-/** Renders `load()` into `section`, replacing what was there. */
+/** Renders `load()` into `section`, replacing what was there: `header`, the summary, `extra`,
+ * then the cards. */
 async function showRecommendations(
   section: HTMLElement,
   load: () => Promise<RecommendationsResponse>,
   extra?: (r: RecommendationsResponse) => Node | null,
+  header?: (r: RecommendationsResponse) => Node | null,
 ): Promise<void> {
   section.replaceChildren(h("p", { class: "status" }, t.loadingRecommendations));
   try {
     const response = await load();
     section.replaceChildren(
+      header?.(response) ?? "",
       h("p", { class: "summary" }, responseSummary(response)),
       extra?.(response) ?? "",
-      cardGrid(response, openDetails),
+      cardGrid(response, (rec) => openDetails(rec, response.rerank_model)),
     );
   } catch (err) {
     section.replaceChildren(h("p", { class: "error" }, errorText(err)));
@@ -134,6 +141,7 @@ function userPage(userIdx: number): void {
       }
       return null;
     },
+    (response) => likedStrip(response, (g) => openDetails(g)),
   );
 }
 

@@ -43,6 +43,10 @@ export const t = {
       ? "1 juego elegido no está en el catálogo del modelo."
       : `${n} juegos elegidos no están en el catálogo del modelo.`,
   noRecommendations: "No hay recomendaciones.",
+  likedTitle: "Sus últimos juegos favoritos",
+  likedHint: "Las reseñas positivas más recientes de este jugador: el modelo parte de ellas.",
+  recommendationsTitle: "Recomendaciones",
+  explainedBy: (model: string) => `modelo: ${model}`,
   summaryReranked: (when: string) =>
     `Personalizadas para este jugador, reordenadas y explicadas por un LLM (${when}).`,
   summaryPersonalized: (when: string) =>

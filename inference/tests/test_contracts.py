@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from steam_inference.contracts import Recommendation, UserRecommendations
+from steam_inference.contracts import LikedGame, Recommendation, UserRecommendations
 
 
 def _recs(**changes) -> UserRecommendations:
@@ -38,6 +38,7 @@ def test_hash_tracks_what_the_user_sees():
         _recs(recommendations=[Recommendation(game_id=10, name="A", score=0.5, explanation="x")]),
         _recs(model_id="m2"),
         _recs(reranked=False, rerank_model=None),
+        _recs(liked=[LikedGame(game_id=1, name="Liked")]),
     ]
     assert all(v.content_hash() != base for v in variants)
 
@@ -46,3 +47,9 @@ def test_item_carries_the_hash():
     item = _recs().to_item()
     assert item["content_hash"] == _recs().content_hash()
     assert "explanation" not in item["recommendations"][1]
+
+
+def test_item_carries_the_liked_games_when_known():
+    assert "liked" not in _recs().to_item()  # e.g. the popularity fallback
+    item = _recs(liked=[LikedGame(game_id=1, name="Liked")]).to_item()
+    assert item["liked"] == [{"game_id": 1, "name": "Liked"}]

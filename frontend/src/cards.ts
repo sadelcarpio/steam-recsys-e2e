@@ -3,6 +3,7 @@
 import {
   headerImage,
   type GameDetails,
+  type LikedGame,
   type Recommendation,
   type RecommendationsResponse,
 } from "./api";
@@ -57,7 +58,20 @@ function tags(details?: GameDetails): HTMLElement | null {
   );
 }
 
-export function gameCard(rec: Recommendation, onOpen: (rec: Recommendation) => void): HTMLElement {
+// The LLM explanation, then the model that wrote it (rerank_model), for demos.
+function explanationBlock(explanation?: string, model?: string): Child[] {
+  if (!explanation) return [];
+  return [
+    h("p", { class: "explanation" }, explanation),
+    model && h("p", { class: "model" }, t.explainedBy(model)),
+  ];
+}
+
+export function gameCard(
+  rec: Recommendation,
+  onOpen: (rec: Recommendation) => void,
+  model?: string,
+): HTMLElement {
   const card = h(
     "article",
     { class: "card", tabindex: "0", "data-game-id": String(rec.game_id) },
@@ -67,7 +81,7 @@ export function gameCard(rec: Recommendation, onOpen: (rec: Recommendation) => v
       { class: "card-body" },
       h("h3", {}, h("span", { class: "rank" }, `#${rec.rank}`), " ", rec.name),
       tags(rec.details),
-      rec.explanation && h("p", { class: "explanation" }, rec.explanation),
+      ...explanationBlock(rec.explanation, model),
     ),
   );
   card.addEventListener("click", () => onOpen(rec));
@@ -82,7 +96,43 @@ export function cardGrid(
   onOpen: (rec: Recommendation) => void,
 ): HTMLElement {
   if (!response.recommendations.length) return h("p", { class: "empty" }, t.noRecommendations);
-  return h("div", { class: "grid" }, ...response.recommendations.map((r) => gameCard(r, onOpen)));
+  return h(
+    "div",
+    { class: "grid" },
+    ...response.recommendations.map((r) => gameCard(r, onOpen, response.rerank_model)),
+  );
+}
+
+// The user's last liked games (GET /users/... only), above their recommendations.
+export function likedStrip(
+  response: RecommendationsResponse,
+  onOpen: (game: LikedGame) => void,
+): HTMLElement | null {
+  if (!response.liked?.length) return null;
+  return h(
+    "section",
+    { class: "history" },
+    h("h2", {}, t.likedTitle),
+    h("p", { class: "hint" }, t.likedHint),
+    h(
+      "div",
+      { class: "history-grid" },
+      ...response.liked.map((game) => {
+        const card = h(
+          "article",
+          { class: "card mini", tabindex: "0", "data-game-id": String(game.game_id) },
+          image(game),
+          h("div", { class: "card-body" }, h("h3", {}, game.name)),
+        );
+        card.addEventListener("click", () => onOpen(game));
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") onOpen(game);
+        });
+        return card;
+      }),
+    ),
+    h("h2", {}, t.recommendationsTitle),
+  );
 }
 
 export function responseSummary(response: RecommendationsResponse): string {
@@ -97,7 +147,11 @@ export function responseSummary(response: RecommendationsResponse): string {
   }
 }
 
-export function detailsView(details: GameDetails, explanation?: string): HTMLElement {
+export function detailsView(
+  details: GameDetails,
+  explanation?: string,
+  model?: string,
+): HTMLElement {
   const facts: [string, string | undefined][] = [
     [t.released, details.release_date],
     [t.price, priceLabel(details) ?? undefined],
@@ -110,7 +164,7 @@ export function detailsView(details: GameDetails, explanation?: string): HTMLEle
     { class: "details" },
     image(details),
     h("h2", {}, details.name),
-    explanation && h("p", { class: "explanation" }, explanation),
+    ...explanationBlock(explanation, model),
     details.short_description && h("p", {}, details.short_description),
     h(
       "dl",

@@ -22,6 +22,7 @@ from steam_inference.contracts import (
     POPULAR_USER_ID,
     POPULARITY_MODEL_ID,
     InferenceSummary,
+    LikedGame,
     Recommendation,
     UserRecommendations,
 )
@@ -169,6 +170,7 @@ def run_inference(
                 model_id=metadata.model_id,
                 rerank_model=settings.bedrock_model_id,
                 now=now,
+                excluded=excluded,
             ),
             [popular] if popular else [],
         ),
@@ -311,6 +313,21 @@ def rerank_request(
     )
 
 
+def liked_games(
+    data: InferenceData, user: int, excluded: np.ndarray | None = None
+) -> list[LikedGame]:
+    """The user's history (the same liked games as the rerank prompt), most recent first:
+    catalog games only, never an `excluded` (adult / unreleased) one."""
+    games = data.games
+    history = data.users.history[user]
+    rows = games.catalog.rows(history[history != PADDING_ID])
+    return [
+        LikedGame(game_id=int(games.game_id[row]), name=str(games.name[row]))
+        for row in rows
+        if row >= 0 and (excluded is None or not excluded[row])
+    ]
+
+
 def user_recommendations(
     data: InferenceData,
     candidates: Candidates,
@@ -319,6 +336,7 @@ def user_recommendations(
     model_id: str,
     rerank_model: str,
     now: datetime,
+    excluded: np.ndarray | None = None,
 ) -> Iterator[UserRecommendations]:
     games = data.games
     for user in range(len(data.users)):
@@ -343,4 +361,5 @@ def user_recommendations(
             generated_at=now,
             reranked=result is not None,
             rerank_model=rerank_model if result else None,
+            liked=liked_games(data, user, excluded),
         )

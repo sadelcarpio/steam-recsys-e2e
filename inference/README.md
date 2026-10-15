@@ -143,6 +143,7 @@ steam_marts (Iceberg, pyiceberg)
   "generated_at": "2026-09-24T12:40:00+00:00",
   "reranked": true,
   "rerank_model": "us.amazon.nova-2-lite-v1:0",
+  "liked": [{"game_id": 375180, "name": "Dungeons 2"}],
   "content_hash": "9f2c0e5d7a1b4c8e0f3a6b9d2c5e8f1a"
 }
 ```
@@ -160,6 +161,10 @@ steam_marts (Iceberg, pyiceberg)
   "genres": ["RPG", "Strategy"], "categories": ["Single-player"]
 }
 ```
+
+`liked` is the user's last positively reviewed games, most recent first (the user tower's history
+and the rerank prompt's liked games, adult ones left out), shown above the recommendations on
+the demo page. It is part of `content_hash`, and absent from the `__popular__` item.
 
 The second item is a `game-details` item (`GameDetails`). Null fields are left out.
 Serving (`serving/src/steam_serving/contracts.py`) reads both tables.

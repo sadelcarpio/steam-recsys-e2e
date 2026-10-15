@@ -60,10 +60,16 @@ curl "$URL/users/12/recommendations?limit=3"
         "genres": ["RPG", "Strategy"], "categories": ["Single-player"]
       }
     }
+  ],
+  "liked": [
+    {"game_id": 375180, "name": "Dungeons 2", "details": {"game_id": 375180, "name": "Dungeons 2"}}
   ]
 }
 ```
 
+- `liked` (personalized lists only): the user's last liked games, most recent first, with their
+  `details` when requested (same BatchGetItem as the recommendations). Omitted for the popular
+  list and for items written before the field existed.
 - `explanation` is present only on the top 5 of a reranked list (the 1000 most active reviewers).
 - `score` is the two-tower cosine similarity for personalized lists, and the share of the top
   game's positive reviews for the popular list.

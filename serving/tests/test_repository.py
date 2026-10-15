@@ -34,3 +34,18 @@ def test_games_retries_unprocessed_keys(tables, monkeypatch):
     monkeypatch.setattr("steam_serving.repository.time.sleep", lambda s: None)
     assert set(repo.games([10, 11])) == {10, 11}
     assert calls == [2, 2]
+
+
+def test_games_split_into_batches_of_100(tables, monkeypatch):
+    repo = _repo()
+    real = repo.resource.batch_get_item
+    sizes = []
+
+    def counted(RequestItems):  # noqa: N803
+        sizes.append(len(RequestItems[DETAILS_TABLE]["Keys"]))
+        return real(RequestItems=RequestItems)
+
+    monkeypatch.setattr(repo.resource, "batch_get_item", counted)
+    games = repo.games(range(10, 115))  # 105 ids: 30 + 5 have details
+    assert sizes == [100, 5]
+    assert set(games) == {*range(10, 40), *range(100, 105)}

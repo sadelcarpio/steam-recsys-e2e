@@ -14,6 +14,7 @@ from steam_serving.contracts import GameDetails, StoredRecommendations
 # Fail fast: a Function URL caller waits on every retry.
 RETRIES = Config(retries={"max_attempts": 3, "mode": "standard"}, connect_timeout=2, read_timeout=3)
 BATCH_ATTEMPTS = 3
+BATCH_KEYS = 100  # BatchGetItem limit
 
 
 class Repository(Protocol):
@@ -40,9 +41,15 @@ class DynamoRepository:
         return GameDetails.model_validate(item) if item else None
 
     def games(self, game_ids: Iterable[int]) -> dict[int, GameDetails]:
-        """Details of the games that have them (at most 100 ids: one BatchGetItem)."""
-        keys = [{"game_id": game_id} for game_id in dict.fromkeys(game_ids)]
+        """Details of the games that have them (one BatchGetItem per 100 ids)."""
+        ids = list(dict.fromkeys(game_ids))
         found: dict[int, GameDetails] = {}
+        for start in range(0, len(ids), BATCH_KEYS):
+            self._batch(ids[start : start + BATCH_KEYS], found)
+        return found
+
+    def _batch(self, game_ids: list[int], found: dict[int, GameDetails]) -> None:
+        keys = [{"game_id": game_id} for game_id in game_ids]
         for attempt in range(BATCH_ATTEMPTS):
             if not keys:
                 break
@@ -57,4 +64,4 @@ class DynamoRepository:
             keys = (
                 response.get("UnprocessedKeys", {}).get(self.details_table_name, {}).get("Keys", [])
             )
-        return found  # still unprocessed after the retries: served without details
+        # still unprocessed after the retries: served without details

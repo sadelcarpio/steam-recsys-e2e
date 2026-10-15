@@ -33,6 +33,11 @@ class StoredRecommendation(_Stored):
     explanation: str | None = None
 
 
+class StoredLikedGame(_Stored):
+    game_id: int
+    name: str
+
+
 class StoredRecommendations(_Stored):
     """Table `game-explainable-recommendations`, one item per user (+ `__popular__`)."""
 
@@ -42,6 +47,8 @@ class StoredRecommendations(_Stored):
     generated_at: datetime
     reranked: bool
     rerank_model: str | None = None
+    # The user's last liked games, most recent first (absent on items of older runs)
+    liked: list[StoredLikedGame] = Field(default_factory=list)
 
 
 class GameDetails(_Stored):
@@ -75,6 +82,12 @@ class RecommendationOut(_Response):
     details: GameDetails | None = None  # when requested and the game has details
 
 
+class LikedGameOut(_Response):
+    game_id: int
+    name: str
+    details: GameDetails | None = None  # when requested and the game has details
+
+
 class OnlineRequest(BaseModel):
     """Body of POST /recommendations: recommendations for a history given in the request."""
 
@@ -105,6 +118,9 @@ class RecommendationsResponse(_Response):
     # highest one (user_idx is reassigned every pipeline run)
     user_idx: int | None = None
     max_user: int | None = None
+    # GET /users/{user_idx}/recommendations only (personalized): the games the recommendations
+    # were computed from, most recent first
+    liked: list[LikedGameOut] | None = None
 
 
 class ErrorResponse(_Response):

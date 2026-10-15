@@ -20,7 +20,9 @@ GENERATED_AT = "2026-09-24T17:00:00+00:00"
 USERS = {1: "4559049361332948866", 2: "1234567890123456789", 3: "42"}
 
 
-def user_item(user_id: str, games: list[int], *, reranked: bool) -> dict:
+def user_item(
+    user_id: str, games: list[int], *, reranked: bool, liked: list[int] | None = None
+) -> dict:
     return {
         "user_id": user_id,
         "recommendations": [
@@ -37,6 +39,7 @@ def user_item(user_id: str, games: list[int], *, reranked: bool) -> dict:
         "reranked": reranked,
         **({"rerank_model": "us.amazon.nova-2-lite-v1:0"} if reranked else {}),
         "content_hash": "0" * 32,
+        **({"liked": [{"game_id": g, "name": f"Game {g}"} for g in liked]} if liked else {}),
     }
 
 
@@ -101,7 +104,8 @@ def aws(monkeypatch):
 def tables(aws):
     dynamodb = boto3.resource("dynamodb")
     recs, details = dynamodb.Table(RECS_TABLE), dynamodb.Table(DETAILS_TABLE)
-    recs.put_item(Item=user_item(USERS[1], list(range(10, 40)), reranked=True))
+    # liked: 100 has details, 200 has none
+    recs.put_item(Item=user_item(USERS[1], list(range(10, 40)), reranked=True, liked=[100, 200]))
     recs.put_item(Item=user_item(USERS[2], [10, 11, 12], reranked=False))
     recs.put_item(Item=popular_item(list(range(100, 130))))
     for game_id in [*range(10, 40), *range(100, 105)]:  # no details for 105..129

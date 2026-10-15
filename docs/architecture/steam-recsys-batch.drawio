@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net" scale="1" border="0">
   <diagram name="Page-1" id="ynkWh0hCt5H_MTmmfgAO">
-    <mxGraphModel dx="1703" dy="548" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="784" dy="39" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -26,7 +26,7 @@
           <mxGeometry height="173" width="597" x="7" y="57" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-28" parent="qQ_05n8uxreXFBnJPeQ2-26" style="rounded=0;whiteSpace=wrap;dashed=1;dashPattern=12 12;align=left;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="" vertex="1">
-          <mxGeometry height="268" width="165" x="77" y="352" as="geometry" />
+          <mxGeometry height="268" width="174" x="77" y="352" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-30" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-32" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;entryX=0.5;entryY=1;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" target="qQ_05n8uxreXFBnJPeQ2-28" value="">
           <mxGeometry relative="1" as="geometry" />
@@ -44,9 +44,6 @@
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-35" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.athena;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;verticalLabelPosition=top;verticalAlign=bottom;" value="Amazon Athena" vertex="1">
           <mxGeometry height="48.9" width="48.9" x="383" y="131.45" as="geometry" />
-        </mxCell>
-        <mxCell id="qQ_05n8uxreXFBnJPeQ2-36" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="Amazon ECS (Fargate)&#xa;Games Scraping Task" vertex="1">
-          <mxGeometry height="48.9" width="48.9" x="139" y="389" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-37" parent="qQ_05n8uxreXFBnJPeQ2-26" style="text;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;fontColor=light-dark(#232F3E,#FFFFFF);" value="Parallel" vertex="1">
           <mxGeometry height="24" width="54" x="77" y="352" as="geometry" />
@@ -248,12 +245,12 @@
           <mxGeometry height="48.9" width="48.9" x="123.1" y="510" as="geometry" />
         </mxCell>
         <mxCell id="_tKXPNiJDP6OZbIRA0b7-4" parent="qQ_05n8uxreXFBnJPeQ2-26" style="text;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="N tasks&#xa;public IP per task" vertex="1">
-          <mxGeometry height="30" width="60" x="184" y="508.1" as="geometry" />
+          <mxGeometry height="30" width="60" x="187.9" y="500" as="geometry" />
         </mxCell>
         <mxCell id="27hQy9bwfdpKXOzjaASy-1" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-40" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" target="qQ_05n8uxreXFBnJPeQ2-88" value="">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="27hQy9bwfdpKXOzjaASy-2" connectable="0" parent="27hQy9bwfdpKXOzjaASy-1" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="loadvalue="load&#xa;cold start online path"#xa;cold start online pathvalue="load&#xa;cold start online path"#xa;+ user index" vertex="1">
+        <mxCell id="27hQy9bwfdpKXOzjaASy-2" connectable="0" parent="27hQy9bwfdpKXOzjaASy-1" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="load&#xa;cold start online path&#xa;+ user index" vertex="1">
           <mxGeometry relative="1" x="0.3464" as="geometry">
             <mxPoint y="10" as="offset" />
           </mxGeometry>
@@ -275,7 +272,7 @@
         <mxCell id="27hQy9bwfdpKXOzjaASy-16" edge="1" parent="qQ_05n8uxreXFBnJPeQ2-26" source="qQ_05n8uxreXFBnJPeQ2-54" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;entryPerimeter=0;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" target="qQ_05n8uxreXFBnJPeQ2-40" value="">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="27hQy9bwfdpKXOzjaASy-17" connectable="0" parent="27hQy9bwfdpKXOzjaASy-16" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="item embeddingsvalue="item embeddings&#xa;+&#xa;search index"#xa;+ search indexvalue="item embeddings&#xa;+&#xa;search index"#xa;+ user index" vertex="1">
+        <mxCell id="27hQy9bwfdpKXOzjaASy-17" connectable="0" parent="27hQy9bwfdpKXOzjaASy-16" style="edgeLabel;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="item embeddings&#xa;+&#xa;search index&#xa;+ user index" vertex="1">
           <mxGeometry relative="1" x="0.5123" y="-1" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
@@ -292,6 +289,18 @@
           <mxGeometry relative="1" x="0.1203" as="geometry">
             <mxPoint as="offset" />
           </mxGeometry>
+        </mxCell>
+        <mxCell id="8VragOy6LFI9KcTufcTT-2" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;" value="" vertex="1">
+          <mxGeometry height="48.9" width="48.9" x="141.1" y="370" as="geometry" />
+        </mxCell>
+        <mxCell id="8VragOy6LFI9KcTufcTT-3" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;fontFamily=Amazon Ember;fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;" value="" vertex="1">
+          <mxGeometry height="48.9" width="48.9" x="132.1" y="380.6" as="geometry" />
+        </mxCell>
+        <mxCell id="qQ_05n8uxreXFBnJPeQ2-36" parent="qQ_05n8uxreXFBnJPeQ2-26" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=light-dark(#232F3E,#FFFFFF);fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ecs;fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="Amazon ECS (Fargate)&#xa;Games Scraping Task" vertex="1">
+          <mxGeometry height="48.9" width="48.9" x="123.1" y="389" as="geometry" />
+        </mxCell>
+        <mxCell id="8VragOy6LFI9KcTufcTT-6" parent="qQ_05n8uxreXFBnJPeQ2-26" style="text;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontFamily=Amazon Ember;fontColor=light-dark(#FFFFFF,#FFFFFF);fontSource=https://fonts.workshops.aws/webfonts/AmazonEmber_W_Lt.woff2;" value="N tasks&#xa;public IP per task" vertex="1">
+          <mxGeometry height="30" width="60" x="187.9" y="379.45" as="geometry" />
         </mxCell>
         <mxCell id="qQ_05n8uxreXFBnJPeQ2-6" parent="1" style="shape=actor;whiteSpace=wrap;fillStyle=solid;fillColor=light-dark(#FFFFFF,#232F3E);fontFamily=Amazon Ember;fontSource=https%3A%2F%2Ffonts.workshops.aws%2Fwebfonts%2FAmazonEmber_W_Lt.woff2;" value="" vertex="1">
           <mxGeometry height="48.9" width="40" x="1761" y="879.55" as="geometry" />

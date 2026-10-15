@@ -66,7 +66,10 @@ def test_serves_what_inference_wrote(settings, source, store, champion, monkeypa
     assert data["source"] == "personalized" and data["reranked"]
     top = data["recommendations"][0]
     assert top["explanation"] and top["details"]["name"] == top["name"]
+    assert [g["game_id"] for g in data["liked"]] == [1007, 1006, 1005, 1003, 1002]
+    assert all(g["details"]["name"] == g["name"] for g in data["liked"])
 
     status, data = _get(app, "/users/5/recommendations")  # 105: no user_features, fallback
     assert (status, data["user_id"], data["source"]) == (200, "105", "popular")
+    assert "liked" not in data
     assert data["recommendations"][0]["details"]["header_image"].startswith("https://")
