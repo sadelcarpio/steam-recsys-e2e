@@ -1,18 +1,35 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+import json
+from collections.abc import Callable, Iterator
 from types import SimpleNamespace
+from typing import Any
 
 import boto3
 import pytest
 from moto import mock_aws
 
 from steam_ingestion.config import IngestionSettings
-from steam_ingestion.steam_api import SteamClient
+from steam_ingestion.steam_api import APP_REVIEWS_URL, SteamClient
 
 RAW_BUCKET = "raw-steam-data-test"
 PARTITIONS_BUCKET = "game-partitions-test"
 USER_KEY = b"k" * 32  # HMAC key of the pseudonymous user ids (spec 13)
+REVIEWS_URL = APP_REVIEWS_URL  # one URL for every app: the appid is in `input_json`
+
+
+def reviews_request(**fields: Any) -> Callable[[Any], tuple[bool, str]]:
+    """`responses` matcher on the GetAppReviews `input_json` (subset match). A field set to
+    `None` must be absent."""
+
+    def match(request: Any) -> tuple[bool, str]:
+        sent = json.loads(request.params.get("input_json", "{}"))
+        for key, value in fields.items():
+            if key in sent if value is None else sent.get(key) != value:
+                return False, f"input_json {key}={sent.get(key)!r}, expected {value!r}"
+        return True, ""
+
+    return match
 
 
 @pytest.fixture(autouse=True)

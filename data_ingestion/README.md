@@ -17,7 +17,7 @@ EventBridge Scheduler ─► Step Functions
 |---|---|---|
 | Lambda `list-partition-game-ids` | `steam_ingestion.list_partition_game_ids.handler.handler` | GetAppList (games only, `if_modified_since` = stored catalog cursor), registers new appids as `pending` in `game-ids-state` and re-queues changed coming-soon games (below), writes game partitions (pending appids across `NUM_GAMES_WORKERS`, ≤ `GAMES_PER_TASK` each) and review partitions (all known released games, balanced by estimated request count across `NUM_REVIEW_WORKERS`). |
 | ECS `games-scraping` | `python -m steam_ingestion.games_scraping` | `appdetails` + review summary for each appid → `games/<scrape-date>-<n>-<part>.parquet`; marks appids `scraped` (with `coming_soon`) / `unavailable` / retries up to `MAX_GAME_ATTEMPTS`. |
-| ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid down to its `last_review_ts` cursor (uncapped by default: `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. The author is stored only as a pseudonymous `user_id` (below). |
+| ECS `reviews-scraping` | `python -m steam_ingestion.reviews_scraping` | Newest-first reviews per appid (`IUserReviewsService/GetAppReviews`, keyless) down to its `last_review_ts` cursor (uncapped by default: `MAX_REVIEWS_PER_GAME`), then the **backfill** of older reviews (below) → `reviews/<scrape-date>-<worker>-<part>.parquet`; advances cursors only after the rows are in S3. The author is stored only as a pseudonymous `user_id` (below). |
 
 | ECS `tags-scraping` | `python -m steam_ingestion.tags_scraping` | Steam **user tags** of every `scraped` / `pending` appid (spec 8): `IStoreBrowseService/GetItems` in batches of `TAGS_BATCH_SIZE` (100), top `TAGS_PER_GAME` (20) tags with their weights, names from `IStoreService/GetTagList` → `game_tags/<scrape-date>-<part>.parquet`. The whole catalog every run (~20 min: votes change); no API key. A failure never stops the pipeline (the `Scrape` branch catches it). |
 
@@ -86,9 +86,9 @@ AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_stored_reviews
 
 With the default `MAX_REVIEWS_PER_GAME=0` a new game's first scrape fetches its whole history and
 each later run every review since the last one. Games whose first scrape was capped (the initial
-load ran with a 2000 cap) get the rest from the backfill: each run fetches up to `BACKFILL_REVIEWS_PER_RUN` **older** reviews per game with Steam's undocumented
-`start_date=1&end_date=<oldest_review_ts>&date_range_type=include` range (newest-first inside
-the range, `end_date` inclusive), and moves the cursor's `oldest_review_ts` back. When the range
+load ran with a 2000 cap) get the rest from the backfill: each run fetches up to `BACKFILL_REVIEWS_PER_RUN` **older** reviews per game with the GetAppReviews
+`date_range_start: 1, date_range_end: <oldest_review_ts>` range (newest-first inside
+the range, the end inclusive), and moves the cursor's `oldest_review_ts` back. When the range
 runs out (Steam stops returning pages, for the biggest games after a few hundred thousand
 reviews) the cursor gets `backfill_complete`. It also gets it once the game has
 `BACKFILL_MAX_REVIEWS_PER_GAME` reviews stored (cursor `stored_reviews`): huge games such as

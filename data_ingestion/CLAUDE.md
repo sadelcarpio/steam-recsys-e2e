@@ -16,7 +16,15 @@ ids). Human docs: `README.md`.
     never import it from Lambda code paths
   - `steam_api.py`: `SteamClient` (pacing, retries on 403/429/5xx/null body; a 429
     waits at least `throttle_cooldown` / `Retry-After`, `SteamApiError`
-    never contains the URL because it carries the API key)
+    never contains the URL because it carries the API key). A 3xx raises
+    `SteamEndpointGone`, which is deliberately not a `SteamApiError`: the per-game handlers
+    let it fail the task instead of recording a failure on every game. Reviews and the review
+    summary use `IUserReviewsService/GetAppReviews` on `api.steampowered.com` (keyless,
+    `input_json`; the old `store.steampowered.com/appreviews` was retired on 2026-10-22).
+    Unknown `input_json` fields are silently ignored, so verify new ones against the live
+    endpoint: `languages: ["all"]`, `purchase_type: 2` (default 0 = Steam purchases only),
+    `filter: 1` (newest first), `date_range_start` / `date_range_end` (inclusive), ≤ 100 per
+    page, `num_per_page: 0` means 20
   - `state.py`: DynamoDB access. `game-ids-state` has one item per appid (status, attempts,
     `coming_soon` of the last scrape), and `appid=0` is the catalog cursor item.
     `reviews-state-cursor` holds `last_review_ts`, `total_reviews` and the backfill fields
