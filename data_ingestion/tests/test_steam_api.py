@@ -179,7 +179,7 @@ def test_iter_pages_full_history_until_repeated_cursor(client: SteamClient) -> N
     assert len(responses.calls) == 2
     assert _sent(responses.calls[0]) == {
         "languages": ["all"],
-        "purchase_type": 2,
+        "purchase_type": 1,
         "appid": 10,
         "filter": 1,
         "num_per_page": 100,
@@ -235,7 +235,7 @@ def test_get_review_summary(client: SteamClient) -> None:
     summary = {"total_reviews": 7, "review_score": 8}
     responses.get(
         REVIEWS_URL,
-        match=[reviews_request(appid=10, num_per_page=1, purchase_type=2, languages=["all"])],
+        match=[reviews_request(appid=10, num_per_page=1, purchase_type=1, languages=["all"])],
         json={"response": {"query_summary": summary, "reviews": [_review(1, 100)]}},
     )
     assert client.get_review_summary(10) == summary

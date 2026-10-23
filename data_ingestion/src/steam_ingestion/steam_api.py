@@ -29,9 +29,11 @@ REVIEWS_PAGE_SIZE = 100
 # GetItems ids per call: 200 works, 500 fails (the URL gets too long).
 MAX_STORE_ITEMS_PER_CALL = 200
 # GetAppReviews enums. filter: 0 (default) = most helpful within `day_range` (90 days),
-# 1 = newest first. purchase_type: 0 (default) = Steam purchases only, 2 = all.
+# 1 = newest first. purchase_type: 0 (default) / 3 = Steam purchases only, 1 = all,
+# 2 = non-Steam purchases only (count(1) == count(0) + count(2): verify on a paid game, a
+# free-to-play one has almost no Steam purchases and hides the difference).
 REVIEWS_FILTER_RECENT = 1
-REVIEWS_PURCHASE_ALL = 2
+REVIEWS_PURCHASE_ALL = 1
 
 
 class SteamApiError(RuntimeError):
