@@ -17,10 +17,10 @@ from steam_ingestion.games_scraping.scraper import (
 from steam_ingestion.models import PartitionFile
 from steam_ingestion.schemas import GAMES_SCHEMA
 from steam_ingestion.shutdown import Shutdown, ShutdownRequested
-from steam_ingestion.steam_api import APP_DETAILS_URL, SteamClient
+from steam_ingestion.steam_api import APP_DETAILS_URL, SteamClient, SteamEndpointGone
 from steam_ingestion.storage import list_keys, write_partition
 
-from .conftest import PARTITIONS_BUCKET, RAW_BUCKET
+from .conftest import PARTITIONS_BUCKET, RAW_BUCKET, REVIEWS_URL, reviews_request
 
 TODAY = date(2026, 9, 24)
 KEY = "games/run-1/appids-000.json"
@@ -67,8 +67,9 @@ def _mock_details(appid: int, *, data: dict | None = None, success: bool = True)
         json=body,
     )
     responses.get(
-        f"https://store.steampowered.com/appreviews/{appid}",
-        json={"success": 1, "query_summary": SUMMARY},
+        REVIEWS_URL,
+        match=[reviews_request(appid=appid)],
+        json={"response": {"query_summary": SUMMARY}},
     )
 
 
@@ -106,6 +107,24 @@ def test_build_game_record_tolerates_sparse_payload() -> None:
     assert record.price == 0.0
     assert record.minimum_pc_requirements is None
     assert record.developers == [] and record.dlc == []
+
+
+@responses.activate
+def test_moved_endpoint_fails_the_task_without_failing_games(
+    aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
+) -> None:
+    """A redirect (Steam retired the endpoint) is not the game's fault: no attempt recorded."""
+    _seed(aws, [1, 2])
+    responses.get(APP_DETAILS_URL, json={"1": {"success": True, "data": APP_DATA}})
+    responses.get(REVIEWS_URL, status=302, headers={"Location": "https://store.steampowered.com/"})
+
+    with pytest.raises(SteamEndpointGone):
+        scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, today=TODAY)
+
+    for appid in (1, 2):
+        item = aws.games.get_item(Key={"appid": appid})["Item"]
+        assert item["status"] == "pending" and int(item["attempts"]) == 0
+    assert len(responses.calls) == 2  # no retries, stopped at the first game
 
 
 @responses.activate

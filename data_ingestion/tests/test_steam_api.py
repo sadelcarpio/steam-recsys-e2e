@@ -16,9 +16,14 @@ from steam_ingestion.steam_api import (
     GameTag,
     SteamApiError,
     SteamClient,
+    SteamEndpointGone,
 )
 
-REVIEWS_URL = "https://store.steampowered.com/appreviews/10"
+from .conftest import REVIEWS_URL, reviews_request
+
+
+def _sent(call: responses.Call) -> dict:
+    return json.loads(call.request.params["input_json"])
 
 
 def _review(rec_id: int, ts: int) -> dict:
@@ -141,16 +146,17 @@ def test_request_pacing() -> None:
     assert sleeps == [1.5]
 
 
+def _page(reviews: list[dict], cursor: str = "c1", total: int | None = None) -> dict:
+    body: dict = {"cursor": cursor, "reviews": reviews}
+    if total is not None:
+        body["query_summary"] = {"total_reviews": total}
+    return {"response": body}
+
+
 @responses.activate
 def test_iter_pages_stops_at_cutoff(client: SteamClient) -> None:
     responses.get(
-        REVIEWS_URL,
-        json={
-            "success": 1,
-            "cursor": "c1",
-            "query_summary": {"total_reviews": 3},
-            "reviews": [_review(3, 300), _review(2, 200), _review(1, 100)],
-        },
+        REVIEWS_URL, json=_page([_review(3, 300), _review(2, 200), _review(1, 100)], total=3)
     )
     pages = list(client.iter_review_pages(10, since_ts=150))
     assert [[r["recommendationid"] for r in p.reviews] for p in pages] == [["3", "2"]]
@@ -161,37 +167,30 @@ def test_iter_pages_stops_at_cutoff(client: SteamClient) -> None:
 @responses.activate
 def test_iter_pages_full_history_until_repeated_cursor(client: SteamClient) -> None:
     responses.get(
-        REVIEWS_URL,
-        match=[matchers.query_param_matcher({"cursor": "*"}, strict_match=False)],
-        json={
-            "success": 1,
-            "cursor": "c1",
-            "query_summary": {"total_reviews": 2},
-            "reviews": [_review(2, 200)],
-        },
+        REVIEWS_URL, match=[reviews_request(cursor="*")], json=_page([_review(2, 200)], total=2)
     )
+    # GetAppReviews repeats query_summary on every page: only the first page's counts.
     responses.get(
-        REVIEWS_URL,
-        match=[matchers.query_param_matcher({"cursor": "c1"}, strict_match=False)],
-        json={"success": 1, "cursor": "c1", "reviews": [_review(1, 100)]},
+        REVIEWS_URL, match=[reviews_request(cursor="c1")], json=_page([_review(1, 100)], total=2)
     )
     pages = list(client.iter_review_pages(10))
     assert [len(p.reviews) for p in pages] == [1, 1]
     assert pages[1].total_reviews is None
     assert len(responses.calls) == 2
-    assert "filter=recent" in responses.calls[0].request.url
+    assert _sent(responses.calls[0]) == {
+        "languages": ["all"],
+        "purchase_type": 2,
+        "appid": 10,
+        "filter": 1,
+        "num_per_page": 100,
+        "cursor": "*",
+    }
 
 
 @responses.activate
 def test_iter_pages_respects_max_reviews(client: SteamClient) -> None:
     responses.get(
-        REVIEWS_URL,
-        json={
-            "success": 1,
-            "cursor": "c1",
-            "query_summary": {"total_reviews": 9},
-            "reviews": [_review(3, 300), _review(2, 200), _review(1, 100)],
-        },
+        REVIEWS_URL, json=_page([_review(3, 300), _review(2, 200), _review(1, 100)], total=9)
     )
     pages = list(client.iter_review_pages(10, max_reviews=2))
     assert sum(len(p.reviews) for p in pages) == 2
@@ -200,50 +199,56 @@ def test_iter_pages_respects_max_reviews(client: SteamClient) -> None:
 
 @responses.activate
 def test_iter_pages_no_new_reviews_still_reports_total(client: SteamClient) -> None:
-    responses.get(
-        REVIEWS_URL,
-        json={
-            "success": 1,
-            "cursor": "c1",
-            "query_summary": {"total_reviews": 1},
-            "reviews": [_review(1, 100)],
-        },
-    )
+    responses.get(REVIEWS_URL, json=_page([_review(1, 100)], total=1))
     pages = list(client.iter_review_pages(10, since_ts=100))
     assert len(pages) == 1 and pages[0].reviews == [] and pages[0].total_reviews == 1
+
+
+@responses.activate
+def test_iter_pages_unknown_app_yields_nothing(client: SteamClient) -> None:
+    responses.get(REVIEWS_URL, json={"response": {}})  # eresult 42
+    assert list(client.iter_review_pages(10)) == []
 
 
 @responses.activate
 def test_iter_pages_date_range_for_backfill(client: SteamClient) -> None:
     responses.get(
         REVIEWS_URL,
-        match=[
-            matchers.query_param_matcher(
-                {"start_date": "1", "end_date": "150", "date_range_type": "include"},
-                strict_match=False,
-            )
-        ],
-        json={
-            "success": 1,
-            "cursor": "*",  # an exhausted range echoes the cursor back
-            "query_summary": {"total_reviews": 2},
-            "reviews": [_review(2, 150), _review(1, 100)],  # end_date is inclusive
-        },
+        match=[reviews_request(date_range_start=1, date_range_end=150, filter=1)],
+        # an exhausted range echoes the cursor back; the end is inclusive
+        json=_page([_review(2, 150), _review(1, 100)], cursor="*", total=2),
     )
     pages = list(client.iter_review_pages(10, until_ts=150))
     assert [r["recommendationid"] for r in pages[0].reviews] == ["2", "1"]
-    assert "filter=recent" in responses.calls[0].request.url
 
 
 @responses.activate
 def test_iter_pages_ignored_date_range_is_an_error(client: SteamClient) -> None:
-    """start_date=0 (or an unsupported range) returns the newest reviews instead."""
-    responses.get(
-        REVIEWS_URL,
-        json={"success": 1, "cursor": "c1", "reviews": [_review(3, 300)]},
-    )
+    """date_range_start=0 (or an unsupported range) returns the newest reviews instead."""
+    responses.get(REVIEWS_URL, json=_page([_review(3, 300)]))
     with pytest.raises(SteamApiError, match="date range ignored"):
         list(client.iter_review_pages(10, until_ts=150))
+
+
+@responses.activate
+def test_get_review_summary(client: SteamClient) -> None:
+    summary = {"total_reviews": 7, "review_score": 8}
+    responses.get(
+        REVIEWS_URL,
+        match=[reviews_request(appid=10, num_per_page=1, purchase_type=2, languages=["all"])],
+        json={"response": {"query_summary": summary, "reviews": [_review(1, 100)]}},
+    )
+    assert client.get_review_summary(10) == summary
+
+
+@responses.activate
+def test_redirect_means_endpoint_gone_and_is_not_retried(client: SteamClient) -> None:
+    """The old appreviews URL 302s to the store front page: fail the task, not each game."""
+    responses.get(REVIEWS_URL, status=302, headers={"Location": "https://store.steampowered.com/"})
+    with pytest.raises(SteamEndpointGone) as exc:
+        client.get_review_summary(10)
+    assert not isinstance(exc.value, SteamApiError)
+    assert len(responses.calls) == 1
 
 
 @responses.activate

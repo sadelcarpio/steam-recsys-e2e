@@ -1,6 +1,6 @@
 """ECS task `reviews-scraping`: incremental reviews for one `reviews/<run_id>/part-<n>.json`.
 
-For each appid, pages newest-first (`filter=recent`) until reaching the `last_review_ts`
+For each appid, pages newest-first (GetAppReviews `filter=1`) until reaching the `last_review_ts`
 stored in `reviews-state-cursor` (forward pass, capped by `max_reviews_per_game`). Then, while
 older reviews are pending, it pages the range `[1, oldest_review_ts]` newest-first for up to
 `backfill_reviews_per_run` reviews and moves `oldest_review_ts` back (backward pass); an
@@ -194,8 +194,8 @@ def scrape_partition(
                 oldest, complete = forward.oldest, not (cap and forward.count >= cap)
             complete = complete or _capped(stored, max_stored)
 
-            # backward pass: reviews older than the oldest one written (end_date is inclusive, so
-            # the boundary second can repeat: the ETL dedupes on review_id)
+            # backward pass: reviews older than the oldest one written (the range end is
+            # inclusive, so the boundary second can repeat: the ETL dedupes on review_id)
             budget = backfill_budget(stored, per_run, max_stored)
             if budget and not complete and oldest is not None and backfill_run == run_id:
                 backfill_skipped += 1  # a retried task: this run's backfill is already spent

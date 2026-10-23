@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 import responses
-from responses import matchers
 
 from steam_ingestion.anonymize import hash_user_id
 from steam_ingestion.config import IngestionSettings
@@ -19,7 +18,7 @@ from steam_ingestion.state import ReviewCursor, ReviewsCursorState, backfill_bud
 from steam_ingestion.steam_api import SteamClient
 from steam_ingestion.storage import list_keys, write_partition
 
-from .conftest import PARTITIONS_BUCKET, RAW_BUCKET, USER_KEY
+from .conftest import PARTITIONS_BUCKET, RAW_BUCKET, REVIEWS_URL, USER_KEY, reviews_request
 
 TODAY = date(2026, 9, 24)
 KEY = "reviews/run-1/part-002.json"
@@ -54,32 +53,27 @@ def _review(rec_id: int, ts: int) -> dict:
     }
 
 
-def _no_range(request) -> tuple[bool, str]:
-    return "end_date" not in request.params, "forward requests carry no date range"
-
-
 def _mock_reviews(
     appid: int, pages: list[list[dict]], total: int | None = None, until: int | None = None
 ) -> None:
     """Newest-first pages; the last page echoes its own cursor back, as Steam does. `until`:
     the backfill range `[1, until]` (else only requests without a date range match)."""
-    url = f"https://store.steampowered.com/appreviews/{appid}"
     prefix = "" if until is None else f"b{until}-"
     for i, reviews in enumerate(pages):
         cursor_in = "*" if i == 0 else f"{prefix}c{i}"
         last = i == len(pages) - 1
         body: dict = {
-            "success": 1,
             "cursor": cursor_in if last else f"{prefix}c{i + 1}",
             "reviews": reviews,
         }
         if i == 0:
             body["query_summary"] = {"total_reviews": total or sum(len(p) for p in pages)}
-        params = {"cursor": cursor_in}
-        if until is not None:
-            params |= {"start_date": "1", "end_date": str(until)}
-        match = [matchers.query_param_matcher(params, strict_match=False)]
-        responses.get(url, match=match if until is not None else [*match, _no_range], json=body)
+        # forward requests carry no date range (None: must be absent)
+        start = None if until is None else 1
+        match = reviews_request(
+            appid=appid, cursor=cursor_in, date_range_start=start, date_range_end=until
+        )
+        responses.get(REVIEWS_URL, match=[match], json={"response": body})
 
 
 def _seed(aws: SimpleNamespace, appids: list[int]) -> None:
@@ -170,20 +164,18 @@ def test_mid_game_flush_does_not_advance_cursor_of_unfinished_game(
     """reviews_flush_rows=3: game 20's first page triggers a flush, then its 2nd page fails."""
     _seed(aws, [10, 20])
     _mock_reviews(10, [[_review(1, 100)]])
-    url = "https://store.steampowered.com/appreviews/20"
     responses.get(
-        url,
-        match=[matchers.query_param_matcher({"cursor": "*"}, strict_match=False)],
+        REVIEWS_URL,
+        match=[reviews_request(appid=20, cursor="*")],
         json={
-            "success": 1,
-            "cursor": "c1",
-            "query_summary": {"total_reviews": 5},
-            "reviews": [_review(5, 500), _review(4, 400)],
+            "response": {
+                "cursor": "c1",
+                "query_summary": {"total_reviews": 5},
+                "reviews": [_review(5, 500), _review(4, 400)],
+            }
         },
     )
-    responses.get(
-        url, match=[matchers.query_param_matcher({"cursor": "c1"}, strict_match=False)], status=503
-    )
+    responses.get(REVIEWS_URL, match=[reviews_request(appid=20, cursor="c1")], status=503)
 
     scrape_partition(KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY)
 
@@ -306,19 +298,12 @@ def test_failed_backfill_keeps_forward_progress_and_what_was_fetched(
         {10: ReviewCursor(last_review_ts=500, total_reviews=9, oldest_review_ts=300)}
     )
     _mock_reviews(10, [[_review(6, 600)]])
-    url = "https://store.steampowered.com/appreviews/10"
     responses.get(
-        url,
-        match=[
-            matchers.query_param_matcher({"cursor": "*", "end_date": "300"}, strict_match=False)
-        ],
-        json={"success": 1, "cursor": "b1", "reviews": [_review(2, 200)]},
+        REVIEWS_URL,
+        match=[reviews_request(appid=10, cursor="*", date_range_end=300)],
+        json={"response": {"cursor": "b1", "reviews": [_review(2, 200)]}},
     )
-    responses.get(
-        url,
-        match=[matchers.query_param_matcher({"cursor": "b1"}, strict_match=False)],
-        status=503,
-    )
+    responses.get(REVIEWS_URL, match=[reviews_request(appid=10, cursor="b1")], status=503)
 
     # a failed backfill does not count as a failed game
     assert scrape_partition(

@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 
 APP_LIST_URL = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-APP_REVIEWS_URL = "https://store.steampowered.com/appreviews/{appid}"
+# Replaced store.steampowered.com/appreviews on 2026-10-22 (that URL now 302s to the store).
+# Anonymous; the partner domain needs a publisher key. Unknown input_json fields are silently
+# ignored, so the field names and enums below were probed against the live endpoint.
+APP_REVIEWS_URL = "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/"
 # Undocumented but public (the store front end uses them); no API key.
 STORE_ITEMS_URL = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
 TAG_LIST_URL = "https://api.steampowered.com/IStoreService/GetTagList/v1/"
@@ -25,10 +28,20 @@ APP_LIST_PAGE_SIZE = 50_000
 REVIEWS_PAGE_SIZE = 100
 # GetItems ids per call: 200 works, 500 fails (the URL gets too long).
 MAX_STORE_ITEMS_PER_CALL = 200
+# GetAppReviews enums. filter: 0 (default) = most helpful within `day_range` (90 days),
+# 1 = newest first. purchase_type: 0 (default) = Steam purchases only, 2 = all.
+REVIEWS_FILTER_RECENT = 1
+REVIEWS_PURCHASE_ALL = 2
 
 
 class SteamApiError(RuntimeError):
     """Raised when retries are exhausted. Never carries the request URL (it holds the key)."""
+
+
+class SteamEndpointGone(RuntimeError):
+    """A redirect: Steam moved or removed the endpoint. Deliberately not a `SteamApiError`, so
+    the scrapers' per-game handling does not catch it and the task fails at once instead of
+    marking every game as failed."""
 
 
 @dataclass(frozen=True)
@@ -99,7 +112,9 @@ class SteamClient:
             reason: str
             retry_after = 0.0
             try:
-                resp = self._session.get(url, params=params, timeout=self._timeout)
+                resp = self._session.get(
+                    url, params=params, timeout=self._timeout, allow_redirects=False
+                )
             except requests.RequestException as exc:
                 reason = type(exc).__name__
             else:
@@ -109,6 +124,8 @@ class SteamClient:
                         # Store throttling is a ~5 min window per IP: a short exponential
                         # backoff gives up before it resets, so wait at least the cooldown.
                         retry_after = max(self._throttle_cooldown, _retry_after(resp))
+                elif 300 <= resp.status_code < 400:
+                    raise SteamEndpointGone(f"{endpoint}: HTTP {resp.status_code} redirect")
                 elif resp.status_code >= 400:
                     raise SteamApiError(f"{endpoint}: HTTP {resp.status_code}")
                 else:
@@ -199,13 +216,20 @@ class SteamClient:
                 out[int(appid)] = sorted(tags, key=lambda t: -t.weight)[:tag_count]
         return out
 
-    def get_review_summary(self, appid: int) -> dict[str, Any]:
+    def _get_app_reviews(self, request: dict[str, Any]) -> dict[str, Any]:
+        """`response` of GetAppReviews (`{}` for an unknown app)."""
+        request = {"languages": ["all"], "purchase_type": REVIEWS_PURCHASE_ALL, **request}
         body = self._get_json(
-            APP_REVIEWS_URL.format(appid=appid),
-            {"json": "1", "language": "all", "purchase_type": "all", "num_per_page": "0"},
-            "appreviews",
+            APP_REVIEWS_URL,
+            {"input_json": json.dumps(request, separators=(",", ":"))},
+            "GetAppReviews",
         )
-        return body.get("query_summary") or {}
+        return body.get("response") or {}
+
+    def get_review_summary(self, appid: int) -> dict[str, Any]:
+        # num_per_page=0 means the default page size (20), not "summary only".
+        response = self._get_app_reviews({"appid": appid, "num_per_page": 1})
+        return response.get("query_summary") or {}
 
     def iter_review_pages(
         self, appid: int, since_ts: int = 0, max_reviews: int = 0, until_ts: int | None = None
@@ -214,30 +238,23 @@ class SteamClient:
 
         Yielded pages only contain reviews newer than `since_ts`. `max_reviews` (0 = no cap)
         truncates the walk once that many reviews were yielded. `until_ts` restricts the walk to
-        reviews created at/before it (inclusive): Steam's undocumented `start_date` / `end_date`
+        reviews created at/before it (inclusive): the `date_range_start` / `date_range_end`
         range, used to backfill older reviews. `total_reviews` is then the count in the range. A
         review newer than `until_ts` means the range was ignored: `SteamApiError`.
         """
-        params: dict[str, Any] = {
-            "json": "1",
-            "filter": "recent",
-            "language": "all",
-            "purchase_type": "all",
-            "review_type": "all",
-            "num_per_page": str(REVIEWS_PAGE_SIZE),
+        request: dict[str, Any] = {
+            "appid": appid,
+            "filter": REVIEWS_FILTER_RECENT,
+            "num_per_page": REVIEWS_PAGE_SIZE,
         }
         if until_ts is not None:
-            # start_date=0 means "no range" to Steam, so the range starts at 1.
-            params |= {"start_date": "1", "end_date": str(until_ts), "date_range_type": "include"}
+            # date_range_start=0 means "no range" to Steam, so the range starts at 1.
+            request |= {"date_range_start": 1, "date_range_end": until_ts}
         cursor = "*"
         seen_cursors: set[str] = set()
         yielded = 0
         while True:
-            body = self._get_json(
-                APP_REVIEWS_URL.format(appid=appid), {**params, "cursor": cursor}, "appreviews"
-            )
-            if not body.get("success", 1):
-                return
+            body = self._get_app_reviews({**request, "cursor": cursor})
             total = (
                 (body.get("query_summary") or {}).get("total_reviews") if cursor == "*" else None
             )
@@ -245,7 +262,7 @@ class SteamClient:
             if until_ts is not None and any(
                 int(r.get("timestamp_created", 0)) > until_ts for r in raw
             ):
-                raise SteamApiError("appreviews: date range ignored (review after end_date)")
+                raise SteamApiError("GetAppReviews: date range ignored (review after its end)")
             fresh = [r for r in raw if int(r.get("timestamp_created", 0)) > since_ts]
             reached_cutoff = len(fresh) < len(raw)
             if max_reviews:
