@@ -22,7 +22,7 @@ ids). Human docs: `README.md`.
     summary use `IUserReviewsService/GetAppReviews` on `api.steampowered.com` (keyless,
     `input_json`; the old `store.steampowered.com/appreviews` was retired on 2026-10-22).
     Unknown `input_json` fields are silently ignored, so verify new ones against the live
-    endpoint: `languages: ["all"]`, `purchase_type: 2` (default 0 = Steam purchases only),
+    endpoint: `languages: ["all"]`, `purchase_type: 1` (all; default 0 = Steam purchases only, 2 = non-Steam only),
     `filter: 1` (newest first), `date_range_start` / `date_range_end` (inclusive), ≤ 100 per
     page, `num_per_page: 0` means 20
   - `state.py`: DynamoDB access. `game-ids-state` has one item per appid (status, attempts,
