@@ -297,6 +297,13 @@ def test_metadata_uses_the_license_setting(settings):
     assert "not** a Steam id" in meta["description"]
 
 
+def test_default_license_claims_no_rights_over_the_content(settings):
+    meta = dataset_metadata(settings(), TABLE_ROWS, NOW)
+    assert meta["licenses"] == [{"name": "copyright-authors"}]
+    assert "Original Authors" in meta["description"]
+    assert "steam-recsys-e2e/issues" in meta["description"]
+
+
 # ---- the token -------------------------------------------------------------------------------
 
 

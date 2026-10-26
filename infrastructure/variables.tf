@@ -127,9 +127,11 @@ variable "kaggle_dataset" {
 }
 
 variable "kaggle_license" {
-  description = "License name of the Kaggle dataset (a Kaggle license id, e.g. CC0-1.0, or other)."
+  # The review texts belong to their authors and the game data to Valve / the publishers:
+  # "Data files (c) Original Authors" claims no rights the dataset owner doesn't hold.
+  description = "Kaggle license id of the dataset (copyright-authors, CC-BY-NC-SA-4.0, CC0-1.0, ...)."
   type        = string
-  default     = "other"
+  default     = "copyright-authors"
 }
 
 variable "etl_dbt_threads" {
