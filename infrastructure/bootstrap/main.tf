@@ -198,9 +198,13 @@ data "aws_iam_policy_document" "github_plan" {
     resources = ["${aws_s3_bucket.tf_state.arn}/*.tflock"]
   }
   statement {
-    sid       = "ManagedSecretValues"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:data-ingestion/*"]
+    sid     = "ManagedSecretValues"
+    actions = ["secretsmanager:GetSecretValue"]
+    resources = [
+      "arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:data-ingestion/*",
+      # the Kaggle token's placeholder version (spec 16, etl.tf)
+      "arn:aws:secretsmanager:${var.region}:${local.account_id}:secret:etl/kaggle-api-token-*",
+    ]
   }
   statement {
     sid       = "EphemeralRandomPassword"
