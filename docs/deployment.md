@@ -165,6 +165,16 @@ The HMAC key of the pseudonymous user ids (`data-ingestion/user-id-hmac-key`, sp
 nothing: Terraform generates it once (write-only, so it is in neither the plan nor the state).
 Never rotate or delete it (`prevent_destroy`): a new key splits every user's history in two.
 
+The Kaggle token (`etl/kaggle-api-token`, spec 16) is set from your own terminal, so it never
+passes through a chat or a CI log. Export it in that shell first (`KAGGLE_API_TOKEN`). The
+export stays off until you also flip `KAGGLE_EXPORT_ENABLED`:
+
+```bash
+aws secretsmanager put-secret-value --secret-id etl/kaggle-api-token \
+  --secret-string "$KAGGLE_API_TOKEN"
+aws ssm put-parameter --overwrite --name /etl/KAGGLE_EXPORT_ENABLED --value true
+```
+
 ## 6. Deploy the components (from `main`)
 
 Order matters only on the first deploy: the pipeline's ECS tasks run the `:latest` images.
@@ -594,6 +604,35 @@ the middle would mix raw and hashed ids.
    select count(*) from steam_raw.reviews where user_id between 76561190000000000 and 76561199999999999;
    -- a handful at most: a hash falls in that range with probability ~1e-9 per user
    ```
+
+**Release with the Kaggle dataset (spec 16):** the export publishes the cleaned data to
+`sergiodelcarpio/steam-reviews` and replaces the hand-made `sergiodelcarpio/steam-reviews-100m`
+(which still has SteamIDs; Kaggle can only delete a whole dataset).
+1. Merge, then *infrastructure CD* (secret, SSM, `kaggle-export` task definition and role, the
+   `PublishKaggle` state) and *etl CD* (the image with the export). Until step 2, the new state
+   starts a task that logs "disabled" and exits.
+2. Set the token and enable the export (step 5 above). Check the license first: the dataset
+   uses `kaggle_license` (default `other`); set it to the old dataset's license if different.
+3. First publish now rather than at the next run (same network flags as step 8):
+   ```bash
+   aws ecs run-task --cluster steam-recsys --task-definition kaggle-export --launch-type FARGATE \
+     --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=ENABLED}"
+   aws logs tail /ecs/etl --log-stream-name-prefix kaggle-export --follow   # "published ... v1"
+   ```
+   About 30-60 min (Athena, ~17 GB down, ~17 GB up, Kaggle processing). It creates the dataset
+   as **private**.
+4. Check it on Kaggle: files and row counts, no `user_id` that looks like a SteamID64 (17 digits
+   starting with `7656119`), the data card. Then make it public (Settings → Visibility).
+5. Delete the old dataset. This can't be undone: every version, its votes, discussions and
+   notebook links go with it.
+   ```bash
+   kaggle datasets delete sergiodelcarpio/steam-reviews-100m
+   ```
+   Post the new link wherever the old one was shared.
+
+Later publishes happen from the pipeline, at most every `KAGGLE_MIN_DAYS_BETWEEN` days
+(`aws ssm put-parameter --overwrite --name /etl/KAGGLE_MIN_DAYS_BETWEEN --value 7` for weekly).
+A failed export only shows in `/ecs/etl` (`kaggle-export`); the next run retries it.
 
 ## Order for a fresh account (summary)
 

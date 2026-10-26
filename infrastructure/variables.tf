@@ -116,6 +116,22 @@ variable "etl_image_tag" {
   default     = "latest"
 }
 
+variable "kaggle_dataset" {
+  description = "Kaggle dataset the export publishes to (spec 16), <owner>/<slug>."
+  type        = string
+  default     = "sergiodelcarpio/steam-reviews"
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]+/[a-z0-9-]{3,50}$", var.kaggle_dataset))
+    error_message = "kaggle_dataset must look like <owner>/<slug>."
+  }
+}
+
+variable "kaggle_license" {
+  description = "License name of the Kaggle dataset (a Kaggle license id, e.g. CC0-1.0, or other)."
+  type        = string
+  default     = "other"
+}
+
 variable "etl_dbt_threads" {
   description = "Concurrent Athena queries per dbt run."
   type        = number
