@@ -260,6 +260,36 @@ locals {
         }
         Retry      = local.ecs_task_retry
         ResultPath = null
+        Next       = "PublishKaggle"
+      }
+      # Kaggle dataset (spec 16), fire and forget: runTask without .sync returns once ECS
+      # accepts the task, so the export runs alongside inference and never delays or fails
+      # the pipeline (a failed launch is caught too). The task skips itself unless a publish
+      # is due (KAGGLE_MIN_DAYS_BETWEEN) and KAGGLE_EXPORT_ENABLED is true.
+      PublishKaggle = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::ecs:runTask"
+        Parameters = {
+          LaunchType     = "FARGATE"
+          Cluster        = aws_ecs_cluster.main.arn
+          TaskDefinition = aws_ecs_task_definition.kaggle_export.arn_without_revision
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              Subnets        = aws_subnet.public[*].id
+              SecurityGroups = [aws_security_group.egress_only.id]
+              AssignPublicIp = "ENABLED" # no NAT: Kaggle + AWS API egress through the IGW
+            }
+          }
+          PropagateTags = "TASK_DEFINITION"
+          Overrides = {
+            ContainerOverrides = [{
+              Name        = "kaggle-export"
+              Environment = [{ Name = "RUN_ID", "Value.$" = "$$.Execution.Name" }]
+            }]
+          }
+        }
+        Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = null, Next = "CheckChampion" }]
+        ResultPath = null
         Next       = "CheckChampion"
       }
       # Inference only runs once a model is promoted (training promote workflow, or a local
@@ -346,6 +376,7 @@ data "aws_iam_policy_document" "pipeline" {
     resources = concat(
       [for td in aws_ecs_task_definition.scraping : "${td.arn_without_revision}:*"],
       ["${aws_ecs_task_definition.dbt.arn_without_revision}:*"],
+      ["${aws_ecs_task_definition.kaggle_export.arn_without_revision}:*"],
     )
   }
   statement {
@@ -359,6 +390,7 @@ data "aws_iam_policy_document" "pipeline" {
     resources = [
       aws_iam_role.scraping_task.arn, aws_iam_role.scraping_execution.arn,
       aws_iam_role.etl_task.arn, aws_iam_role.etl_execution.arn,
+      aws_iam_role.kaggle_export.arn,
     ]
   }
   statement {

@@ -33,8 +33,10 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
   `frontend/tests/cloudfront.test.ts`. The `/api/*` cache policy must not key on headers (they
   would be forwarded, and the Function URL needs its own `Host`).
 - The state machine definition is HCL (`local.pipeline_definition` in `orchestration.tf`):
-  `ListPartitionGameIds -> Scrape -> Transform -> CheckChampion -> HasChampion -> Infer |
-  NoChampion`. `Scrape` runs the games / reviews Maps plus `local.tags_branch` (one
+  `ListPartitionGameIds -> Scrape -> Transform -> PublishKaggle -> CheckChampion -> HasChampion
+  -> Infer | NoChampion`. `PublishKaggle` (spec 16) is the only fire-and-forget state
+  (`ecs:runTask` without `.sync`, every error caught): the `kaggle-export` task must never
+  delay or fail the pipeline. `Scrape` runs the games / reviews Maps plus `local.tags_branch` (one
   `tags-scraping` task whose final failure is caught: tags are best effort). `CheckChampion` lists `models/champion/metadata.json` (written last by a
   promotion). New states need matching permissions on `aws_iam_role.pipeline` (RunTask on the
   task definition, PassRole on its roles).

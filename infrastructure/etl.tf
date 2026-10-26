@@ -9,8 +9,11 @@ locals {
     "arn:aws:ssm:${local.region}:${local.account_id}:parameter${local.etl_ssm_prefix}/*",
   ]
   # Glue databases: <schema>_raw (Terraform) + the dbt layers (<schema>_<layer>).
-  etl_schema    = "steam"
-  etl_databases = ["raw", "staging", "intermediate", "marts"]
+  # Kaggle export (spec 16): UNLOAD output per run (expired) and the last publish (kept).
+  kaggle_export_prefix = "exports/kaggle/"
+  kaggle_state_key     = "exports/kaggle-state/last.json"
+  etl_schema           = "steam"
+  etl_databases        = ["raw", "staging", "intermediate", "marts"]
 
   athena_catalog_arn = "arn:aws:athena:${local.region}:${local.account_id}:datacatalog/AwsDataCatalog"
   glue_catalog_arn   = "arn:aws:glue:${local.region}:${local.account_id}:catalog"
@@ -85,6 +88,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "processed_steam_data" {
       days = 7
     }
   }
+  # Kaggle export (spec 16): a run's UNLOAD output, normally deleted by the task itself. The
+  # publish state lives under exports/kaggle-state/, outside this prefix.
+  rule {
+    id     = "expire-kaggle-exports"
+    status = "Enabled"
+    filter {
+      prefix = "exports/kaggle/"
+    }
+    expiration {
+      days = 7
+    }
+  }
 }
 
 resource "aws_glue_catalog_database" "etl" {
@@ -145,10 +160,31 @@ resource "aws_ssm_parameter" "etl" {
     ICEBERG_S3_DATA_DIR   = "s3://${aws_s3_bucket.processed_steam_data.bucket}/iceberg/"
     DBT_SCHEMA            = local.etl_schema
     DBT_THREADS           = tostring(var.etl_dbt_threads)
+    # Kaggle export (spec 16)
+    EXPORT_S3_PREFIX       = "s3://${aws_s3_bucket.processed_steam_data.bucket}/${local.kaggle_export_prefix}"
+    EXPORT_STATE_S3_URI    = "s3://${aws_s3_bucket.processed_steam_data.bucket}/${local.kaggle_state_key}"
+    KAGGLE_DATASET         = var.kaggle_dataset
+    KAGGLE_TOKEN_SECRET_ID = aws_secretsmanager_secret.kaggle_api_token.name
+    KAGGLE_LICENSE         = var.kaggle_license
   }
   name  = "${local.etl_ssm_prefix}/${each.key}"
   type  = "String"
   value = each.value
+}
+
+# Kaggle export (spec 16): runtime switches, changed with `aws ssm put-parameter` (Terraform
+# only creates them). The export stays off until the token is set.
+resource "aws_ssm_parameter" "etl_kaggle_switch" {
+  for_each = {
+    KAGGLE_EXPORT_ENABLED   = "false"
+    KAGGLE_MIN_DAYS_BETWEEN = "28"
+  }
+  name  = "${local.etl_ssm_prefix}/${each.key}"
+  type  = "String"
+  value = each.value
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
 
 # ---- ECR -----------------------------------------------------------------------------------
@@ -264,6 +300,123 @@ resource "aws_ecs_task_definition" "dbt" {
         awslogs-group         = aws_cloudwatch_log_group.etl.name
         awslogs-region        = local.region
         awslogs-stream-prefix = "dbt"
+      }
+    }
+  }])
+}
+
+# ---- ECS: Kaggle export (spec 16) -----------------------------------------------------------
+# `python -m steam_etl.kaggle_export`, started by the pipeline's PublishKaggle state without
+# waiting for it (fire and forget). Publishes the cleaned reviews / games / tags to Kaggle at
+# most every KAGGLE_MIN_DAYS_BETWEEN days.
+
+resource "aws_secretsmanager_secret" "kaggle_api_token" {
+  name                    = "etl/kaggle-api-token"
+  description             = "Kaggle API token of the dataset owner (spec 16)."
+  recovery_window_in_days = 7
+}
+
+# Dummy value; set the real token out-of-band (docs/deployment.md, Kaggle dataset).
+resource "aws_secretsmanager_secret_version" "kaggle_api_token" {
+  secret_id     = aws_secretsmanager_secret.kaggle_api_token.id
+  secret_string = "REPLACE_ME"
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
+resource "aws_iam_role" "kaggle_export" {
+  name               = "${var.project}-kaggle-export"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
+}
+
+data "aws_iam_policy_document" "kaggle_export" {
+  statement {
+    sid       = "Athena"
+    actions   = local.dbt_athena_actions
+    resources = [aws_athena_workgroup.etl.arn, local.athena_catalog_arn]
+  }
+  statement {
+    sid     = "GlueRead"
+    actions = ["glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:GetPartition", "glue:GetPartitions", "glue:BatchGetPartition"]
+    resources = concat(
+      [local.glue_catalog_arn],
+      [for layer in ["raw", "intermediate", "marts"] : aws_glue_catalog_database.etl[layer].arn],
+      [for layer in ["raw", "intermediate", "marts"] : "arn:aws:glue:${local.region}:${local.account_id}:table/${aws_glue_catalog_database.etl[layer].name}/*"],
+    )
+  }
+  statement {
+    sid       = "ListBuckets"
+    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+    resources = [aws_s3_bucket.raw_steam_data.arn, aws_s3_bucket.processed_steam_data.arn]
+  }
+  statement {
+    sid     = "ReadData"
+    actions = ["s3:GetObject"]
+    resources = [
+      "${aws_s3_bucket.raw_steam_data.arn}/reviews/*",
+      "${aws_s3_bucket.raw_steam_data.arn}/game_tags/*",
+      "${aws_s3_bucket.processed_steam_data.arn}/iceberg/*",
+    ]
+  }
+  statement {
+    sid     = "WriteExport"
+    actions = local.s3_rw_actions
+    resources = [
+      "${aws_s3_bucket.processed_steam_data.arn}/${local.kaggle_export_prefix}*",
+      "${aws_s3_bucket.processed_steam_data.arn}/${local.kaggle_state_key}",
+      "${aws_s3_bucket.processed_steam_data.arn}/athena-results/*",
+    ]
+  }
+  statement {
+    sid       = "KaggleToken"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.kaggle_api_token.arn]
+  }
+  statement {
+    sid       = "Config"
+    actions   = ["ssm:GetParametersByPath"]
+    resources = local.etl_ssm_arns
+  }
+}
+
+resource "aws_iam_role_policy" "kaggle_export" {
+  role   = aws_iam_role.kaggle_export.id
+  policy = data.aws_iam_policy_document.kaggle_export.json
+}
+
+resource "aws_ecs_task_definition" "kaggle_export" {
+  family                   = "kaggle-export"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 1024
+  memory                   = 4096
+  execution_role_arn       = aws_iam_role.etl_execution.arn
+  task_role_arn            = aws_iam_role.kaggle_export.arn
+
+  # The reviews (~17 GB of Parquet) are consolidated on local disk before the upload.
+  ephemeral_storage {
+    size_in_gib = 60
+  }
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([{
+    name      = "kaggle-export"
+    image     = "${aws_ecr_repository.etl.repository_url}:${var.etl_image_tag}"
+    essential = true
+    command   = ["python", "-m", "steam_etl.kaggle_export"]
+    # RUN_ID comes from the pipeline (the execution name); a manual run-task uses a timestamp.
+    environment = [{ name = "USE_SSM", value = "true" }]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.etl.name
+        awslogs-region        = local.region
+        awslogs-stream-prefix = "kaggle-export"
       }
     }
   }])

@@ -6,6 +6,7 @@ Scenario, in isolated Glue databases `<ci_id>_{raw,staging,intermediate,marts}` 
   2. dbt run again, no new data                  (snapshot `rerun`, must equal `batch1`)
   3. batch 2 raw parquet -> dbt run              (snapshot `batch2`, incremental)
   4. dbt build --full-refresh                    (snapshot `full`, must equal `batch2`)
+  5. the Kaggle export's UNLOADs (spec 16), read back from S3   (`export`)
 Athena time is per query, not per row, so for speed the dbt data tests only run in step 4
 (steps 1-3 are checked by the assertions below and by `batch2 == full`), Iceberg maintenance is
 off, dbt uses 8 threads and snapshots query tables in parallel.
@@ -33,6 +34,10 @@ from pyathena.cursor import DictCursor
 
 from steam_etl.config import EtlSettings
 from steam_etl.contracts import MART_CONTRACTS
+from steam_etl.kaggle_export.export import TABLES as EXPORT_TABLES
+from steam_etl.kaggle_export.export import sql as export_sql
+from steam_etl.kaggle_export.export import unload_sql
+from steam_etl.kaggle_export.settings import KaggleExportSettings
 from steam_etl.runner import run_dbt
 from tests.integration import fixtures as fx
 
@@ -182,6 +187,30 @@ class Lakehouse:
             rows = pool.map(lambda job: self.fetch(*job, columns[job[1]]), jobs)
         return {table: result for (_, table), result in zip(jobs, rows, strict=True)}
 
+    def export(self) -> Snapshot:
+        """Runs the Kaggle export's UNLOADs and reads the Parquet parts back."""
+        settings = KaggleExportSettings(
+            athena_work_group=self.work_group,
+            dbt_schema=self.ci_id,
+            export_s3_prefix=f"s3://{self.bucket}/{self.prefix}export/",
+            export_state_s3_uri=f"s3://{self.bucket}/{self.prefix}export-state/last.json",
+            kaggle_dataset="ci/steam-reviews-ci",
+        )
+        result: Snapshot = {}
+        for table in EXPORT_TABLES:
+            prefix = f"{self.prefix}export/{table}/"
+            self.query(unload_sql(export_sql(table, settings), f"s3://{self.bucket}/{prefix}"))
+            rows: list[dict[str, Any]] = []
+            listed = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
+            for obj in listed.get("Contents", []):
+                body = self.s3.get_object(Bucket=self.bucket, Key=obj["Key"])["Body"].read()
+                rows += pq.read_table(io.BytesIO(body)).to_pylist()
+            result[table] = rows
+        result["count_reviews"] = [
+            {"count": list(self.query(export_sql("count_reviews", settings))[0].values())[0]}
+        ]
+        return result
+
 
 @pytest.fixture(scope="module")
 def runs() -> dict[str, Snapshot]:
@@ -198,6 +227,7 @@ def runs() -> dict[str, Snapshot]:
         snaps["batch2"] = lh.snapshot()
         lh.dbt("build", full_refresh=True)  # + all dbt data tests
         snaps["full"] = lh.snapshot()
+        snaps["export"] = lh.export()
         yield snaps
     finally:
         if os.environ.get("ETL_CI_KEEP", "false").lower() != "true":
@@ -420,3 +450,41 @@ def test_user_index_ranks_users_by_reviews_then_id(runs):
                 len(counts[r["user_id"]]),
                 sum(counts[r["user_id"]]),
             )
+
+
+# ---- Kaggle export (spec 16) ------------------------------------------------------------------
+
+PUBLISHED_REVIEW_COLUMNS = [
+    "review_id", "user_id", "game_id", "is_positive", "review", "language", "reviewed_at",
+    "updated_at", "playtime_forever", "playtime_last_two_weeks", "playtime_at_review",
+    "num_games_owned", "num_reviews", "votes_up", "votes_funny", "weighted_vote_score",
+    "comment_count", "steam_purchase", "received_for_free", "written_during_early_access",
+    "primarily_steam_deck",
+]  # fmt: skip
+
+
+def test_export_reviews_are_the_deduplicated_reviews(runs):
+    exported = runs["export"]["reviews"]
+    deduplicated = by(runs["full"]["int_reviews__deduplicated"], "review_id")
+    assert list(exported[0]) == PUBLISHED_REVIEW_COLUMNS
+    assert sorted(r["review_id"] for r in exported) == sorted(deduplicated)
+    assert runs["export"]["count_reviews"][0]["count"] == len(exported)
+    for r in exported:  # the same version wins (first scrape, then the latest update)
+        kept = deduplicated[r["review_id"]]
+        assert (r["user_id"], r["game_id"], r["is_positive"]) == (
+            kept["user_id"],
+            kept["game_id"],
+            kept["is_positive"],
+        )
+
+
+def test_export_games_and_tags(runs):
+    details = {r["game_id"] for r in runs["full"]["game_details"]}
+    games = runs["export"]["games"]
+    assert sorted(r["game_id"] for r in games) == sorted(details)
+    assert "game_name_key" not in games[0]
+    tags = runs["export"]["game_tags"]
+    assert tags and {r["game_id"] for r in tags} <= details
+    assert len({r["game_id"] for r in tags}) == len(tags)
+    for r in tags:
+        assert r["tag_names"] and len(r["tag_names"]) == len(r["tag_weights"])

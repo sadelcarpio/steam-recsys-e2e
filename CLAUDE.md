@@ -63,6 +63,8 @@ variables or a CD workflow.
       effort, a failure keeps the previous tags)
 3. ECS Fargate `dbt`: runs models through Athena (a full refresh while a reviews backfill is
    pending: the Lambda's `etl_full_refresh`)
+   - then ECS Fargate `kaggle-export` is started without waiting (spec 16): publishes the
+     public Kaggle dataset when one is due (about monthly); never blocks or fails the run
 4. SageMaker Inference Pipeline: a SageMaker Processing job `steam-recsys-infer-*` (only when
    `models/champion/` exists, else skipped): top-K recs per user + LLM reranking
 
@@ -85,6 +87,13 @@ Order: EventBridge → 1 → 2 → 3 → 4
   (Glue `steam_staging` / `steam_intermediate` / `steam_marts`)
 - dbt (3) runs its models via Athena (workgroup `steam-recsys-etl`)
 - Marts for training / inference: `interactions`, `game_features`, `game_tags`, `user_features`, `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
+
+### Public dataset (spec 16)
+
+- Athena (`UNLOAD`: deduplicated raw reviews with text and hashed `user_id`, `game_details`,
+  latest raw tags) → S3 `processed-steam-data-<account-id>/exports/kaggle/<run_id>/` →
+  `kaggle-export` task → Kaggle dataset `sergiodelcarpio/steam-reviews` (last publish in
+  `exports/kaggle-state/last.json`)
 
 ### Training (outside the Step Functions workflow)
 

@@ -119,6 +119,35 @@ Pydantic settings (`steam_etl.config.EtlSettings`). Precedence: env vars > SSM `
 | `ICEBERG_MAINTENANCE` | true | OPTIMIZE + VACUUM each incremental table after writing it (off in the integration test) |
 | `REVIEWS_LOOKBACK_DAYS` / `GAMES_LOOKBACK_DAYS` | 3 | Re-read scrape dates before the latest loaded |
 
+## Kaggle dataset (spec 16)
+
+`python -m steam_etl.kaggle_export` (ECS task `kaggle-export`) publishes the cleaned data to
+Kaggle (`KAGGLE_DATASET`, default `sergiodelcarpio/steam-reviews`). The pipeline starts it
+after `Transform` **without waiting for it** (`PublishKaggle`, fire and forget), so it never
+delays or fails a run.
+
+1. Skips unless `KAGGLE_EXPORT_ENABLED=true` and the last publish
+   (`exports/kaggle-state/last.json`) is older than `KAGGLE_MIN_DAYS_BETWEEN` days (default 28;
+   0 = every run). Each version re-uploads everything (~17 GB, ~$1.5 of egress).
+2. Athena `UNLOAD` of `kaggle_export/sql/*.sql` to `exports/kaggle/<run_id>/`:
+   - `reviews`: raw reviews deduplicated with the rule of `int_reviews__deduplicated` (which
+     keeps no text), with the review text and playtime, the hashed `user_id`, and no
+     `scrape_date`, `last_played` or user number;
+   - `games`: the `game_details` mart (without `game_name_key`);
+   - `game_tags`: the latest raw tag scrape of each published game, with tag names.
+3. Downloads and rewrites the parts as `reviews-NNN.parquet` (`ROWS_PER_FILE`, 10M) /
+   `games.parquet` / `game_tags.parquet`. It fails if the reviews count differs from
+   `int_reviews__deduplicated`, or a game table is empty.
+4. Writes `dataset-metadata.json` (data card: `kaggle_export/datacard.md`), then creates the
+   dataset (**private**) or adds a version, and waits until Kaggle reports it `ready`. Only
+   then is `last.json` written.
+
+The token is in Secrets Manager `etl/kaggle-api-token`, read only by this task, and never
+logged. Settings (`KaggleExportSettings`, env > SSM `/etl/*`): `EXPORT_S3_PREFIX`,
+`EXPORT_STATE_S3_URI`, `KAGGLE_DATASET`, `KAGGLE_TOKEN_SECRET_ID`, `KAGGLE_LICENSE`,
+`KAGGLE_EXPORT_ENABLED`, `KAGGLE_MIN_DAYS_BETWEEN`, `KAGGLE_STATUS_TIMEOUT_MINUTES` (60),
+`ROWS_PER_FILE`, `RUN_ID` (the execution name; a timestamp on a manual run).
+
 ## Development
 
 ```bash

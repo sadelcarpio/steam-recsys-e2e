@@ -1,7 +1,7 @@
 # etl
 
 Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-coming-soon-games.md`,
-`specs/13-anonymize-user-ids.md`). Human docs: `README.md`.
+`specs/13-anonymize-user-ids.md`, `specs/16-kaggle-dataset.md`). Human docs: `README.md`.
 
 ## Layout
 
@@ -20,6 +20,11 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
   - `runner.py`: `run_dbt()` maps settings to profile env / `--vars` and runs dbt in-process
   - `contracts.py`: Pydantic row contracts of every mart (`MART_CONTRACTS`)
   - `__main__.py`: ECS entry point (`dbt build`, exit 1 on any model/test failure)
+  - `kaggle_export/` (spec 16, ECS task `kaggle-export`): `settings.py`
+    (`KaggleExportSettings`), `sql/*.sql` (the published tables + the reviews count check),
+    `athena.py` (run / scalar), `publisher.py` (`Publisher` protocol, `KagglePublisher` on
+    the `kaggle` 2.x API), `export.py` (`run_export`: due check -> UNLOAD -> consolidate ->
+    checks -> publish -> `last.json`), `datacard.md` (Kaggle description template)
 - `tests/`: unit tests (no AWS), `tests/integration/` Athena end-to-end (`-m athena`)
 - `Dockerfile`: image `etl`, dbt project at `/app/dbt`
 
@@ -56,6 +61,11 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
 - Timestamps are `timestamp(6)` in Iceberg tables (Athena requirement), but plain `timestamp` in
   views: Athena stores view columns as Hive types and rejects `timestamp(6)` there. Changing a mart's columns means updating
   `contracts.py` and the integration test (`on_schema_change: fail`).
+- Kaggle export (spec 16): never publishes `user_idx`, `scrape_date`, `last_played` or raw
+  SteamIDs. `sql/reviews.sql` mirrors the filters of `stg_steam__reviews` and the dedup clause
+  of `int_reviews__deduplicated` (a unit test compares the clauses); change them together.
+  Nothing reaches Kaggle unless every check passed, and `last.json` is written only once
+  Kaggle reports the version ready. The token is only read by this task and never logged.
 
 ## Commands
 
@@ -64,4 +74,5 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
 Athena integration: `ETL_CI_BUCKET`, `ETL_CI_WORK_GROUP`, `AWS_REGION` + credentials,
 `uv run pytest tests/integration -m athena`. Add deps only with `uv add` (never edit the lock).
 
-Infra for this component: `infrastructure/etl.tf` + the `Transform` state in `orchestration.tf`.
+Infra for this component: `infrastructure/etl.tf` + the `Transform` and `PublishKaggle` states
+in `orchestration.tf`.
