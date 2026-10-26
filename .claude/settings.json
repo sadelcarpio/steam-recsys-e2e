@@ -37,11 +37,27 @@
     "failIfUnavailable": true,
     "allowUnsandboxedCommands": false,
     "filesystem": {
-      "denyRead": ["~/**/.env", "~/**/*.env", "~/**/.env.*"],
-      "denyWrite": ["~/**/.env", "~/**/*.env", "~/**/.env.*"]
+      "denyRead": [
+        "~/**/.env",
+        "~/**/*.env",
+        "~/**/.env.*"
+      ],
+      "denyWrite": [
+        "~/**/.env",
+        "~/**/*.env",
+        "~/**/.env.*"
+      ]
     },
     "network": {
-      "allowedDomains": ["github.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"]
+      "allowedDomains": [
+        "github.com",
+        "api.github.com",
+        "registry.npmjs.org",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "*.amazonaws.com",
+        "www.kaggle.com"
+      ]
     }
   },
   "autoMode": {
