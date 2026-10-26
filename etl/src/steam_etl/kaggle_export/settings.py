@@ -32,7 +32,8 @@ class KaggleExportSettings(BaseSettings):
     kaggle_export_enabled: bool = False
     kaggle_dataset: str = Field(pattern=DATASET_PATTERN)
     kaggle_token_secret_id: str = "etl/kaggle-api-token"
-    kaggle_license: str = "other"
+    # "Data files (c) Original Authors": the reviews and game data aren't ours to relicense.
+    kaggle_license: str = "copyright-authors"
     # A publish re-uploads every file (no incremental versions): ~17 GB of egress each time.
     kaggle_min_days_between: int = Field(28, ge=0)
     kaggle_status_timeout_minutes: int = Field(60, ge=1)

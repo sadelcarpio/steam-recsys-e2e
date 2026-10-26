@@ -42,3 +42,11 @@ can't be reversed or recomputed without the key, which is never published.
 Steam reviews are public, though: searching a review's text on Steam can lead to its author's
 profile. The hash only prevents joining this data with Steam ids directly. Don't use this
 dataset to identify or contact reviewers.
+
+## License and terms
+
+- Review texts belong to their authors. Game names, descriptions, images and tags belong to
+  Valve and the games' publishers. This dataset claims no rights over them ("Data files ©
+  Original Authors").
+- Collected from Steam's public Web API and store pages, for research and education.
+- To have content removed, open an issue at $repo_url/issues.
