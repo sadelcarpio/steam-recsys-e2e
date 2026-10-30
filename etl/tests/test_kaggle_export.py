@@ -307,6 +307,63 @@ def test_default_license_claims_no_rights_over_the_content(settings):
 # ---- the token -------------------------------------------------------------------------------
 
 
+def fake_publisher(monkeypatch, tmp_path, api, token="t"):
+    module = types.ModuleType("kaggle.api.kaggle_api_extended")
+    module.KaggleApi = api
+    monkeypatch.setitem(sys.modules, "kaggle.api.kaggle_api_extended", module)
+    # set first, so monkeypatch removes what the publisher writes into os.environ
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "placeholder")
+    monkeypatch.setenv("KAGGLE_CONFIG_DIR", str(tmp_path))
+    return KagglePublisher("o/d", token, config_dir=str(tmp_path))
+
+
+class StatusApi:
+    """Owns `o/d-old` and, when `exists`, `o/d`; any status call of a missing dataset fails."""
+
+    exists = False
+
+    def authenticate(self):
+        pass
+
+    def dataset_list(self, mine=False, search=None):
+        assert mine and search == "d"
+        refs = ["o/d-old"] + (["o/d"] if self.exists else [])
+        return [types.SimpleNamespace(ref=ref) for ref in refs]
+
+    def dataset_status(self, dataset, format=None):
+        if not self.exists:
+            raise RuntimeError("Kaggle answers a never-created dataset with a 403")
+        return json.dumps({"status": "ready", "current_version_number": 3})
+
+
+def test_status_of_a_dataset_not_created_yet_is_none(monkeypatch, tmp_path):
+    assert fake_publisher(monkeypatch, tmp_path, StatusApi).status() is None
+
+
+def test_status_of_an_existing_dataset(monkeypatch, tmp_path):
+    api = type("ExistingApi", (StatusApi,), {"exists": True})
+    assert fake_publisher(monkeypatch, tmp_path, api).status() == DatasetStatus("ready", 3)
+
+
+def test_publisher_errors_carry_the_http_codes_only(monkeypatch, tmp_path):
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"code": 403, "message": "Permission denied for user o"}
+
+    class HTTPError(Exception):
+        response = Response()
+
+    class FailingApi(StatusApi):
+        def dataset_list(self, mine=False, search=None):
+            raise HTTPError("Permission denied for user o")
+
+    with pytest.raises(KagglePublishError) as err:
+        fake_publisher(monkeypatch, tmp_path, FailingApi).status()
+    assert str(err.value) == "list of o/d failed: HTTPError (HTTP 200, body 403)"
+
+
 def test_publisher_never_surfaces_the_token(monkeypatch, tmp_path, caplog):
     token = "KGAT_secret_token_value"
 
@@ -314,18 +371,11 @@ def test_publisher_never_surfaces_the_token(monkeypatch, tmp_path, caplog):
         def authenticate(self):
             pass
 
-        def dataset_status(self, dataset, format=None):
+        def dataset_list(self, mine=False, search=None):
             raise RuntimeError(f"401 for request with Authorization: Bearer {token}")
 
-    module = types.ModuleType("kaggle.api.kaggle_api_extended")
-    module.KaggleApi = FakeApi
-    monkeypatch.setitem(sys.modules, "kaggle.api.kaggle_api_extended", module)
-    # set first, so monkeypatch removes what the publisher writes into os.environ
-    monkeypatch.setenv("KAGGLE_API_TOKEN", "placeholder")
-    monkeypatch.setenv("KAGGLE_CONFIG_DIR", str(tmp_path))
-
     caplog.set_level(logging.DEBUG)
-    publisher = KagglePublisher("o/d", token, config_dir=str(tmp_path))
+    publisher = fake_publisher(monkeypatch, tmp_path, FakeApi, token=token)
     with pytest.raises(KagglePublishError) as err:
         publisher.status()
     assert token not in str(err.value)

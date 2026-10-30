@@ -10,7 +10,9 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
 - Component config goes in SSM `/<component-kebab>/<ENV_VAR>` and secrets go in Secrets
   Manager `<component-kebab>/<name>`. Secret values are dummy placeholders with
   `ignore_changes`, and the real values are set out of band. Never put real secrets in code
-  or tfvars. The one exception is a generated key, `data-ingestion/user-id-hmac-key` (spec 13):
+  or tfvars. Terraform refreshes those placeholder versions, so the read-only plan role
+  (`bootstrap/main.tf`, `ManagedSecretValues`) needs `GetSecretValue` on every new one
+  (a local `bootstrap` apply), or plans fail with AccessDenied. The one exception is a generated key, `data-ingestion/user-id-hmac-key` (spec 13):
   ephemeral `aws_secretsmanager_random_password` + `secret_string_wo` (in neither plan nor
   state), `prevent_destroy`. Never bump its `secret_string_wo_version`: a new key splits every
   user's history.
