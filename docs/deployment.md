@@ -612,8 +612,9 @@ the middle would mix raw and hashed ids.
    `PublishKaggle` state) and *etl CD* (the image with the export). Until step 2, the new state
    starts a task that logs "disabled" and exits.
 2. Set the token and enable the export (step 5 above). Check the license first: the dataset
-   uses `kaggle_license` (default `copyright-authors`, "Data files © Original Authors": the
-   review texts belong to their authors and the game data to Valve / the publishers)
+   uses `kaggle_license` (default `other`, "Other (specified in description)": the data
+   card's "License and terms" says the review texts belong to their authors and the game data
+   to Valve / the publishers. Kaggle's create rejects `copyright-authors`)
 3. First publish now rather than at the next run (same network flags as step 8):
    ```bash
    aws ecs run-task --cluster steam-recsys --task-definition kaggle-export --launch-type FARGATE \

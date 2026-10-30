@@ -46,7 +46,7 @@ dataset to identify or contact reviewers.
 ## License and terms
 
 - Review texts belong to their authors. Game names, descriptions, images and tags belong to
-  Valve and the games' publishers. This dataset claims no rights over them ("Data files ©
-  Original Authors").
+  Valve and the games' publishers. This dataset claims no rights over them: the data files
+  are © their original authors.
 - Collected from Steam's public Web API and store pages, for research and education.
 - To have content removed, open an issue at $repo_url/issues.
