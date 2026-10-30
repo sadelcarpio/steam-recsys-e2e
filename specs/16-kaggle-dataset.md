@@ -98,9 +98,9 @@ ETL component (it already has the Athena workgroup and Glue access). Steps:
    anything reaches Kaggle.
 4. Write `dataset-metadata.json`: `id`, `title`, `subtitle`, `description` (the data card,
    `kaggle_export/datacard.md`, with the snapshot date and row counts), `licenses`
-   (`KAGGLE_LICENSE`, Terraform `kaggle_license`, default `copyright-authors`:
-   "Data files © Original Authors", since the review texts and game data aren't ours to
-   relicense). No keywords: Kaggle only
+   (`KAGGLE_LICENSE`, Terraform `kaggle_license`, default `other`: "Other (specified in
+   description)", the data card's "License and terms", since the review texts and game data
+   aren't ours to relicense; Kaggle's create rejected `copyright-authors` on 2026-10-30). No keywords: Kaggle only
    accepts existing tags.
 5. The token comes from Secrets Manager `etl/kaggle-api-token` and is passed to the Kaggle
    client as `KAGGLE_API_TOKEN` in the process environment only. It's never logged, and
