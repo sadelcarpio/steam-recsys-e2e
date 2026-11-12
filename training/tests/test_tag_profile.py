@@ -113,6 +113,8 @@ def test_train_save_reload_export_and_promote(settings, source, store):
         assert int(npz["format_version"]) == USER_TOWER_TAG_PROFILE_FORMAT
         assert set(TAG_PROFILE_ARRAYS) <= set(npz.files)
         assert np.array_equal(npz["tag_offsets"], model.user_tower.game_tag_offsets.numpy())
+        assert npz["tag_values"].dtype == np.uint16
+        assert np.array_equal(npz["tag_values"], model.user_tower.game_tag_values.numpy())
     report = run_promotion(settings, source, store)
     assert report.promoted
 

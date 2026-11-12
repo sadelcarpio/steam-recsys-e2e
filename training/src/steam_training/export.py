@@ -17,7 +17,7 @@ on the current game features, so the inference pipeline recomputes them every ru
 
 Format 2 (a model with the A4 tag profile) adds, and x gets the profile appended
 (in_dim = game_embedding_dim + 1 + attribute_embedding_dim):
-    tag_values       int64 [n]           game_idx -> tags, CSR values
+    tag_values       uint16 (int64 if a tag id doesn't fit) [n]  game_idx -> tags, CSR values
     tag_offsets      int64 [vocab_games + 1]
     tag_weights      float32 [n]         Steam tag weights (sum 1 per game)
     tag_recency      float32 [history_length]  raw per-position parameter (weight = exp)
@@ -79,13 +79,20 @@ def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarr
     assert tuple(arrays) == USER_TOWER_ARRAYS
     if profile:
         arrays |= {
-            "tag_values": numpy(tower.game_tag_values).astype(np.int64),
+            # tag ids are small (~450 tags): uint16 saves most of the lookup's size
+            "tag_values": _small_ids(numpy(tower.game_tag_values)),
             "tag_offsets": numpy(tower.game_tag_offsets).astype(np.int64),
             "tag_weights": numpy(tower.game_tag_weights).astype(np.float32),
             "tag_recency": numpy(tower.tag_recency).astype(np.float32),
             "tag_table": numpy(tower.tag_profile.weight).astype(np.float32),
         }
     return arrays
+
+
+def _small_ids(values: np.ndarray) -> np.ndarray:
+    if len(values) and int(values.max()) > np.iinfo(np.uint16).max:
+        return values.astype(np.int64)
+    return values.astype(np.uint16)
 
 
 def encode_user_tower(model: TwoTowerModel, model_id: str) -> bytes:
