@@ -104,6 +104,17 @@ class TrainingSettings(_SsmSettings):
     use_game_tags: bool = True
     # A4 (spec 17): the user tower also reads a tag profile of the history (needs the tags)
     user_tag_profile: bool = False
+    # A3 (spec 17): games in the user history. 5 = the mart's `games_reviewed_positive`; any
+    # other length is derived from `interactions` (the last N positive reviews strictly before
+    # each row). Models with N != 5 or attention can't be promoted yet (inference / serving
+    # read the 5-game mart history).
+    history_length: int = Field(5, ge=1, le=512)
+    # "mean": masked mean of the history games. "attention": + self-attention over the history
+    # (ATTENTION_LAYERS pre-LN blocks, ATTENTION_HEADS heads, learned positions, a summary token)
+    history_encoder: Literal["mean", "attention"] = "mean"
+    attention_heads: int = Field(2, ge=1)
+    attention_layers: int = Field(1, ge=1)
+    attention_dropout: float = Field(0.1, ge=0, lt=1)
 
     # ---- model ----
     game_embedding_dim: int = Field(64, ge=4)
@@ -180,6 +191,8 @@ class TrainingSettings(_SsmSettings):
             raise ValueError(f"model_id '{CHAMPION}' is reserved")
         if self.validation_fraction + self.test_fraction >= 0.5:
             raise ValueError("validation_fraction + test_fraction must be < 0.5")
+        if self.game_embedding_dim % self.attention_heads:
+            raise ValueError("GAME_EMBEDDING_DIM must be divisible by ATTENTION_HEADS")
         if self.user_tag_profile and not self.use_game_tags:
             raise ValueError("USER_TAG_PROFILE needs USE_GAME_TAGS")
         if self.fit_on == "train+validation" and self.test_fraction == 0:

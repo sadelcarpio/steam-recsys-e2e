@@ -7,7 +7,7 @@ on the current game features, so the inference pipeline recomputes them every ru
 
     format_version   int64 scalar    USER_TOWER_NUMPY_FORMAT
     model_id         str scalar      the model these weights belong to
-    history_length   int64 scalar    USER_HISTORY_LENGTH
+    history_length   int64 scalar    ModelConfig.history_length (5 = the mart's)
     padding_id       int64 scalar    PADDING_ID
     oov_id           int64 scalar    OOV_ID
     game_table       float32 [vocab_games, game_embedding_dim]  frozen game table
@@ -23,6 +23,7 @@ Format 2 (a model with the A4 tag profile) adds, and x gets the profile appended
     tag_recency      float32 [history_length]  raw per-position parameter (weight = exp)
     tag_table        float32 [vocab_tags, attribute_embedding_dim]
 Format 1 (no tag profile) stays byte-compatible with servers that only read format 1.
+A3's attention encoder has no numpy port yet: `user_tower_arrays` refuses it (`servable`).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ import io
 import numpy as np
 from torch import nn
 
-from steam_training.contracts import OOV_ID, PADDING_ID, USER_HISTORY_LENGTH
+from steam_training.contracts import OOV_ID, PADDING_ID
 from steam_training.model import TwoTowerModel
 
 USER_TOWER_NUMPY_FORMAT = 1
@@ -55,6 +56,8 @@ USER_TOWER_ARRAYS = (
 
 def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarray]:
     tower = model.user_tower
+    if tower.attention is not None:
+        raise NotImplementedError("no numpy port of the A3 attention encoder yet")
     first, second = tower.mlp[0], tower.mlp[2]
     assert isinstance(first, nn.Linear) and isinstance(second, nn.Linear), tower.mlp
 
@@ -66,7 +69,7 @@ def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarr
     arrays = {
         "format_version": np.int64(version),
         "model_id": np.str_(model_id),
-        "history_length": np.int64(USER_HISTORY_LENGTH),
+        "history_length": np.int64(tower.history_length),
         "padding_id": np.int64(PADDING_ID),
         "oov_id": np.int64(OOV_ID),
         "game_table": numpy(tower.game_table).astype(np.float32),

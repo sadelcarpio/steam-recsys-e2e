@@ -49,6 +49,7 @@ _NOT_HYPERPARAMETERS = {
 
 
 def _load(settings: TrainingSettings, source: TableSource, **kwargs: object) -> TrainingData:
+    kwargs.setdefault("history_length", settings.history_length)
     return load_training_data(
         source,
         validation_fraction=settings.validation_fraction,
@@ -289,6 +290,13 @@ def run_promotion(
     settings: TrainingSettings, source: TableSource, store: ArtifactStore
 ) -> EvaluationReport:
     candidate, candidate_meta = store.load_model(settings.model_id)
+    if not candidate_meta.config.servable:
+        # inference reads the mart's 5-game history, serving runs the mean-pooled numpy tower
+        raise ValueError(
+            f"{settings.model_id} can't be promoted yet: history_length="
+            f"{candidate_meta.config.history_length}, encoder="
+            f"{candidate_meta.config.history_encoder} (A3) needs inference and serving support"
+        )
     champion, champion_meta = _load_champion(store, settings.model_id)
     now = datetime.now(UTC)
 
@@ -311,7 +319,14 @@ def run_promotion(
     with_tags = any(
         m is not None and m.config.vocab.tags is not None for m in (candidate, champion)
     )
-    data = _load(settings, source, cutoff=max(cutoffs), with_train_rows=False, with_tags=with_tags)
+    data = _load(
+        settings,
+        source,
+        cutoff=max(cutoffs),
+        with_train_rows=False,
+        with_tags=with_tags,
+        history_length=candidate_meta.config.history_length,
+    )
     if len(data.validation) == 0:
         raise ValueError(f"no positive interactions after {max(cutoffs)} to evaluate on")
 

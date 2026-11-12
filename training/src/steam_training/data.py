@@ -15,6 +15,10 @@ Memory scales with the rows *kept*, not with the table: `interactions` is read i
   4. `timestamp`, `user_id`, `game_idx` -> each validation user's reviews: activity (reviews
      before the cutoff) and, per validation row, the games reviewed before it (excluded from
      its candidates).
+A3, `history_length` != the mart's 5: pass 2 also keeps every positive review (user, time,
+game) before `end`, and each row's history becomes the last `history_length` of its user's
+positives strictly before the row (`HistoryIndex`: one sorted game array + a pointer per row,
+gathered per batch, so 64M rows x 50 games never sit in memory as a matrix).
 Game list features (developers, publishers, genres, categories, tags) come from the catalog: they
 are static per game, only `game_reviews_ratio` / `game_is_free` are kept per row (as of the review).
 
@@ -334,21 +338,91 @@ class Catalog:
 
 
 @dataclass(frozen=True)
+class HistoryIndex:
+    """A lazy [rows, length] history matrix (A3). Row i's history is `games[end[i] - count[i]:
+    end[i]]` reversed (most recent first), padded with PADDING_ID; `games` holds every positive
+    review's game sorted by (user, time), shared by all rows. `index[rows]` gathers a matrix,
+    `take` keeps it lazy (like `TrainRows.take`)."""
+
+    games: np.ndarray  # int32 [positives]
+    end: np.ndarray  # int64 [rows]: one past the row's most recent history game
+    count: np.ndarray  # int32 [rows], <= length
+    length: int
+
+    def __len__(self) -> int:
+        return len(self.end)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (len(self), self.length)
+
+    def take(self, index: np.ndarray) -> HistoryIndex:
+        return HistoryIndex(self.games, self.end[index], self.count[index], self.length)
+
+    def __getitem__(self, index) -> np.ndarray:
+        end, count = self.end[index], self.count[index]
+        column = np.arange(self.length)
+        out = np.full((len(end), self.length), PADDING_ID, dtype=np.int64)
+        mask = column[None, :] < count[:, None]
+        out[mask] = self.games[(end[:, None] - 1 - column[None, :])[mask]]
+        return out
+
+    def matrix(self) -> np.ndarray:
+        return self[np.arange(len(self))]
+
+
+def build_history_index(
+    user: np.ndarray,
+    timestamp: np.ndarray,
+    game: np.ndarray,
+    row_user: np.ndarray,
+    row_timestamp: np.ndarray,
+    length: int,
+) -> HistoryIndex:
+    """Each row's last `length` positives of `row_user` with timestamp < `row_timestamp`
+    (seconds), from (user, timestamp, game): every positive review. Same-second positives keep
+    their input order (the mart breaks such ties by review id)."""
+    users = np.unique(user)
+    dense = np.searchsorted(users, user)
+    key = (dense.astype(np.int64) << 32) | timestamp.astype(np.int64)
+    del dense
+    order = np.argsort(key, kind="stable")
+    key = key[order]
+    games = game[order].astype(np.int32)
+    del order
+    position = np.searchsorted(users, row_user)
+    position[position >= len(users)] = 0
+    found = users[position] == row_user if len(users) else np.zeros(len(row_user), bool)
+    base = position.astype(np.int64) << 32
+    start = np.searchsorted(key, base, side="left")
+    end = np.searchsorted(key, base | row_timestamp.astype(np.int64), side="left")
+    count = np.where(found, np.minimum(end - start, length), 0).astype(np.int32)
+    return HistoryIndex(games, end.astype(np.int64), count, length)
+
+
+@dataclass(frozen=True)
 class TrainRows:
     """Kept positive training rows (all warm + a sample of cold ones)."""
 
     user_id: np.ndarray  # int64
-    history: np.ndarray  # int64 [n, 5], most recent first, 0 = padding
+    # int64 [n, 5] (mart) or a HistoryIndex (A3), most recent first, 0 = padding
+    history: np.ndarray | HistoryIndex
     target: np.ndarray  # int64 game_idx
     is_free: np.ndarray  # float32 (as of the review)
     is_free_known: np.ndarray  # float32
     reviews_ratio: np.ndarray  # float32 (as of the review)
+    timestamp: np.ndarray | None = None  # int64 seconds (only kept to derive A3 histories)
 
     def __len__(self) -> int:
         return len(self.target)
 
     def take(self, index: np.ndarray) -> TrainRows:
-        return TrainRows(**{name: getattr(self, name)[index] for name in _fields(self)})
+        def pick(value):
+            if value is None:
+                return None
+            return value.take(index) if isinstance(value, HistoryIndex) else value[index]
+
+        return TrainRows(**{name: pick(getattr(self, name)) for name in _fields(self)})
 
 
 @dataclass(frozen=True)
@@ -422,12 +496,14 @@ def load_training_data(
     cutoff: datetime | None = None,
     with_train_rows: bool = True,
     with_tags: bool = False,
+    history_length: int = USER_HISTORY_LENGTH,
 ) -> TrainingData:
     """Stream the marts (see module docstring). The timeline is split by row share into
     [train | validation | test] (`split_window`); `fit_on` picks what is trained on and what is
     evaluated. `cutoff` given: train before it and evaluate on everything after (promotion).
     `with_tags`: read `lkp_tags` / `game_tags` (the vocabulary gets `tags`, the catalog each
-    game's tags)."""
+    game's tags). `history_length` != 5: histories derived from `interactions` (A3)."""
+    derive = history_length != USER_HISTORY_LENGTH
     lookups = {**LOOKUPS, **(TAG_LOOKUPS if with_tags else {})}
     tables = [*lookups, "interactions", "game_features", *(["game_tags"] if with_tags else [])]
     snapshots = {table: source.snapshot_id(table) for table in tables}
@@ -479,6 +555,8 @@ def load_training_data(
     train_parts: list[TrainRows] = []
     negative_parts: list[NegativeRows] = []
     eval_parts: list[EvalRows] = []
+    # A3: every positive review before `end` (user, seconds, game) + the train rows' seconds
+    positive_parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     for batch in source.batches("interactions", INTERACTION_COLUMNS, snapshots["interactions"]):
         game = _int64(pc.fill_null(batch["game_idx"], -1))
         known = (game >= 0) & (game < vocab.games)
@@ -491,6 +569,14 @@ def load_training_data(
         counts += np.bincount(game[is_positive & ~is_val], minlength=vocab.games)
 
         user_id = _int64(batch["user_id"])
+        if derive:
+            keep = np.flatnonzero(is_positive & (ts < end_us))
+            positive_parts.append((user_id[keep], _seconds(ts[keep]), game[keep].astype(np.int32)))
+            # the mart's history is only needed for the warm flag (same definition: any
+            # positive strictly before the row)
+            train_history = np.zeros((len(game), 0), dtype=np.int64)
+        else:
+            train_history = history
         keep_eval = np.flatnonzero(is_positive & in_window & (rng.random(len(game)) < eval_rate))
         eval_parts.append(
             EvalRows(
@@ -510,11 +596,12 @@ def load_training_data(
         train_parts.append(
             TrainRows(
                 user_id=user_id[keep_train],
-                history=history[keep_train],
+                history=train_history[keep_train],
                 target=game[keep_train],
                 is_free=is_free[keep_train],
                 is_free_known=is_free_known[keep_train],
                 reviews_ratio=reviews_ratio[keep_train],
+                timestamp=_seconds(ts[keep_train]) if derive else None,
             )
         )
         keep_negative = np.flatnonzero(~_bool(batch["is_positive"]) & known & ~is_val)
@@ -535,6 +622,9 @@ def load_training_data(
         # targets always have a catalog row (1970-01-01 game_features row); guard anyway
         train = train.take(np.flatnonzero(catalog.rows(train.target) >= 0))
     validation = _concat(EvalRows, eval_parts)
+    if derive:
+        train, validation = _derive_histories(positive_parts, train, validation, history_length)
+        del positive_parts
     # pass 4: the validation users' reviews -> activity (before the cutoff) and each row's
     # reviewed games (before the row)
     validation = _with_user_history(
@@ -729,6 +819,48 @@ def _weighted_tags(table: pa.Table | pa.RecordBatch) -> Ragged:
     return Ragged(tags.values, tags.offsets, weights.astype(np.float32))
 
 
+def _derive_histories(
+    positive_parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    train: TrainRows | None,
+    validation: EvalRows,
+    length: int,
+) -> tuple[TrainRows | None, EvalRows]:
+    """A3: replace the mart histories by the last `length` positives before each row. Logs how
+    often the derived history agrees with the mart's 5 games on the validation rows (a check
+    of the derivation: ties within a second and late-arriving rows can differ)."""
+    user = np.concatenate([p[0] for p in positive_parts])
+    seconds = np.concatenate([p[1] for p in positive_parts])
+    game = np.concatenate([p[2] for p in positive_parts])
+    positive_parts.clear()
+    rows_user = [validation.user_id] + ([train.user_id] if train is not None else [])
+    rows_seconds = [validation.timestamp] + ([train.timestamp] if train is not None else [])
+    index = build_history_index(
+        user, seconds, game, np.concatenate(rows_user), np.concatenate(rows_seconds), length
+    )
+    del user, seconds, game
+    n_eval = len(validation)
+    eval_history = index.take(np.arange(n_eval)).matrix()
+    mart = validation.history
+    width = min(length, mart.shape[1])
+    same = (eval_history[:, :width] == mart[:, :width]).all(axis=1)
+    warm = eval_history[:, 0] != PADDING_ID
+    log.info(
+        "A3 histories (%d games) from %d positives: %.2f%% of validation rows match the mart's "
+        "first %d, %.2f%% agree on warm; mean length %.1f (validation)",
+        length,
+        len(index.games),
+        100 * same.mean() if n_eval else 100.0,
+        width,
+        100 * (warm == validation.is_warm).mean() if n_eval else 100.0,
+        float(index.count[:n_eval].mean()) if n_eval else 0.0,
+    )
+    validation = replace(validation, history=eval_history, is_warm=warm)
+    if train is not None:
+        train_index = index.take(np.arange(n_eval, len(index)))
+        train = replace(train, history=train_index, timestamp=None)
+    return train, validation
+
+
 def _seconds(ts: np.ndarray) -> np.ndarray:
     return ts.astype("datetime64[s]").astype(np.int64)
 
@@ -826,12 +958,12 @@ def _timestamps(column: pa.ChunkedArray | pa.Array) -> np.ndarray:
     return np.asarray(column.to_numpy(zero_copy_only=False), dtype="datetime64[us]")
 
 
-def pad_history(history: Ragged) -> np.ndarray:
-    """Fixed [rows, USER_HISTORY_LENGTH] matrix (the mart already pads, this guards nulls)."""
+def pad_history(history: Ragged, length: int = USER_HISTORY_LENGTH) -> np.ndarray:
+    """Fixed [rows, length] matrix (the mart already pads, this guards nulls)."""
     rows = len(history)
-    out = np.full((rows, USER_HISTORY_LENGTH), PADDING_ID, dtype=np.int64)
-    lengths = np.minimum(np.diff(history.offsets), USER_HISTORY_LENGTH)
-    column = np.arange(USER_HISTORY_LENGTH)
+    out = np.full((rows, length), PADDING_ID, dtype=np.int64)
+    lengths = np.minimum(np.diff(history.offsets), length)
+    column = np.arange(length)
     mask = column[None, :] < lengths[:, None]
     source = history.offsets[:-1, None] + column[None, :]
     out[mask] = history.values[source[mask]]
