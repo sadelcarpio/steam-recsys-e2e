@@ -135,6 +135,84 @@ flowchart TB
   67 categories on the 2026-09 data); features
   come from the marts as integer ids (see `etl/README.md`).
 
+## Proposed architecture (spec 17 findings, not implemented)
+
+A proposal derived from the EDA in `notebooks/01_feature_questions.ipynb`. Each section of that
+notebook tests a feature against a null model. Nothing below ships until it beats the champion in
+an ablation. Every change is one experiment, so this depends on experiment tracking (spec 18).
+Dashed boxes are new.
+
+```mermaid
+flowchart TB
+  subgraph user["User tower (proposed)"]
+    direction TB
+    H["history: last 50 reviewed games, liked AND disliked, most recent first"]
+    UM["id mapper → OOV (1)"]
+    GT["game_table (frozen copy) · 64"]
+    POL["learned disliked offset: flag × w · 64<br/>(or gate: token × (1 − flag·α))"]:::new
+    PT["per history game: log playtime-at-review bucket<br/>+ unknown bucket (online path) · 64"]:::new
+    POS["position + time-gap bucket embeddings · 64"]:::new
+    TOK["token = game + disliked offset + playtime + position/gap · 64"]:::new
+    ATT["causal self-attention, 2 layers · 2 heads<br/>→ output at the most recent position · 64"]:::new
+    TP["history tag profile: EmbeddingBag over the history's tags<br/>(recency-weighted) · 16"]:::new
+    CTX["dominant review language embedding · 8<br/>free-game share of the history · 1<br/>history length · 1"]:::new
+    UC["concat · 90"]
+    UMLP["Linear 90→128 · ReLU · Linear 128→64"]
+    UN["L2 normalize → u · 64"]
+    H --> UM --> GT --> TOK
+    POL & PT & POS --> TOK
+    TOK --> ATT --> UC
+    TP & CTX --> UC
+    UC --> UMLP --> UN
+  end
+
+  subgraph item["Item tower (proposed)"]
+    direction TB
+    CUR["current inputs: game_idx, developers, publishers, genres,<br/>categories, tags + weights, is_free, reviews_ratio · 147"]
+    AGE["log days since release, as of t · 1"]:::new
+    POP["log reviews in the last 30 / 90 days, as of t · 2"]:::new
+    PRICE["log price band embedding · 4"]:::new
+    DESC["optional: frozen MiniLM description embedding<br/>384 → Linear → 16 (cold-start games)"]:::opt
+    IC["concat · 154 (+16)"]
+    IMLP["Linear → 128 · ReLU · Linear 128→64"]
+    IN["L2 normalize → v · 64"]
+    CUR & AGE & POP & PRICE --> IC
+    DESC -.-> IC
+    IC --> IMLP --> IN
+  end
+
+  UN --> S["score = u · v / T"]
+  IN --> S
+  S --> LOSS["sampled softmax: target vs in-batch negatives (logQ)<br/>sample weight log1p(target playtime hours), never an input<br/>no explicit negatives (disliked games are history tokens);<br/>mined negatives off (no gain on 2026-10-03)"]:::new
+
+  classDef new stroke-dasharray: 5 5
+  classDef opt stroke-dasharray: 2 4,opacity:0.7
+```
+
+| # | Change | EDA evidence (5% of users, 6M reviews) | Needs |
+|---|---|---|---|
+| A1 | Drop explicit negatives from the retrieval loss | Disliked games fit the user's liked games almost as well as liked ones (90% of the way from random to positive), and the next pick stays as close after a dislike as after a like (Q7). They mark interest, so as negatives they push the user away from games they'd engage with. | `EXPLICIT_NEGATIVES=false` (exists today: the first experiment) |
+| A2 | Disliked games as history tokens with a learned "disliked" offset | Same as A1: interest, with the dislike kept as information. The ranker (spec 9) learns like vs dislike (label 0). Variants: plain tokens (no flag), additive offset `flag × w` (one 64-d vector shared by every disliked token), or a gate `token × (1 − flag·α)` with α learned in [0, 1], which can only shrink a disliked game's weight. | `user_features` history with negatives + polarity |
+| A3 | Self-attention over a longer, ordered history | The previous game is 21% more similar to the next one than the game 20 reviews back. With shuffled order there's no decay (Q5). 22% of consecutive reviews are written the same day, hence the time-gap embedding. | longer `games_reviewed_*` + timestamps; numpy port of the attention in `export.py` / serving |
+| A4 | History tag profile | 42% of heavy users are more concentrated on one tag than 95% of shuffled users. Tags separate users better than genres (Q1). | none (tags are in the catalog) |
+| A5 | Playtime at review: an attribute of each history token + log1p sample weight on the target | Playtime tracks taste fit (ρ +0.07) and liking (ρ +0.14). Votes don't (ρ −0.02) and grow with review age (Q2, E1). It belongs to a (user, game) interaction: on history tokens it describes past interactions, so the user tower can compute it without the candidate; on the target it only weights the loss, never an input (it's the outcome). `POST /recommendations` sends liked games without playtime, so the token needs an "unknown" bucket, also used as dropout in training. Only `playtime_at_review`: `playtime_forever` is measured at scrape time, after the review. | `playtime_at_review` in `interactions` |
+| A6 | Recent popularity (30 / 90 days) and game age, as of t | Top-100 games overlap only 62% between consecutive 90-day windows. 31% of recent reviews go to games released in the last year (E3). Reviews are 1.4× front-loaded in the first year, and the positive rate drops 5 points after a game's first 90 days (Q3). | time-versioned counts in `game_features` |
+| A7 | User language + free share | Non-English reviewers pick games whose reviewers mostly share their language 17% of the time vs 6% by chance (E4). Users lean free / paid beyond chance (Q4). | `language` in `interactions` |
+| A8 | Description embedding (optional) | Neighbours share 2.7× more tags than random pairs, but co-liked AUC goes from 0.623 to only 0.627 on top of tags (Q6). Only worth it for games with few tags. | precomputed embeddings per game |
+
+Cross features (user × candidate) can't go in a two-tower model, because the towers only meet at
+the final dot product: developer already in the history (E2: 9.5% repeat vs 3.3% shuffled), tag
+overlap between the history and the candidate, the user's playtime on the candidate's tags. They
+belong to the ranker (spec 9).
+
+Not proposed: review votes as weights (Q2) and text sentiment of top reviews. The latter predicts
+the future positive ratio no better than the past ratio does: R² 0.685 → 0.686 (Q8). `game_price`
+and `votes_*` are measured at scrape time, so they are not as-of-t features.
+
+Suggested order (cheapest first, each against the champion on warm recall@50): A1 → A4 → A5 →
+A6 → A3 + A2 → A7 → A8. A1 and A4 need no ETL change. A3 changes the user tower's state dict and
+the numpy serving port, so it needs an `ARCHITECTURE_VERSION` bump.
+
 ## Evaluation
 
 For every **positive** validation review, the history as of before that review scores the whole
