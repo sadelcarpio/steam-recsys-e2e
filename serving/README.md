@@ -118,9 +118,9 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
 - There are no LLM explanations online, and responses are never cached (`no-store`).
 - The model comes in two parts, both in `s3://model-artifacts-<acct>/`:
   - **User tower:** `models/<model_id>/user_tower.npz`, written by training with each model
-    (frozen game table, `seen_games`, 2 MLP layers; about 13 MB). Format 2 adds the A4 tag
-    profile (game -> tags lookup, tag table, per-position weights; a few MB more); serving
-    reads formats 1 and 2.
+    (frozen game table, `seen_games`, 2 MLP layers; ~45 MB on the 186k-game catalog). Format
+    2 adds the A4 tag profile (game -> tags lookup, tag table, per-position weights; ~67 MB).
+    Serving reads formats 1 and 2.
   - **Catalog:** `serving/online/catalog.npz`, written by the inference job every run (item
     embeddings, plus the `game_id`, `game_idx` and name of each catalog row; about 14 MB).
   
