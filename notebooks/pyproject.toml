@@ -1,0 +1,64 @@
+[project]
+name = "steam-eda"
+version = "0.1.0"
+description = "EDA notebooks (spec 17) + loaders and signal helpers over the public Steam reviews dataset"
+readme = "README.md"
+authors = [
+    { name = "sadelcarpio", email = "sadelcarpioa@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.35",
+    "ipykernel>=6.29",
+    "jupyterlab>=4.3",
+    "matplotlib>=3.9",
+    "numpy>=2",
+    "pandas>=2.2",
+    "polars>=1.30",
+    "pyarrow>=18",
+    "pydantic-settings>=2.6",
+    "scikit-learn>=1.5",
+    "scipy>=1.13",
+    "seaborn>=0.13",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.18,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+nlp = [
+    "sentence-transformers>=3.3",
+    "torch>=2.8",
+    "transformers>=4.46",
+]
+
+# CPU torch for the optional `nlp` group (embeddings / sentiment run on a workstation CPU).
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# exploratory cells: long f-strings, one-line plot tweaks
+"*.ipynb" = ["E501", "E702", "E731"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
