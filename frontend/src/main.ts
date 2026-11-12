@@ -211,19 +211,74 @@ function discoverPage(): void {
       : t.searchPlaceholder(searchSize);
   };
 
+  // Reorders the picks: the chip lands on the position of the chip it is dropped on (the
+  // others shift), then the list is rendered again, focusing the moved chip when asked.
+  const moveLiked = (from: number, to: number, focus = false) => {
+    liked.move(from, to);
+    renderLiked();
+    const moved = chips.children[Math.min(Math.max(to, 0), liked.games.length - 1)];
+    if (focus) (moved as HTMLElement | undefined)?.focus();
+  };
+
+  // Pointer drag (mouse and touch alike): the chip under the pointer is the drop target.
+  const startDrag = (chip: HTMLElement, from: number, down: PointerEvent) => {
+    if (down.button !== 0 || (down.target as Element).closest("button")) return;
+    down.preventDefault();
+    chip.setPointerCapture(down.pointerId);
+    chip.classList.add("dragging");
+    let to = from;
+    const done = new AbortController();
+    const listen = { signal: done.signal };
+    chip.addEventListener(
+      "pointermove",
+      (e) => {
+        const over = document
+          .elementFromPoint(e.clientX, e.clientY)
+          ?.closest<HTMLElement>(".chips li[data-position]");
+        for (const el of chips.querySelectorAll(".drop-target")) el.classList.remove("drop-target");
+        to = over ? Number(over.dataset.position) : from;
+        if (over && over !== chip) over.classList.add("drop-target");
+      },
+      listen,
+    );
+    const end = () => {
+      done.abort();
+      if (to !== from) moveLiked(from, to);
+      else renderLiked();
+    };
+    chip.addEventListener("pointerup", end, listen);
+    chip.addEventListener("pointercancel", end, listen);
+  };
+
   const renderLiked = () => {
     chips.replaceChildren(
-      ...liked.games.map((g) => {
+      ...liked.games.map((g, i) => {
         const remove = h("button", { "aria-label": t.remove(g.name) }, "×");
         remove.addEventListener("click", () => {
           liked.remove(g.game_id);
           renderLiked();
         });
-        return h("li", {}, g.name, remove);
+        const chip = h(
+          "li",
+          { tabindex: "0", "aria-label": t.pickLabel(i + 1, g.name), "data-position": String(i) },
+          h("span", { class: "position", "aria-hidden": "true" }, String(i + 1)),
+          h("span", {}, g.name),
+          remove,
+        );
+        chip.addEventListener("pointerdown", (e) => startDrag(chip, i, e));
+        chip.addEventListener("keydown", (e) => {
+          if (e.target !== chip) return; // the remove button keeps its keys
+          if (e.key === "ArrowLeft" || e.key === "ArrowUp") moveLiked(i, i - 1, true);
+          else if (e.key === "ArrowRight" || e.key === "ArrowDown") moveLiked(i, i + 1, true);
+          else return;
+          e.preventDefault();
+        });
+        return chip;
       }),
     );
     if (!liked.games.length) chips.append(h("li", { class: "hint" }, t.noneChosen));
-    count.textContent = t.picked(liked.games.length, MAX_LIKED_GAMES);
+    count.textContent =
+      t.picked(liked.games.length, MAX_LIKED_GAMES) + (liked.games.length >= 2 ? t.pickOrder : "");
     recommend.toggleAttribute("disabled", !liked.games.length);
     clear.toggleAttribute("disabled", !liked.games.length);
     updateInput();

@@ -7,7 +7,7 @@ No login.
 
 | Page          | What it does                                                        | API                                          |
 |---------------|---------------------------------------------------------------------|----------------------------------------------|
-| `/`           | Search, pick up to 5 liked games (the model reads the last 5), **Recomendar** | `POST /api/recommendations`         |
+| `/`           | Search, pick up to 5 liked games, **Recomendar**. Each pick shows its position in the model's history (1 = most recent; a new pick becomes 1); drag a pick onto another one, or focus it and use the arrow keys, to change the order | `POST /api/recommendations`         |
 | `/u/<n>`      | Demo user `n`'s recommendations (popular games for users without a list), with ← / → links to the neighbouring users. Above them, the user's last liked games (the model's input); under each LLM explanation, the model that wrote it (`modelo: <rerank_model>`). Numbers are reassigned every pipeline run | `GET /api/users/<n>/recommendations` |
 | card click    | Game details dialog + Steam store link                              | details come with the list (`details=true`)  |
 
