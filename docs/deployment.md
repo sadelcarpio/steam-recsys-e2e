@@ -63,8 +63,8 @@ gh variable set SERVING_AUTH_TYPE --body AWS_IAM   # or NONE (step 11)
 ### CD: on every merge to `main`
 
 *CD* (`.github/workflows/cd.yml`) runs on every push to `main` (a merge: PRs are required) and
-deploys the components whose paths changed (the same patterns as *CI*, minus training; a manual
-run deploys all):
+deploys the components whose paths changed (the same patterns as *CI*; for training only the
+image, never a training job; a manual run deploys all):
 
 1. **Pipeline guard** (plan role): fails while a `steam-recsys-pipeline` execution is running,
    since its tasks resolve `:latest` (and the champion) when they start. Re-run the failed jobs
@@ -72,7 +72,8 @@ run deploys all):
 2. **infrastructure CD**: `plan` (plan role; the summary has the changes and a plan hash), then
    `apply` in `prod`: after approval it re-plans and applies only if the plan hash matches the
    reviewed one (a stale plan fails: re-run to review the new one).
-3. **Component CDs** in `prod` (data-ingestion, etl, inference image, serving, frontend), after
+3. **Component CDs** in `prod` (data-ingestion, etl, inference image, training image, serving,
+   frontend), after
    the infrastructure, so a merge that adds a resource and its code deploys them in order.
 
 Reviews: one for the infrastructure apply, one for the component deploys (they wait together:
@@ -183,7 +184,8 @@ Order matters only on the first deploy: the pipeline's ECS tasks run the `:lates
 |---|---|
 | *data-ingestion CD* (`target=all`) | image `data-ingestion` (scraping tasks) + Lambda `list-partition-game-ids` code |
 | *etl CD* | image `etl` (ECS task `dbt`) |
-| *training CD* | image `training:<sha>` + a SageMaker training job for that commit (see step 9) |
+| *training CD* | image `training:<sha>` (or `<sha>-cu128`) + a SageMaker training job for that commit (see step 9) |
+| *training image CD* | image `training:<sha>` (CPU) only, on merges that change the training code: what promotion of a locally trained model runs |
 | *inference CD* | image `inference` (SageMaker Processing job `Infer`, the pipeline's last step; see step 10) |
 | *serving CD* | Lambda `recsys-serving` code (zip) + smoke test (see step 11) |
 | *frontend CD* | static app to S3 `recsys-frontend-<acct>` + CloudFront invalidation + smoke test (see step 12) |
@@ -327,7 +329,9 @@ until the next dbt run (new Iceberg snapshots start a fresh run).
 
 **No quota? Train locally.** `python -m steam_training train` runs the same pipeline on a
 workstation and uploads the model to the bucket (see `training/README.md`, *Development*). Then
-promote it with `model_id=local-…` and `image_tag=<a pushed commit sha>`.
+promote it with `model_id=local-…` and `image_tag=<a pushed commit sha>`: every merge to `main`
+that changes the training code pushes `training:<merge sha>` (*training image CD*), so use the
+merge commit that contains the code the model was trained with (or a later compatible one).
 
 **GPU** (optional, once a GPU quota is granted, e.g. `ml.g4dn.xlarge`, quota code `L-3F53BF0F`):
 run *training CD* with `torch_variant=cu128` and `instance_type=ml.g4dn.xlarge`.
