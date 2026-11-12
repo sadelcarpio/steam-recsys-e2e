@@ -1,5 +1,7 @@
 """A4 (spec 17): the user tower's tag profile of the history."""
 
+import io
+
 import boto3
 import numpy as np
 import pytest
@@ -11,6 +13,7 @@ from steam_training.artifacts import USER_TOWER_NUMPY, ArtifactStore, model_pref
 from steam_training.config import TrainingSettings
 from steam_training.contracts import ModelConfig, VocabSizes
 from steam_training.data import Ragged
+from steam_training.export import TAG_PROFILE_ARRAYS, USER_TOWER_TAG_PROFILE_FORMAT
 from steam_training.model import TwoTowerModel
 from steam_training.pipeline import run_promotion, run_training
 from tests.conftest import BUCKET
@@ -94,7 +97,7 @@ def store(aws_env):
         yield ArtifactStore(BUCKET, s3)
 
 
-def test_train_save_reload_and_no_promotion(settings, source, store):
+def test_train_save_reload_export_and_promote(settings, source, store):
     settings = settings.model_copy(update={"user_tag_profile": True})
     metadata = run_training(settings, source, store)
     assert metadata.config.user_tag_profile
@@ -104,10 +107,14 @@ def test_train_save_reload_and_no_promotion(settings, source, store):
     assert len(model.user_tower.game_tag_values) > 0
     history = torch.tensor([[2, 3, 4, 0, 0]])
     assert torch.isfinite(model.user_tower(history)).all()
-    # serving's numpy port can't run it: no user_tower.npz, and promotion refuses
-    assert not store._exists(model_prefix(settings.model_id) + USER_TOWER_NUMPY)
-    with pytest.raises(ValueError, match="tag profile"):
-        run_promotion(settings, source, store)
+    # the numpy user tower (format 2) is saved, so the model can be promoted
+    body = store._get(model_prefix(settings.model_id) + USER_TOWER_NUMPY)
+    with np.load(io.BytesIO(body)) as npz:
+        assert int(npz["format_version"]) == USER_TOWER_TAG_PROFILE_FORMAT
+        assert set(TAG_PROFILE_ARRAYS) <= set(npz.files)
+        assert np.array_equal(npz["tag_offsets"], model.user_tower.game_tag_offsets.numpy())
+    report = run_promotion(settings, source, store)
+    assert report.promoted
 
 
 def test_catalog_game_tags_by_game_idx(source):

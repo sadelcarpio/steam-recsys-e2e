@@ -36,7 +36,8 @@ Human docs: `README.md`.
   Inference owns the tables, the catalog and the user index; training owns the user towers.
 - `UserTower.embed` must equal torch's `UserTower.forward` (training/model.py). When the user
   tower changes, change `steam_training.export` (`USER_TOWER_NUMPY_FORMAT`) and this module
-  together. When the catalog changes, change `steam_inference.online` / `ONLINE_BUNDLE_FORMAT`
+  together. Formats read: 1 (plain) and 2 (+ A4 tag profile, `TAG_PROFILE_ARRAYS`); keep 1
+  readable, older models stay format 1. When the catalog changes, change `steam_inference.online` / `ONLINE_BUNDLE_FORMAT`
   and `SUPPORTED_MANIFEST_FORMAT`. Parity is tested in
   `inference/tests/test_online_parity.py`, since torch lives there.
 - Online ranking is by the score rounded to 4 decimals (as returned), then by lowest appid.

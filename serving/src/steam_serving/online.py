@@ -10,6 +10,10 @@ most recent first, padded with padding_id:
     pooled  = mean of game_table[ids] over the non-padding entries (zeros when empty)
     x       = [pooled, length / history_length]
     user    = normalize(relu(x @ w1.T + b1) @ w2.T + b2)
+Format 2 (A4 tag profile) appends a profile to x: the history games' tags (raw game_idx, so
+games without training interactions count too; beyond the vocabulary: none), each weighted by
+its Steam tag weight * exp(tag_recency[position]), normalized to sum 1 over the history, as a
+weighted sum of tag_table rows (tags beyond the table: oov_id).
 Scores are cosine similarities with the (already normalized) item embeddings. The inference
 test `test_online_parity.py` checks this against torch and batch retrieval.
 """
@@ -31,7 +35,9 @@ from pydantic import BaseModel, ConfigDict
 log = logging.getLogger(__name__)
 
 SUPPORTED_MANIFEST_FORMAT = 2
-SUPPORTED_USER_TOWER_FORMAT = 1
+# 1: plain user tower; 2: + the A4 tag profile (training `export.py`)
+SUPPORTED_USER_TOWER_FORMATS = (1, 2)
+TAG_PROFILE_FORMAT = 2
 EPS = 1e-12  # torch.nn.functional.normalize
 ROUND_DECIMALS = 4  # returned scores; ranking ties at this precision go to the lowest appid
 CATALOG_ARRAYS = (
@@ -54,6 +60,7 @@ USER_TOWER_ARRAYS = (
     "w2",
     "b2",
 )
+TAG_PROFILE_ARRAYS = ("tag_values", "tag_offsets", "tag_weights", "tag_recency", "tag_table")
 
 
 class BundleManifest(BaseModel):
@@ -91,16 +98,34 @@ class UserTower:
     b1: np.ndarray
     w2: np.ndarray
     b2: np.ndarray
+    # format 2 only (A4 tag profile), else None
+    tag_values: np.ndarray | None = None  # int64, game_idx -> tags (CSR)
+    tag_offsets: np.ndarray | None = None  # int64 [vocab + 1]
+    tag_weights: np.ndarray | None = None  # float32
+    tag_recency: np.ndarray | None = None  # float32 [history_length], weight = exp
+    tag_table: np.ndarray | None = None  # float32 [tags, dim]
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> UserTower:
-        arrays = _load_npz(payload, USER_TOWER_ARRAYS, "user tower")
-        if int(arrays["format_version"]) != SUPPORTED_USER_TOWER_FORMAT:
+        arrays = _load_npz(payload, ("format_version",), "user tower")
+        version = int(arrays["format_version"])
+        if version not in SUPPORTED_USER_TOWER_FORMATS:
             raise ValueError(
-                f"user tower format {int(arrays['format_version'])}, "
-                f"this code reads {SUPPORTED_USER_TOWER_FORMAT}"
+                f"user tower format {version}, this code reads {SUPPORTED_USER_TOWER_FORMATS}"
             )
+        names = USER_TOWER_ARRAYS + (TAG_PROFILE_ARRAYS if version >= TAG_PROFILE_FORMAT else ())
+        arrays = _load_npz(payload, names, "user tower")
+        profile = {}
+        if version >= TAG_PROFILE_FORMAT:
+            profile = {
+                "tag_values": arrays["tag_values"].astype(np.int64, copy=False),
+                "tag_offsets": arrays["tag_offsets"].astype(np.int64, copy=False),
+                "tag_weights": arrays["tag_weights"].astype(np.float32, copy=False),
+                "tag_recency": arrays["tag_recency"].astype(np.float32, copy=False),
+                "tag_table": arrays["tag_table"].astype(np.float32, copy=False),
+            }
         return cls(
+            **profile,
             model_id=str(arrays["model_id"]),
             history_length=int(arrays["history_length"]),
             padding_id=int(arrays["padding_id"]),
@@ -121,10 +146,34 @@ class UserTower:
         present = ids != self.padding_id
         length = float(present.sum())
         pooled = self.game_table[ids[present]].sum(axis=0) / max(length, 1.0)
-        x = np.concatenate([pooled, [length / self.history_length]]).astype(np.float32)
+        parts = [pooled, [length / self.history_length]]
+        if self.tag_table is not None:
+            parts.append(self._tag_profile(history))
+        x = np.concatenate(parts).astype(np.float32)
         hidden = np.maximum(x @ self.w1.T + self.b1, 0.0)
         out = hidden @ self.w2.T + self.b2
         return (out / max(float(np.linalg.norm(out)), EPS)).astype(np.float32)
+
+    def _tag_profile(self, history: np.ndarray) -> np.ndarray:
+        """torch `UserTower._tag_profile` for one history."""
+        assert self.tag_offsets is not None and self.tag_values is not None
+        assert self.tag_weights is not None and self.tag_recency is not None
+        assert self.tag_table is not None
+        vocab = len(self.game_table)
+        games = np.where(history < vocab, history, self.oov_id)  # raw ids: unseen games count
+        recency = np.exp(self.tag_recency).astype(np.float32)
+        values, weights = [], []
+        for slot, game in enumerate(games.tolist()):
+            lo, hi = int(self.tag_offsets[game]), int(self.tag_offsets[game + 1])
+            values.append(self.tag_values[lo:hi])
+            weights.append(self.tag_weights[lo:hi] * recency[slot])
+        tags = np.concatenate(values) if values else np.zeros(0, np.int64)
+        if len(tags) == 0:
+            return np.zeros(self.tag_table.shape[1], dtype=np.float32)
+        w = np.concatenate(weights).astype(np.float32)
+        w = w / max(float(w.sum()), EPS)
+        tags = np.where(tags < len(self.tag_table), tags, self.oov_id)
+        return (self.tag_table[tags] * w[:, None]).sum(axis=0).astype(np.float32)
 
 
 class OnlineModel:

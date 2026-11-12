@@ -87,3 +87,18 @@ def test_same_top_k_as_batch_retrieval(setup):
         key=lambda pair: (-pair[0], pair[1]),
     )
     assert result.game_ids == [game_id for _, game_id in batch]
+
+
+@pytest.mark.parametrize("history", [*HISTORIES, [8, 7, 2, 2, 0]])
+def test_tag_profile_user_embedding_matches_torch(history):
+    """A4 (numpy format 2): the tag profile, unseen games' tags, a tag id beyond the table,
+    games without tags, learned position weights."""
+    model = make_model(seed=7, tags=6, tag_profile=True)
+    seen = torch.ones(model.config.vocab.games, dtype=torch.bool)
+    seen[[5, 9]] = False
+    model.set_seen_games(seen)
+    tower = UserTower.from_bytes(encode_user_tower(model, "a4"))
+    assert tower.tag_table is not None
+    with torch.no_grad():
+        expected = model.user_tower(torch.tensor([history])).numpy()[0]
+    np.testing.assert_allclose(tower.embed(np.array(history)), expected, atol=1e-6)

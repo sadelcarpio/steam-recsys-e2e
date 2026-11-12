@@ -283,12 +283,6 @@ def run_promotion(
     settings: TrainingSettings, source: TableSource, store: ArtifactStore
 ) -> EvaluationReport:
     candidate, candidate_meta = store.load_model(settings.model_id)
-    if candidate_meta.config.user_tag_profile:
-        # online serving runs the numpy user tower, which has no tag profile yet
-        raise ValueError(
-            f"{settings.model_id} uses the A4 tag profile, which serving's numpy user tower "
-            "can't run yet: port it (export.py + serving online.py) before promoting"
-        )
     champion, champion_meta = _load_champion(store, settings.model_id)
     now = datetime.now(UTC)
 
