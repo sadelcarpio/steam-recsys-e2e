@@ -165,7 +165,7 @@ def _train(
 
     # 3. training (checkpointed per epoch, resumed when the same run restarts)
     checkpoints = store.checkpoints(settings.model_id)
-    model, losses = train_model(
+    result = train_model(
         settings,
         examples,
         data.catalog,
@@ -175,6 +175,10 @@ def _train(
         checkpoints=checkpoints,
         run_fingerprint=run_fingerprint,
         on_epoch=tracker.epoch,
+    )
+    model, losses = result
+    tracker.tag(
+        {"best_epoch": str(result.best_epoch), "epochs_trained": str(result.epochs_trained)}
     )
     tracker.tag(
         lineage_tags(
@@ -215,6 +219,7 @@ def _train(
         validation=diagnostics.recall,
         popularity_baseline=baseline.recall,
         epoch_losses=losses,
+        best_epoch=result.best_epoch,
     )
     record = tracker.record(
         evaluation=data.split.evaluation,

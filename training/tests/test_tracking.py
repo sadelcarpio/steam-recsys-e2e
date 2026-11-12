@@ -232,6 +232,9 @@ def test_training_logs_a_live_mlflow_run(settings, source, store, mlflow_uri):
     assert run.data.tags["snapshot.interactions"] == "123"
     assert "feature_signature" in run.data.tags and "data.cutoff" in run.data.tags
     assert run.data.params["epochs"] == str(settings.epochs)
+    # no per-epoch monitoring in this fixture: the last epoch is kept
+    assert run.data.tags["best_epoch"] == run.data.tags["epochs_trained"] == str(settings.epochs)
+    assert store.load_metadata(settings.model_id).best_epoch == settings.epochs
     metrics = run.data.metrics
     for key in (
         "validation/warm_recall_at_5",

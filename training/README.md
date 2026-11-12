@@ -224,8 +224,9 @@ validation rows; models `local-<sha>-…` in the bucket, runs in MLflow):
 | A4: `USER_TAG_PROFILE=true` | 2 | 0.1996 | 0.105 |
 | **A4 + `USER_TABLE_SYNC_STEPS=1000`** | **1** | **0.2118** | **0.124** |
 
-With the in-epoch sync every run peaks after epoch 1 (2 epochs: control 0.1801, A4 0.2027), and
-training keeps the last epoch, so keep `EPOCHS=1` (or add best-epoch selection). The gain grows
+With the in-epoch sync every run peaks after epoch 1 (2 epochs: control 0.1801, A4 0.2027, back
+when training kept the last epoch). `KEEP_BEST_EPOCH` (default) now saves the best monitor
+epoch and `EARLY_STOPPING_PATIENCE=1` stops one epoch after the peak. The gain grows
 with activity: A4 + sync is +5% for new users and +82% for the top 1% (0.0622 vs 0.0341).
 
 ## Evaluation
@@ -399,7 +400,9 @@ forwards them to the job:
 | `RECALL_KS` / `PRIMARY_K` | `[30,50,100]` / 50 | JSON list |
 | `MINE_MAX_ROWS` | 2000000 | examples re-mined per epoch (the others keep their previous negative) |
 | `EVAL_MAX_ROWS` | 500000 | validation positives kept (uniform sample; recall within ~±0.002) |
-| `EPOCH_EVAL_ROWS` | 50000 | validation rows scored after each epoch (logs only) |
+| `EPOCH_EVAL_ROWS` | 50000 | validation rows scored after each epoch (monitor; drives best-epoch selection) |
+| `KEEP_BEST_EPOCH` | true | save the epoch with the best monitor warm recall@`PRIMARY_K`, not the last one (`metadata.best_epoch`) |
+| `EARLY_STOPPING_PATIENCE` | 1 | stop after this many epochs without a better monitor score (0 = run all `EPOCHS`) |
 | `MIN_IMPROVEMENT` | 0 | promotion margin over the champion |
 | `FORCE_PROMOTION` | false | promote even when the candidate loses (report keeps the real metrics) |
 | `DEVICE` | auto | `auto` / `cpu` / `cuda` |

@@ -131,6 +131,24 @@ def _mine(
     )
 
 
+class TrainResult(tuple):
+    """`(model, epoch_losses)`, unpacked like before, plus `best_epoch` (1-based: the epoch whose
+    weights the model has) and `epochs_trained` (fewer than EPOCHS after an early stop)."""
+
+    best_epoch: int
+    epochs_trained: int
+
+    def __new__(cls, model, epoch_losses, best_epoch, epochs_trained):
+        result = super().__new__(cls, (model, epoch_losses))
+        result.best_epoch = best_epoch
+        result.epochs_trained = epochs_trained
+        return result
+
+
+def _cpu_state(model: TwoTowerModel) -> dict[str, torch.Tensor]:
+    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+
 def train_model(
     settings: TrainingSettings,
     examples: TrainingExamples,
@@ -142,9 +160,12 @@ def train_model(
     checkpoints: Checkpoints | None = None,
     run_fingerprint: str = "",
     on_epoch: Callable[[EpochMetrics], None] | None = None,
-) -> tuple[TwoTowerModel, list[float]]:
+) -> TrainResult:
     """`on_epoch` gets each epoch's metrics (experiment tracking), including the epochs restored
-    from a checkpoint (loss only)."""
+    from a checkpoint (loss only). With `monitor_rows`, the epoch with the best warm
+    recall@PRIMARY_K is tracked: KEEP_BEST_EPOCH returns its weights, and
+    EARLY_STOPPING_PATIENCE stops after that many epochs without improvement. Both survive a
+    resume (the best weights are in the checkpoint)."""
     device = device or torch.device("cpu")
     torch.manual_seed(settings.seed)
     model = TwoTowerModel(model_config(settings, vocab))
@@ -173,6 +194,10 @@ def train_model(
 
     epoch_losses: list[float] = []
     first_epoch = 0
+    # best monitor score so far: epoch (1-based), score and a CPU copy of its weights
+    best_epoch: int | None = None
+    best_score = float("-inf")
+    best_state: dict[str, torch.Tensor] | None = None
     state = checkpoints.load() if checkpoints is not None and settings.resume else None
     if state is not None and int(state["epoch"]) > settings.epochs:
         # Resuming would return a model trained longer than EPOCHS says.
@@ -188,6 +213,10 @@ def train_model(
         examples.mined[:] = state["mined"].numpy()
         epoch_losses = list(state["epoch_losses"])
         first_epoch = int(state["epoch"])
+        best = state.get("best")
+        if best is not None:
+            best_epoch, best_score = int(best["epoch"]), float(best["score"])
+            best_state = best["model"] if best["model"] is not None else state["model"]
         log.info("resumed from the checkpoint after epoch %d", first_epoch)
         if on_epoch is not None:
             for number, loss in enumerate(epoch_losses, start=1):
@@ -202,7 +231,17 @@ def train_model(
         device,
     )
 
+    epochs_trained = first_epoch
     for epoch in range(first_epoch, settings.epochs):
+        patience = settings.early_stopping_patience
+        if patience and best_epoch is not None and epoch - best_epoch >= patience:
+            log.info(
+                "early stopping: no better warm_recall@%d in the %d epoch(s) after epoch %d",
+                settings.primary_k,
+                epoch - best_epoch,
+                best_epoch,
+            )
+            break
         started = time.monotonic()
         # The user tower reads a snapshot of the game table that only moves between epochs.
         model.sync_user_table()
@@ -238,6 +277,8 @@ def train_model(
             )
             monitor = metrics.warm.recall[settings.primary_k]
             message += f" warm_recall@{settings.primary_k}={monitor:.4f}"
+        if monitor is not None and monitor > best_score:
+            best_epoch, best_score, best_state = epoch + 1, monitor, _cpu_state(model)
         seconds = time.monotonic() - started
         log.info("%s (%.0fs)", message, seconds)
         if on_epoch is not None:
@@ -249,7 +290,13 @@ def train_model(
                     seconds=seconds,
                 )
             )
+        epochs_trained = epoch + 1
         if checkpoints is not None:
+            best = None
+            if best_epoch is not None:
+                # the best weights are only stored when they aren't this checkpoint's model
+                stored = best_state if best_epoch != epoch + 1 else None
+                best = {"epoch": best_epoch, "score": best_score, "model": stored}
             checkpoints.save(
                 {
                     "fingerprint": run_fingerprint,
@@ -258,7 +305,18 @@ def train_model(
                     "optimizer": optimizer.state_dict(),
                     "mined": torch.from_numpy(examples.mined.copy()),
                     "epoch_losses": epoch_losses,
+                    "best": best,
                 }
             )
+    if settings.keep_best_epoch and best_state is not None and best_epoch != epochs_trained:
+        log.info(
+            "keeping epoch %d (warm_recall@%d=%.4f), not the last one (%d)",
+            best_epoch,
+            settings.primary_k,
+            best_score,
+            epochs_trained,
+        )
+        model.load_state_dict(best_state)
+    kept = best_epoch if settings.keep_best_epoch and best_state is not None else epochs_trained
     model.eval()
-    return model, epoch_losses
+    return TrainResult(model, epoch_losses, kept or epochs_trained, epochs_trained)

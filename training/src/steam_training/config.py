@@ -145,6 +145,11 @@ class TrainingSettings(_SsmSettings):
     primary_k: int = 50
     # Rows of the validation split scored after each epoch (monitoring only); 0 = skip.
     epoch_eval_rows: int = Field(50_000, ge=0)
+    # Keep the epoch with the best monitor warm recall@PRIMARY_K (needs EPOCH_EVAL_ROWS > 0;
+    # without monitoring, e.g. FIT_ON=train+validation, the last epoch is kept).
+    keep_best_epoch: bool = True
+    # Stop after this many epochs without a better monitor score (0 = run all EPOCHS).
+    early_stopping_patience: int = Field(1, ge=0)
     eval_batch_size: int = Field(4096, ge=1)
     # Positive validation rows kept (uniform sample): ~500k gives recall within ~0.002.
     eval_max_rows: int = Field(500_000, ge=1)
@@ -192,6 +197,8 @@ NOT_FINGERPRINTED = {
     "recall_ks",
     "primary_k",
     "epoch_eval_rows",
+    "keep_best_epoch",
+    "early_stopping_patience",
     "eval_batch_size",
     "eval_max_rows",
     "min_improvement",

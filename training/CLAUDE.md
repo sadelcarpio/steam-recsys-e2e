@@ -95,6 +95,12 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   (`USER_TOWER_TAG_PROFILE_FORMAT`, + `TAG_PROFILE_ARRAYS`); plain models stay format 1, so a
   serving deploy that only reads format 1 keeps working until an A4 model is promoted. Deploy
   serving (reads 1 and 2) before promoting an A4 model.
+- Best epoch / early stopping: `train_model` returns `TrainResult` (unpacks as `(model,
+  losses)`, plus `best_epoch` / `epochs_trained`). The best weights (CPU copy) go into the
+  checkpoint's `best` entry when they aren't its `model`, so a resume keeps them. The early
+  stop check runs at the top of each epoch, so a resumed run past the stop point doesn't train.
+  Selection uses the monitor rows (a sample of the validation rows the final metrics use, so
+  the selected score is slightly optimistic; the test split is the unbiased check).
 - `USER_TABLE_SYNC_STEPS`: extra `sync_user_table` calls inside an epoch, always before a
   step (never after the last one), so the user MLP has trained against the table it keeps.
 - Tracking (spec 18): `models/<id>/tracking.json` is written before `metadata.json` on every

@@ -94,6 +94,8 @@ class ModelMetadata(_Frozen):
     validation: RecallMetrics
     popularity_baseline: RecallMetrics
     epoch_losses: list[float]
+    # epoch whose weights were saved (best monitor score, KEEP_BEST_EPOCH); None in older models
+    best_epoch: int | None = None
 
 
 class ModelEvaluation(_Frozen):
