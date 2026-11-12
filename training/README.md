@@ -213,6 +213,21 @@ Suggested order (cheapest first, each against the champion on warm recall@50): A
 A6 → A3 + A2 → A7 → A8. A1 and A4 need no ETL change. A3 changes the user tower's state dict and
 the numpy serving port, so it needs an `ARCHITECTURE_VERSION` bump.
 
+**Results so far** (cutoff 2026-05-01, full-history exclusion, warm recall@50 on 500k
+validation rows; models `local-<sha>-…` in the bucket, runs in MLflow):
+
+| Run | Epochs | warm recall@50 | coverage@50 |
+|---|---|---|---|
+| control (champion settings) | 2 | 0.1826 | 0.053 |
+| A1: no explicit negatives (old exclusion, vs its control 0.1804) | 2 | 0.1787 | 0.050 |
+| control + `USER_TABLE_SYNC_STEPS=1000` | 1 | 0.1894 | 0.082 |
+| A4: `USER_TAG_PROFILE=true` | 2 | 0.1996 | 0.105 |
+| **A4 + `USER_TABLE_SYNC_STEPS=1000`** | **1** | **0.2118** | **0.124** |
+
+With the in-epoch sync every run peaks after epoch 1 (2 epochs: control 0.1801, A4 0.2027), and
+training keeps the last epoch, so keep `EPOCHS=1` (or add best-epoch selection). The gain grows
+with activity: A4 + sync is +5% for new users and +82% for the top 1% (0.0622 vs 0.0341).
+
 ## Evaluation
 
 For every **positive** validation review, the history as of before that review scores the whole
