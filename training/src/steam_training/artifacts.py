@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 
 from steam_training.config import CHAMPION
 from steam_training.contracts import EvaluationReport, ModelMetadata, TrackingRecord
-from steam_training.export import encode_user_tower
+from steam_training.export import encode_user_tower, supports
 from steam_training.model import TwoTowerModel
 
 log = logging.getLogger(__name__)
@@ -75,7 +75,14 @@ class ArtifactStore:
             buffer = io.BytesIO()
             torch.save({k: v.cpu() for k, v in module.state_dict().items()}, buffer)
             self._put(prefix + name, buffer.getvalue(), "application/octet-stream")
-        self.save_user_tower_numpy(model, metadata.model_id)
+        if supports(model):
+            self.save_user_tower_numpy(model, metadata.model_id)
+        else:
+            log.warning(
+                "no %s for %s: serving's numpy port can't run it",
+                USER_TOWER_NUMPY,
+                metadata.model_id,
+            )
         # metadata last: its presence marks a complete model
         self._put(
             prefix + METADATA, metadata.model_dump_json(indent=2).encode(), "application/json"

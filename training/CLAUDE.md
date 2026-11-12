@@ -89,6 +89,10 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   (its CI runs on `training/src/**`).
 - Promotion and training run the image of the model's commit (`training:<model_id>`) unless
   `--image-tag` overrides it (GPU image, locally trained models).
+- A4 tag profile (`ModelConfig.user_tag_profile`, optional like tags): the user tower holds a
+  game -> tags CSR (`game_tag_*` buffers, set from `Catalog.game_tags`, resized on load in
+  `UserTower._load_from_state_dict`). `export.supports(model)` is False for it: no
+  `user_tower.npz`, and `run_promotion` refuses it until serving's numpy port handles it.
 - Tracking (spec 18): `models/<id>/tracking.json` is written before `metadata.json` on every
   run. MLflow is optional (`tracking` extra, imported lazily inside `MlflowSink`); the image
   doesn't install it. Tracking settings are in `NOT_FINGERPRINTED` and out of the metadata

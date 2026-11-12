@@ -51,6 +51,8 @@ class ModelConfig(_Frozen):
     hidden_dim: int
     output_dim: int
     temperature: float
+    # A4 (spec 17): tag profile of the history in the user tower; False for older models
+    user_tag_profile: bool = False
 
 
 class SplitInfo(_Frozen):

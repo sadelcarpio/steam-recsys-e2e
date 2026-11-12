@@ -248,6 +248,22 @@ class Catalog:
         inside = (game_idx >= 0) & (game_idx < len(self.row_of))
         return np.where(inside, self.row_of[np.clip(game_idx, 0, len(self.row_of) - 1)], -1)
 
+    def game_tags(self, num_games: int) -> Ragged:
+        """Tags (+ weights) of every game_idx < `num_games` (row = game_idx); games outside the
+        catalog, padding and OOV have none."""
+        game = np.arange(num_games)
+        row = self.rows(game)
+        present = row >= 0
+        taken = self.items.tags.take(np.where(present, row, 0))
+        lengths = np.where(present, np.diff(taken.offsets), 0)
+        keep = np.repeat(present, np.diff(taken.offsets))
+        offsets = np.zeros(num_games + 1, dtype=np.int64)
+        np.cumsum(lengths, out=offsets[1:])
+        weights = taken.weights[keep] if taken.weights is not None else None
+        if weights is None:
+            weights = (1.0 / np.repeat(np.maximum(lengths, 1), lengths)).astype(np.float32)
+        return Ragged(taken.values[keep], offsets, weights)
+
 
 @dataclass(frozen=True)
 class TrainRows:

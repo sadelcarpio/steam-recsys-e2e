@@ -48,6 +48,7 @@ def model_config(settings: TrainingSettings, vocab: VocabSizes) -> ModelConfig:
         hidden_dim=settings.hidden_dim,
         output_dim=settings.output_dim,
         temperature=settings.temperature,
+        user_tag_profile=settings.user_tag_profile,
     )
 
 
@@ -150,6 +151,8 @@ def train_model(
     seen = torch.zeros(vocab.games, dtype=torch.bool)
     seen[torch.from_numpy(examples.target)] = True
     model.set_seen_games(seen)
+    if model.config.user_tag_profile:
+        model.set_game_tags(catalog.game_tags(vocab.games))
     model.to(device)
 
     collator = Collator(

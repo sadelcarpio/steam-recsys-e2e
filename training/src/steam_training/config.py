@@ -99,6 +99,8 @@ class TrainingSettings(_SsmSettings):
     item_id_dropout: float = Field(0.1, ge=0, le=1)
     # Steam user tags as an item feature (marts `game_tags` + `lkp_tags`, spec 8).
     use_game_tags: bool = True
+    # A4 (spec 17): the user tower also reads a tag profile of the history (needs the tags)
+    user_tag_profile: bool = False
 
     # ---- model ----
     game_embedding_dim: int = Field(64, ge=4)
@@ -167,6 +169,8 @@ class TrainingSettings(_SsmSettings):
             raise ValueError(f"model_id '{CHAMPION}' is reserved")
         if self.validation_fraction + self.test_fraction >= 0.5:
             raise ValueError("validation_fraction + test_fraction must be < 0.5")
+        if self.user_tag_profile and not self.use_game_tags:
+            raise ValueError("USER_TAG_PROFILE needs USE_GAME_TAGS")
         if self.fit_on == "train+validation" and self.test_fraction == 0:
             raise ValueError("FIT_ON=train+validation needs TEST_FRACTION > 0 to evaluate on")
         return self

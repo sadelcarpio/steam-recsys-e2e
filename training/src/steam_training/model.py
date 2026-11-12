@@ -4,7 +4,11 @@ Item tower: game_idx embedding + mean-pooled developer / publisher / genre / cat
             + weighted mean of the game's Steam user tag embeddings (when `vocab.tags` is set)
             + numerical features (is_free, is_free known, reviews ratio) -> MLP -> L2 norm.
 User tower: mean-pooled `games_reviewed_positive` over a *frozen copy* of the item tower's game
-            embedding table (+ history length) -> MLP -> L2 norm.
+            embedding table (+ history length) [+ tag profile of the history, A4] -> MLP ->
+            L2 norm. The tag profile is a weighted bag of the history games' Steam tags
+            (tag weight x a learned weight per history position, normalized per user) over
+            the user tower's own tag embeddings. It reads the raw game ids, so games without
+            training interactions (OOV in the game table) still contribute their tags.
 
 The copy (`UserTower.game_table`) is re-synced from the item tower once per epoch
 (`TwoTowerModel.sync_user_table`): the user tower chases a target that only moves between
@@ -136,14 +140,77 @@ class ItemTower(nn.Module):
         return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 
 
+_TAG_BUFFERS = ("game_tag_values", "game_tag_offsets", "game_tag_weights")
+
+
 class UserTower(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         vocab = config.vocab
+        self.num_games = vocab.games
         self.game_ids = _GameIdMapper(vocab.games)
         # Frozen snapshot of ItemTower.game_embedding, refreshed once per epoch.
         self.register_buffer("game_table", torch.zeros(vocab.games, config.game_embedding_dim))
-        self.mlp = _mlp(config.game_embedding_dim + 1, config.hidden_dim, config.output_dim)
+        in_dim = config.game_embedding_dim + 1
+        self.tag_profile: nn.EmbeddingBag | None = None
+        if config.user_tag_profile:
+            if vocab.tags is None:
+                raise ValueError("user_tag_profile needs a tags vocabulary")
+            self.tag_size = vocab.tags
+            # game_idx -> tags (CSR, set from the training catalog; sized on load)
+            self.register_buffer("game_tag_values", torch.zeros(0, dtype=torch.int64))
+            self.register_buffer(
+                "game_tag_offsets", torch.zeros(vocab.games + 1, dtype=torch.int64)
+            )
+            self.register_buffer("game_tag_weights", torch.zeros(0))
+            # learned weight of each history position (exp, so positive; starts equal)
+            self.tag_recency = nn.Parameter(torch.zeros(USER_HISTORY_LENGTH))
+            self.tag_profile = nn.EmbeddingBag(
+                vocab.tags, config.attribute_embedding_dim, mode="sum", padding_idx=PADDING_ID
+            )
+            in_dim += config.attribute_embedding_dim
+        self.mlp = _mlp(in_dim, config.hidden_dim, config.output_dim)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:
+        # the tag CSR's length depends on the catalog: take it from the saved tensors
+        if self.tag_profile is not None:
+            for name in _TAG_BUFFERS:
+                saved = state_dict.get(prefix + name)
+                if saved is not None:
+                    current = getattr(self, name)
+                    setattr(self, name, torch.empty_like(saved, device=current.device))
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    @torch.no_grad()
+    def set_game_tags(self, values: torch.Tensor, offsets: torch.Tensor, weights) -> None:
+        device = self.game_tag_offsets.device
+        self.game_tag_values = values.to(device=device, dtype=torch.int64)
+        self.game_tag_offsets = offsets.to(device=device, dtype=torch.int64)
+        self.game_tag_weights = weights.to(device=device, dtype=torch.float32)
+
+    def _tag_profile(self, history: torch.Tensor) -> torch.Tensor:
+        """Weighted bag of the history games' tags, normalized per user (no tags: zeros)."""
+        assert self.tag_profile is not None
+        rows, slots = history.shape
+        games = _clip_to_vocab(history, self.num_games).reshape(-1)  # padding: no tags
+        starts = self.game_tag_offsets[games]
+        lengths = self.game_tag_offsets[games + 1] - starts
+        slot = torch.arange(rows * slots, device=history.device)
+        owner_slot = torch.repeat_interleave(slot, lengths)
+        first = torch.cumsum(lengths, 0) - lengths
+        within = torch.arange(len(owner_slot), device=history.device) - first[owner_slot]
+        source = starts[owner_slot] + within
+        position_weight = torch.exp(self.tag_recency)[owner_slot % slots]
+        weights = self.game_tag_weights[source] * position_weight
+        user = owner_slot // slots
+        totals = torch.zeros(rows, device=history.device).index_add(0, user, weights)
+        weights = weights / totals[user].clamp(min=1e-12)
+        per_user = torch.zeros(rows, dtype=torch.int64, device=history.device).index_add(
+            0, user, torch.ones_like(user)
+        )
+        offsets = torch.cumsum(per_user, 0) - per_user
+        values = _clip_to_vocab(self.game_tag_values[source], self.tag_size)
+        return self.tag_profile(values, offsets, per_sample_weights=weights)
 
     def forward(self, history: torch.Tensor) -> torch.Tensor:
         """history: int64 [rows, USER_HISTORY_LENGTH], most recent first, 0 = padding."""
@@ -151,8 +218,10 @@ class UserTower(nn.Module):
         present = (ids != PADDING_ID).unsqueeze(-1).float()
         lengths = present.sum(dim=1)
         pooled = (self.game_table[ids] * present).sum(dim=1) / lengths.clamp(min=1)
-        features = torch.cat([pooled, lengths / USER_HISTORY_LENGTH], dim=1)
-        return F.normalize(self.mlp(features), dim=-1)
+        parts = [pooled, lengths / USER_HISTORY_LENGTH]
+        if self.tag_profile is not None:
+            parts.append(self._tag_profile(history))
+        return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 
 
 class TwoTowerModel(nn.Module):
@@ -173,6 +242,15 @@ class TwoTowerModel(nn.Module):
         seen[OOV_ID] = True
         self.user_tower.game_ids.seen_games.copy_(seen)
         self.item_tower.game_ids.seen_games.copy_(seen)
+
+    def set_game_tags(self, tags) -> None:
+        """A4: the game -> tags lookup of the user tower's tag profile (a `data.Ragged` by
+        game_idx, e.g. `Catalog.game_tags`)."""
+        self.user_tower.set_game_tags(
+            torch.from_numpy(tags.values),
+            torch.from_numpy(tags.offsets),
+            torch.from_numpy(tags.weights),
+        )
 
     def score(self, users: torch.Tensor, items: torch.Tensor) -> torch.Tensor:
         """Similarity logits [users, items] (cosine / temperature)."""

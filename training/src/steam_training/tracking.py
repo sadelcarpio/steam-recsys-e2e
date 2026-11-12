@@ -50,6 +50,8 @@ def features(config: ModelConfig) -> dict[str, list[str]]:
         item.append("tags")
     item += ["is_free", "is_free_known", "reviews_ratio"]
     user = [f"games_reviewed_positive[{USER_HISTORY_LENGTH}]", "history_length"]
+    if config.user_tag_profile:
+        user.append("history_tag_profile")
     return {"user": user, "item": item}
 
 

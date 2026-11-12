@@ -42,7 +42,14 @@ USER_TOWER_ARRAYS = (
 )
 
 
+def supports(model: TwoTowerModel) -> bool:
+    """Whether serving's numpy port can run this user tower (not the A4 tag profile yet)."""
+    return not model.config.user_tag_profile
+
+
 def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarray]:
+    if not supports(model):
+        raise NotImplementedError("the numpy user tower has no tag profile (A4) yet")
     tower = model.user_tower
     first, second = tower.mlp[0], tower.mlp[2]
     assert isinstance(first, nn.Linear) and isinstance(second, nn.Linear), tower.mlp
