@@ -213,6 +213,11 @@ def train_model(
         model.train()
         total, batches = 0.0, 0
         for batch in loader:
+            # before a step, never after the last one: the user MLP always trains against the
+            # table it ends with
+            sync_every = settings.user_table_sync_steps
+            if sync_every and batches and batches % sync_every == 0:
+                model.sync_user_table()
             loss = retrieval_loss(model, batch.to(device), settings.logq_correction)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()

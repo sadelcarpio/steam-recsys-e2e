@@ -116,6 +116,9 @@ class TrainingSettings(_SsmSettings):
     temperature: float = Field(0.05, gt=0)
     # Subtract log(sampling probability) from in-batch logits (popularity correction).
     logq_correction: bool = True
+    # Also re-sync the user tower's frozen game table every N training steps within an epoch
+    # (0 = only at the start of each epoch). In epoch 1 the per-epoch copy is the random init.
+    user_table_sync_steps: int = Field(0, ge=0)
     seed: int = 42
     num_threads: int = Field(0, ge=0)  # 0 = torch default
     # auto = cuda when available (GPU image, `cu128` extra), else cpu

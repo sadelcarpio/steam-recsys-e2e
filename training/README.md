@@ -378,6 +378,7 @@ forwards them to the job:
 | `COLD_ROW_FRACTION` | 0.1 | share of empty-history rows trained on |
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |
 | `LOGQ_CORRECTION` | true | |
+| `USER_TABLE_SYNC_STEPS` | 0 | also re-sync the user tower's frozen game table every N steps (0 = once per epoch; in epoch 1 that copy is the random init) |
 | `EXPLICIT_NEGATIVES` / `MINED_NEGATIVES` | true / true | hard negatives |
 | `MINING_START_EPOCH` / `MINE_SKIP_TOP` / `MINE_POOL_SIZE` | 1 / 5 / 50 | |
 | `RECALL_KS` / `PRIMARY_K` | `[30,50,100]` / 50 | JSON list |

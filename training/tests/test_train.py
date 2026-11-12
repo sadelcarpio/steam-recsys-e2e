@@ -202,3 +202,29 @@ def test_fingerprint_ignores_evaluation_settings(settings):
         != base
     )
     assert fingerprint(settings, {"interactions": 2}, "2024-01-01") != base
+
+
+def test_in_epoch_table_sync(source, settings, monkeypatch):
+    """USER_TABLE_SYNC_STEPS re-syncs the frozen game table every N steps, never after the
+    last step; resuming still reproduces an uninterrupted run."""
+    synced = settings.model_copy(update={"epochs": 2, "user_table_sync_steps": 3})
+    calls = []
+    original = TwoTowerModel.sync_user_table
+
+    def counting(self):
+        calls.append(1)
+        return original(self)
+
+    monkeypatch.setattr(TwoTowerModel, "sync_user_table", counting)
+    data, examples = _examples(source, synced)
+    model, losses = train_model(synced, examples, data.catalog, data.vocab)
+    steps = (len(examples) + synced.batch_size - 1) // synced.batch_size
+    if len(examples) > synced.batch_size:
+        steps = len(examples) // synced.batch_size  # drop_last
+    per_epoch = 1 + (steps - 1) // 3  # start of epoch + every 3 steps before a step
+    assert len(calls) == 2 * per_epoch
+    # the user tower's table is the item table as of the last sync, not the final one
+    assert not torch.equal(
+        model.user_tower.game_table, model.item_tower.game_embedding.weight.detach()
+    )
+    assert fingerprint(synced, {}, "c") != fingerprint(settings, {}, "c")
