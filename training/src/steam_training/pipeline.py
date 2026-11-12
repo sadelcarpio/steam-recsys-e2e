@@ -13,26 +13,46 @@ from steam_training.batching import build_examples
 from steam_training.config import CHAMPION, TrainingSettings
 from steam_training.contracts import (
     ARCHITECTURE_VERSION,
+    EmbeddingHealth,
     EvaluationReport,
     ModelEvaluation,
     ModelMetadata,
     RecallMetrics,
+    RetrievalDiagnostics,
 )
 from steam_training.data import TableSource, TrainingData, load_training_data
-from steam_training.evaluation import evaluate, model_scores, popularity_scores
+from steam_training.diagnostics import embedding_health, retrieval_diagnostics
+from steam_training.evaluation import (
+    embed_catalog,
+    evaluate,
+    model_scores,
+    popularity_scores,
+    rank_rows,
+)
 from steam_training.model import TwoTowerModel
+from steam_training.tracking import RunTracker, lineage_tags, params_of
 from steam_training.train import fingerprint, resolve_device, train_model
 
 log = logging.getLogger(__name__)
 
 # Settings recorded in the metadata as hyperparameters (not infrastructure / identity).
-_NOT_HYPERPARAMETERS = {"model_artifacts_bucket", "model_id", "glue_database", "aws_region"}
+_NOT_HYPERPARAMETERS = {
+    "model_artifacts_bucket",
+    "model_id",
+    "glue_database",
+    "aws_region",
+    "mlflow_tracking_uri",
+    "mlflow_experiment",
+    "git_commit",
+}
 
 
 def _load(settings: TrainingSettings, source: TableSource, **kwargs: object) -> TrainingData:
     return load_training_data(
         source,
         validation_fraction=settings.validation_fraction,
+        test_fraction=settings.test_fraction,
+        fit_on=settings.fit_on,
         cold_row_fraction=settings.cold_row_fraction,
         eval_max_rows=settings.eval_max_rows,
         seed=settings.seed,
@@ -66,8 +86,63 @@ def _evaluate_all(
     return results, baseline
 
 
+# Warm validation rows embedded by the user tower for the collapse check.
+_USER_EMBEDDING_ROWS = 10_000
+
+
+def _diagnose(
+    settings: TrainingSettings, data: TrainingData, model: TwoTowerModel, device: torch.device
+) -> tuple[RetrievalDiagnostics, RetrievalDiagnostics, EmbeddingHealth, EmbeddingHealth]:
+    """Every tracked metric of the model and of the popularity baseline (one scoring pass each),
+    plus the embedding-collapse checks."""
+
+    def run(score_fn) -> RetrievalDiagnostics:
+        ranks, exposure = rank_rows(
+            score_fn,
+            data.validation,
+            data.catalog,
+            max(settings.recall_ks),
+            settings.eval_batch_size,
+            device,
+        )
+        return retrieval_diagnostics(ranks, exposure, data.validation, settings.recall_ks)
+
+    model = model.to(device).eval()
+    diagnostics = run(model_scores(model, data.catalog, settings.eval_batch_size, device))
+    baseline = run(popularity_scores(data.train_positive_counts, data.catalog, device))
+    items = embed_catalog(model, data.catalog, settings.eval_batch_size, device)
+    warm = data.validation.take(data.validation.is_warm.nonzero()[0])
+    warm = warm.sample(_USER_EMBEDDING_ROWS, settings.seed)
+    with torch.no_grad():
+        users = model.user_tower(torch.from_numpy(warm.history).to(device))
+    return (
+        diagnostics,
+        baseline,
+        embedding_health(items, seed=settings.seed),
+        embedding_health(users, seed=settings.seed),
+    )
+
+
 def run_training(
     settings: TrainingSettings, source: TableSource, store: ArtifactStore
+) -> ModelMetadata:
+    tracker = RunTracker.from_settings(settings)
+    hyperparameters = settings.model_dump(exclude=_NOT_HYPERPARAMETERS)
+    tracker.start(lineage_tags(settings.model_id, settings.git_commit), params_of(hyperparameters))
+    try:
+        metadata = _train(settings, source, store, tracker, hyperparameters)
+    except BaseException:
+        tracker.fail()
+        raise
+    return metadata
+
+
+def _train(
+    settings: TrainingSettings,
+    source: TableSource,
+    store: ArtifactStore,
+    tracker: RunTracker,
+    hyperparameters: dict[str, object],
 ) -> ModelMetadata:
     if settings.num_threads:
         torch.set_num_threads(settings.num_threads)
@@ -76,6 +151,7 @@ def run_training(
     # 1. dataset + temporal split (streamed, filtered)
     data = _load(settings, source, with_tags=settings.use_game_tags)
     assert data.train is not None
+    run_fingerprint = fingerprint(settings, data.snapshots, data.split.cutoff)
 
     # 2. training examples (the DataLoader / collate is built in train_model)
     examples = build_examples(
@@ -83,9 +159,9 @@ def run_training(
     )
     if len(examples) == 0:
         raise ValueError("no positive training rows")
-    monitor_rows = (
-        data.validation.sample(settings.epoch_eval_rows) if settings.epoch_eval_rows else None
-    )
+    # no per-epoch peeking at the test window: it is scored once, at the end
+    monitor = settings.epoch_eval_rows and data.split.evaluation == "validation"
+    monitor_rows = data.validation.sample(settings.epoch_eval_rows) if monitor else None
 
     # 3. training (checkpointed per epoch, resumed when the same run restarts)
     checkpoints = store.checkpoints(settings.model_id)
@@ -97,16 +173,36 @@ def run_training(
         monitor_rows,
         device=device,
         checkpoints=checkpoints,
-        run_fingerprint=fingerprint(settings, data.snapshots, data.split.cutoff),
+        run_fingerprint=run_fingerprint,
+        on_epoch=tracker.epoch,
+    )
+    tracker.tag(
+        lineage_tags(
+            settings.model_id,
+            settings.git_commit,
+            model.config,
+            data.split,
+            data.snapshots,
+            run_fingerprint,
+        )
     )
 
-    # 4. evaluation
-    results, baseline = _evaluate_all(settings, data, {"model": model}, device)
-    log.info("validation %s", results["model"].model_dump_json())
-    log.info("popularity baseline %s", baseline.model_dump_json())
+    # 4. evaluation (recall@K, hit rate, activity buckets, coverage, collapse checks)
+    diagnostics, baseline, item_health, user_health = _diagnose(settings, data, model, device)
+    log.info("validation %s", diagnostics.recall.model_dump_json())
+    log.info("popularity baseline %s", baseline.recall.model_dump_json())
     log.info(
         "metrics %s",
-        metrics_line(settings.primary_k, {"final": results["model"], "popularity": baseline}),
+        metrics_line(
+            settings.primary_k, {"final": diagnostics.recall, "popularity": baseline.recall}
+        ),
+    )
+    log.info(
+        "coverage@%d %.4f, item embeddings mean cosine %.3f / effective rank %.1f",
+        settings.primary_k,
+        diagnostics.coverage[settings.primary_k],
+        item_health.mean_cosine,
+        item_health.effective_rank,
     )
 
     metadata = ModelMetadata(
@@ -115,13 +211,23 @@ def run_training(
         config=model.config,
         split=data.split,
         snapshots=data.snapshots,
-        hyperparameters=settings.model_dump(exclude=_NOT_HYPERPARAMETERS),
-        validation=results["model"],
-        popularity_baseline=baseline,
+        hyperparameters=hyperparameters,
+        validation=diagnostics.recall,
+        popularity_baseline=baseline.recall,
         epoch_losses=losses,
     )
+    record = tracker.record(
+        evaluation=data.split.evaluation,
+        model=diagnostics,
+        popularity=baseline,
+        item_embeddings=item_health,
+        user_embeddings=user_health,
+    )
+    key = store.save_tracking(record)
+    log.info("tracking record s3://%s/%s", store.bucket, key)
     # The checkpoint is kept: re-running this MODEL_ID with more EPOCHS extends the run.
     store.save_model(model, metadata)
+    tracker.finish(record)
     return metadata
 
 

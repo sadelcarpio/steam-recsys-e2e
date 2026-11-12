@@ -31,6 +31,10 @@ the rows **kept** (`data.py`):
    `USE_GAME_TAGS`). A target's list features (developers, genres, tags, …) come from the
    catalog, since they are static per game. `game_reviews_ratio` / `game_is_free` stay per row,
    as of the review.
+4. `timestamp`, `user_id`, `game_idx` → each validation user's reviews: their activity
+   (reviews before the cutoff, for the activity buckets) and, per validation row, every game
+   they reviewed before it (excluded from that row's candidates). Only the validation users'
+   reviews are kept: roughly their total review count × 24 B while loading.
 
 Measured on 2.67M interactions: 1.4 GB peak for loading (mostly the Arrow reader's per-file
 buffers), 71 MB of kept arrays (~27 B per interaction). About 5 GB is expected at 100M reviews,
@@ -134,11 +138,32 @@ flowchart TB
 ## Evaluation
 
 For every **positive** validation review, the history as of before that review scores the whole
-catalog: every game with its features as of the split cutoff. Games already in the history are
-excluded. The metric is **recall@K** for `RECALL_KS` (default 30, 50, 100), which equals the hit
+catalog: every game with its features as of the split cutoff. Every game the user reviewed
+before that review (any polarity, collected in the fourth data pass, not just the 5-game history
+feature) is excluded, so a heavy reviewer's top K isn't spent on games they already reviewed. The metric is **recall@K** for `RECALL_KS` (default 30, 50, 100), which equals the hit
 rate here because each row has one target. It is reported for `warm` rows (the inference
 population), `cold` rows and `all`, next to a popularity baseline (most positively reviewed games
 in the training split).
+
+**Train / validation / test.** The timeline is split by row share into `[train | validation |
+test]` (`VALIDATION_FRACTION`, `TEST_FRACTION`; the default `TEST_FRACTION=0` keeps the old
+two-way split). `FIT_ON=train` trains on train and evaluates on validation; the test window is
+never read. Use it for every ablation, comparing a recipe with a control trained on the same
+rows. `FIT_ON=train+validation` trains through validation and evaluates on test once (no
+per-epoch monitoring), as the final check of the chosen recipe:
+
+```bash
+# select (repeat per candidate, same fractions)       # confirm the winner once
+VALIDATION_FRACTION=0.075 TEST_FRACTION=0.075 ...      VALIDATION_FRACTION=0.075 TEST_FRACTION=0.075 FIT_ON=train+validation ...
+```
+
+![Temporal splits for experiments, promotion and keeping a champion fresh](docs/splits.svg)
+
+Promotion (step 4) ignores these fractions: it trains nothing and scores both models on every
+row after both cutoffs. A model trained with a held-out test window and then promoted is
+therefore judged partly on that window too. A refit on all rows for serving (step 3) and
+incremental warm-start retraining (5B) are not built: a full retrain takes ~16 min on a local
+GPU (5A).
 
 **Curves in the SageMaker console.** Jobs started by the launcher declare metric definitions
 (`launch.METRIC_DEFINITIONS`): SageMaker parses the logs into CloudWatch series, shown under the
@@ -146,6 +171,77 @@ job's *Monitor → Algorithm metrics*. Training: `train:loss` and `train:monitor
 epoch, then `final:*` and `popularity:*` recall at `PRIMARY_K`. Promotion: `candidate:`,
 `champion:` and `popularity:warm_recall`. The final values come from a `metrics ...` log line
 (`pipeline.metrics_line`), so only images from this change on emit them.
+
+## Experiment tracking
+
+Every training run writes `models/<model_id>/tracking.json` (`TrackingRecord`): lineage, params,
+per-epoch series and every offline metric below. With `MLFLOW_TRACKING_URI` set, the run is
+also logged live to MLflow (experiment `MLFLOW_EXPERIMENT`, default `steam-two-tower`; the run
+name is the model id). Tracking never fails a run: if the server is down, it logs a warning and
+the record still lands in S3, so the run can be replayed later.
+
+| MLflow | What |
+|---|---|
+| tags | `data.evaluation` / `data.end` (the evaluation window), `model_id`, `git_commit` (+ `git_dirty` for local runs; the launcher passes the image's commit as `GIT_COMMIT`), `snapshot.<table>` (Iceberg snapshot ids), `data.cutoff` / `data.*_rows`, `features.user` / `features.item`, `feature_signature` (hash of features + architecture), `fingerprint` (the checkpoint identity), `architecture_version` |
+| params | every hyperparameter (`metadata.json` → `hyperparameters`) |
+| `epoch/*` (step = epoch) | `loss`, `monitor_warm_recall_at_<PRIMARY_K>`, `seconds` |
+| `validation/*` or `test/*` (the window the model was evaluated on, tag `data.evaluation`) | `{warm,cold,all}_recall_at_K` (per row; equals the row hit rate), `user_hit_rate_at_K` (share of validation users with at least one target in their top K), `user_recall_at_K` (mean over users, each user weighs the same), `activity/<bucket>_recall_at_K`, `coverage_at_K` (share of the catalog in at least one top K), `exposure_gini` (how concentrated the top max(K) is on few games) |
+| `popularity/*`, `lift/*` | the same for the popularity baseline, and model ÷ baseline recall |
+| `embeddings/*` | collapse checks on the item embeddings (whole catalog) and on 10k warm user embeddings: `mean_cosine` (~0 healthy, →1 collapsed), `effective_rank` and its ratio to the dimension |
+| `curves/*` | chartable as lines across runs: `<window>_warm_recall_by_k` (step = K), `<window>_recall_at_<PRIMARY_K>_by_activity` (step = bucket, 0 = `new`) |
+| artifact | `tracking.json` |
+
+**Activity buckets.** A validation row's activity is its user's reviews (any polarity) before
+the cutoff, counted in a fourth streamed pass over `interactions` (only the validation users'
+ids are kept). `new` = no review before the cutoff; the others are percentiles of the
+returning validation users: `p0-50`, `p50-80`, `p80-95`, `p95-99`, `p99-100`. Each bucket's
+min / max activity is in `tracking.json`.
+
+### Local server
+
+```bash
+docker compose -f training/mlflow/compose.yaml up -d      # http://localhost:5000
+cd training && uv sync --extra cu128 --extra tracking      # mlflow-skinny client (cpu works too)
+MLFLOW_TRACKING_URI=http://localhost:5000 AWS_PROFILE=admin AWS_REGION=us-east-1 \
+  MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> MODEL_ID=local-$(git rev-parse --short HEAD)-a1 \
+  EXPLICIT_NEGATIVES=false uv run python -m steam_training train
+```
+
+The server (`ghcr.io/mlflow/mlflow`, same version as the client in `uv.lock`) keeps its sqlite
+database and artifacts in the `mlflow-data` volume, so runs survive restarts (`down -v` deletes
+them). It listens on localhost only and has no authentication. Back it up with
+`docker run --rm -v mlflow_mlflow-data:/d -v "$PWD":/b alpine tar czf /b/mlflow-backup.tgz -C /d .`
+(the volume name is `<compose project>_mlflow-data`, see `docker volume ls`).
+
+### Replay and champion / challenger
+
+```bash
+export MLFLOW_TRACKING_URI=http://localhost:5000 MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> AWS_PROFILE=admin
+uv run python -m steam_training track --model-id <sha>                    # replay tracking.json
+uv run python -m steam_training track --model-id champion --alias champion # the S3 champion
+uv run python -m steam_training track --model-id local-…-a1 --alias challenger
+```
+
+`track` replays the record when the run isn't in MLflow yet (SageMaker jobs, runs without a
+server; `--replace` forces a second copy), then registers the run's model once as a version of
+`steam-two-tower` (source `s3://model-artifacts-<acct>/models/<id>/`, nothing is copied) and
+points the alias at it. The alias moves off the version that held it. Aliases are manual and
+only label runs: `models/champion/` is still what *training promote* decides and what inference
+serves. After a promotion, run `track --model-id champion --alias champion` to keep the two in
+sync. Models trained before this change have no `tracking.json`: retrain them to track them.
+
+### Remote server (not deployed)
+
+| Option | Cost (us-east-1, approx.) | Notes |
+|---|---|---|
+| **Local server + `tracking.json` in S3** (this) | $0 | SageMaker jobs need no network path to a server: their record is replayed with `track`. One person, one machine; back up the volume |
+| SageMaker managed MLflow | ~$0.60/h for the Small tracking server, ~$440/month always on, plus $0.10/GB-month metadata | IAM auth and S3 artifacts built in, jobs could log live. The tracking server can be stopped between experiment sessions to pay per hour |
+| ECS Fargate + RDS (or sqlite on EFS) | ~$10 Fargate (0.25 vCPU) + ~$12 RDS t4g.micro + an ALB (~$16) or VPN for access, ~$40/month | MLflow has no built-in auth worth exposing publicly: needs an ALB with Cognito/OIDC or private access. Most work to own |
+
+Recommendation: stay local while one person runs the experiments. If several people (or
+always-on dashboards) need it, SageMaker managed MLflow started on demand is the least work. The
+code only needs `MLFLOW_TRACKING_URI` (plus the `sagemaker-mlflow` auth plugin, and the
+`tracking` extra in the image).
 
 ## Artifacts and promotion
 
@@ -155,6 +251,7 @@ s3://model-artifacts-<acct>/
   models/<sha>/user_tower.npz                 the user tower as numpy arrays (steam_training.export),
                                               run without torch by the serving Lambda (online recs)
   models/<sha>/metadata.json                  config, vocab sizes, split, Iceberg snapshot ids, metrics
+  models/<sha>/tracking.json                  experiment tracking record (see Experiment tracking)
   evaluation/<sha>/metrics.json               promotion report (candidate vs champion)
   models/champion/…                           the promoted model (bucket versioned: old champions recoverable)
   evaluation/champion/metrics.json            its promotion report
@@ -198,7 +295,8 @@ forwards them to the job:
 | `EPOCHS` / `BATCH_SIZE` / `LEARNING_RATE` / `WEIGHT_DECAY` | 5 / 1024 / 1e-3 / 1e-6 | Adam |
 | `TEMPERATURE` | 0.05 | softmax temperature on cosine similarity |
 | `GAME_EMBEDDING_DIM` / `ATTRIBUTE_EMBEDDING_DIM` / `HIDDEN_DIM` / `OUTPUT_DIM` | 64 / 16 / 128 / 64 | |
-| `VALIDATION_FRACTION` | 0.1 | last share of interactions (by time) held out |
+| `VALIDATION_FRACTION` / `TEST_FRACTION` | 0.1 / 0 | shares of interactions (by time) held out: `[train \| validation \| test]` |
+| `FIT_ON` | train | `train` (evaluate on validation) or `train+validation` (evaluate on test; needs `TEST_FRACTION` > 0) |
 | `COLD_ROW_FRACTION` | 0.1 | share of empty-history rows trained on |
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |
 | `LOGQ_CORRECTION` | true | |
@@ -212,12 +310,14 @@ forwards them to the job:
 | `FORCE_PROMOTION` | false | promote even when the candidate loses (report keeps the real metrics) |
 | `DEVICE` | auto | `auto` / `cpu` / `cuda` |
 | `RESUME` | true | resume from a matching checkpoint |
+| `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |
+| `GIT_COMMIT` | `git rev-parse HEAD` | lineage tag (set by the launcher on SageMaker jobs) |
 
 ## Development
 
 ```bash
 cd training
-uv sync --extra cpu      # or --extra cu128 on a CUDA machine
+uv sync --extra cpu      # or --extra cu128 on a CUDA machine; + --extra tracking for MLflow
 uv run pytest            # unit tests + train/promote end to end on synthetic marts (moto S3)
 uv run ruff check . && uv run ruff format --check .
 ```

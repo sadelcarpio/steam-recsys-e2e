@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import Protocol
 
 import numpy as np
@@ -27,7 +28,7 @@ from steam_training.batching import (
     target_log_probs,
 )
 from steam_training.config import NOT_FINGERPRINTED, TrainingSettings
-from steam_training.contracts import ModelConfig, VocabSizes
+from steam_training.contracts import EpochMetrics, ModelConfig, VocabSizes
 from steam_training.data import Catalog, EvalRows
 from steam_training.evaluation import (
     evaluate,
@@ -139,7 +140,10 @@ def train_model(
     device: torch.device | None = None,
     checkpoints: Checkpoints | None = None,
     run_fingerprint: str = "",
+    on_epoch: Callable[[EpochMetrics], None] | None = None,
 ) -> tuple[TwoTowerModel, list[float]]:
+    """`on_epoch` gets each epoch's metrics (experiment tracking), including the epochs restored
+    from a checkpoint (loss only)."""
     device = device or torch.device("cpu")
     torch.manual_seed(settings.seed)
     model = TwoTowerModel(model_config(settings, vocab))
@@ -182,6 +186,9 @@ def train_model(
         epoch_losses = list(state["epoch_losses"])
         first_epoch = int(state["epoch"])
         log.info("resumed from the checkpoint after epoch %d", first_epoch)
+        if on_epoch is not None:
+            for number, loss in enumerate(epoch_losses, start=1):
+                on_epoch(EpochMetrics(epoch=number, loss=loss))
     elif state is not None:
         log.warning("ignoring a checkpoint from a different run (data or hyperparameters changed)")
     log.info(
@@ -211,6 +218,7 @@ def train_model(
             batches += 1
         epoch_losses.append(total / max(batches, 1))
         message = f"epoch {epoch + 1}/{settings.epochs} loss={epoch_losses[-1]:.4f}"
+        monitor: float | None = None
         if monitor_rows is not None and len(monitor_rows):
             metrics = evaluate(
                 model_scores(model, catalog, settings.eval_batch_size, device),
@@ -220,9 +228,19 @@ def train_model(
                 settings.eval_batch_size,
                 device,
             )
-            message += f" warm_recall@{settings.primary_k}="
-            message += f"{metrics.warm.recall[settings.primary_k]:.4f}"
-        log.info("%s (%.0fs)", message, time.monotonic() - started)
+            monitor = metrics.warm.recall[settings.primary_k]
+            message += f" warm_recall@{settings.primary_k}={monitor:.4f}"
+        seconds = time.monotonic() - started
+        log.info("%s (%.0fs)", message, seconds)
+        if on_epoch is not None:
+            on_epoch(
+                EpochMetrics(
+                    epoch=epoch + 1,
+                    loss=epoch_losses[-1],
+                    monitor_warm_recall=monitor,
+                    seconds=seconds,
+                )
+            )
         if checkpoints is not None:
             checkpoints.save(
                 {

@@ -11,7 +11,7 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   - `contracts.py`: Pydantic artifacts contract (`ModelConfig`, `ModelMetadata`,
     `RecallMetrics`, `EvaluationReport`) + S3 layout docstring + `ARCHITECTURE_VERSION`
   - `data.py`: stage 1. `TableSource` (snapshot + streamed batches), `IcebergSource`,
-    `load_training_data` (3 streamed passes, keeps only `TrainRows` / `NegativeRows` /
+    `load_training_data` (4 streamed passes, keeps only `TrainRows` / `NegativeRows` /
     sampled `EvalRows`), `catalog_at` (streamed latest row per game), `Ragged` (CSR lists)
   - `batching.py`: stage 2. `build_examples` (explicit negatives), `Collator` (history / item-id
     dropout, hard negatives, `reseed(epoch)`), `Batch.to(device)`, `make_loader`
@@ -24,15 +24,24 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
     the report keeps the real metrics and reason), `decide`
   - `artifacts.py`: `ArtifactStore` (S3 save / load / promote, `save_user_tower_numpy`),
     `S3Checkpoints`
+  - `diagnostics.py`: spec 18 metrics from one scoring pass (`retrieval_diagnostics`: user hit
+    rate, activity buckets, coverage, exposure Gini; `embedding_health` collapse checks)
+  - `tracking.py`: spec 18 experiment tracking. `RunTracker` (record + optional live MLflow,
+    errors never fail training), `MlflowSink` (log, replay, `set_alias` on registered model
+    `steam-two-tower`), lineage tags, flat metric names (`final/`, `popularity/`, `lift/`,
+    `embeddings/`, `epoch/`, `curves/`)
   - `export.py`: the numpy user tower (`user_tower.npz`, `USER_TOWER_ARRAYS`), which the
     serving Lambda runs without torch
   - `__main__.py`: SageMaker entry (`python -m steam_training {train,promote}`), plus
-    `export --model-id` (local backfill of `user_tower.npz`)
+    `export --model-id` (local backfill of `user_tower.npz`), `track --model-id [--alias]`
+    (replay `tracking.json` into MLflow, champion / challenger aliases)
   - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary);
     `METRIC_DEFINITIONS` (log regexes -> CloudWatch curves in the SageMaker console)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
   (streams small batches). Unit tests, train → promote end to end with moto S3, and a bitwise
   resumed-equals-uninterrupted checkpoint test.
+- `mlflow/compose.yaml`: local MLflow server (sqlite + artifacts in a named volume, localhost
+  only); image tag = the `mlflow-skinny` version in `uv.lock`.
 - `Dockerfile`: image `training` (ECR), `TORCH_VARIANT` build arg; tags `<sha>` + `latest`
   (cpu) or `<sha>-cu128`.
 
@@ -80,6 +89,18 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   (its CI runs on `training/src/**`).
 - Promotion and training run the image of the model's commit (`training:<model_id>`) unless
   `--image-tag` overrides it (GPU image, locally trained models).
+- Tracking (spec 18): `models/<id>/tracking.json` is written before `metadata.json` on every
+  run. MLflow is optional (`tracking` extra, imported lazily inside `MlflowSink`); the image
+  doesn't install it. Tracking settings are in `NOT_FINGERPRINTED` and out of the metadata
+  hyperparameters. A new metric goes in `contracts.RetrievalDiagnostics` (or `EmbeddingHealth`)
+  and `tracking.final_metrics`. `EvalRows.user_id` / `activity` are optional (None = unknown).
+- Splits: `data.split_window` turns `VALIDATION_FRACTION` / `TEST_FRACTION` / `FIT_ON` into
+  (cutoff, end, evaluation). Rows at or after `SplitInfo.end` are never used (only pass 1 sees their timestamps: no training, no
+  evaluation, no popularity counts). With `evaluation == "test"` there is no per-epoch
+  monitoring. Diagram of every split case: `docs/splits.svg` (keep it in sync).
+- Evaluation excludes `EvalRows.reviewed` (every game reviewed before the row) on top of the
+  5-game history; scores of models evaluated before that change (stored champion metrics of an
+  older architecture) are not comparable with newer ones.
 
 ## Commands
 

@@ -19,6 +19,9 @@ cpu = [
 cu128 = [
     "torch>=2.8",
 ]
+tracking = [
+    "mlflow-skinny>=3.18.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -60,6 +63,7 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "mlflow>=3.18.0",
     "moto[s3,sagemaker,ssm]>=5.0",
     "pytest>=8.3",
     "ruff>=0.8",

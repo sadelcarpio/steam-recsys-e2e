@@ -25,6 +25,8 @@ def test_parse_env():
     for bad in ["epochs=1", "EPOCHS", "MODEL_ID=x", "USE_SSM=false", "AWS_REGION=eu-west-1"]:
         with pytest.raises(ValueError):
             launch.parse_env([bad])
+    with pytest.raises(ValueError):
+        launch.parse_env(["GIT_COMMIT=x"])
 
 
 def test_job_request_uses_the_models_own_image():
@@ -42,6 +44,7 @@ def test_job_request_uses_the_models_own_image():
         "AWS_DEFAULT_REGION": "us-east-1",
         "MODEL_ID": SHA,
         "MODEL_ARTIFACTS_BUCKET": "model-artifacts-1",
+        "GIT_COMMIT": SHA,
     }
     assert request["ResourceConfig"]["InstanceType"] == "ml.m5.2xlarge"
     names = {d["Name"] for d in spec["MetricDefinitions"]}

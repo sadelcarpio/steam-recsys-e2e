@@ -31,7 +31,14 @@ log = logging.getLogger("steam_training.launch")
 
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Set by the launcher itself; an override would detach the job from its model.
-RESERVED_ENV = {"MODEL_ID", "USE_SSM", "MODEL_ARTIFACTS_BUCKET", "AWS_REGION", "AWS_DEFAULT_REGION"}
+RESERVED_ENV = {
+    "MODEL_ID",
+    "USE_SSM",
+    "MODEL_ARTIFACTS_BUCKET",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "GIT_COMMIT",
+}
 TERMINAL = {"Completed", "Failed", "Stopped"}
 
 # Parsed from the job's logs into CloudWatch (console: the job's Monitor -> Algorithm metrics).
@@ -109,6 +116,8 @@ def training_job_request(
             "AWS_DEFAULT_REGION": settings.aws_region,
             "MODEL_ID": model_id,
             "MODEL_ARTIFACTS_BUCKET": settings.model_artifacts_bucket,
+            # lineage tag of the tracking record: the commit the image was built from
+            "GIT_COMMIT": (image_tag or model_id).removesuffix("-cu128"),
         },
         "Tags": [
             {"Key": "Project", "Value": "steam-recsys"},

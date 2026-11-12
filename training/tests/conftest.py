@@ -24,6 +24,10 @@ BUCKET = "model-artifacts-test"
 def _no_ssm(monkeypatch) -> None:
     """The CD job sets USE_SSM=true for every step: tests never read Parameter Store."""
     monkeypatch.delenv("USE_SSM", raising=False)
+    # nor log to a developer's MLflow server
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.setenv("MLFLOW_DISABLE_AGENT_HINT", "1")
+    monkeypatch.setenv("MLFLOW_DISABLE_TELEMETRY", "true")
 
 
 def game_cluster(game_idx: int) -> int:

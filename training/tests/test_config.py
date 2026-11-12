@@ -18,7 +18,15 @@ def test_env_overrides_and_json_lists(monkeypatch):
 
 @pytest.mark.parametrize(
     "overrides",
-    [{"primary_k": 7}, {"model_id": "champion"}, {"model_id": "bad id"}, {"epochs": 0}],
+    [
+        {"primary_k": 7},
+        {"model_id": "champion"},
+        {"model_id": "bad id"},
+        {"epochs": 0},
+        {"validation_fraction": 0.3, "test_fraction": 0.2},
+        {"fit_on": "train+validation"},  # without a test window
+        {"fit_on": "everything"},
+    ],
 )
 def test_invalid_settings(overrides):
     base = {"model_artifacts_bucket": "model-artifacts-1", "model_id": "abc"}

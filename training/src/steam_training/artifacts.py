@@ -10,7 +10,7 @@ import torch
 from botocore.exceptions import ClientError
 
 from steam_training.config import CHAMPION
-from steam_training.contracts import EvaluationReport, ModelMetadata
+from steam_training.contracts import EvaluationReport, ModelMetadata, TrackingRecord
 from steam_training.export import encode_user_tower
 from steam_training.model import TwoTowerModel
 
@@ -21,6 +21,8 @@ ITEM_TOWER = "item_tower.pt"
 # numpy export of the user tower for the serving Lambda (`export.py`)
 USER_TOWER_NUMPY = "user_tower.npz"
 METADATA = "metadata.json"
+# experiment tracking record (spec 18); not part of MODEL_FILES, so promotion doesn't copy it
+TRACKING = "tracking.json"
 METRICS = "metrics.json"
 # metadata last: copied / written after the files it describes
 MODEL_FILES = (USER_TOWER, ITEM_TOWER, USER_TOWER_NUMPY, METADATA)
@@ -122,6 +124,18 @@ class ArtifactStore:
             )
         model.eval()
         return model, metadata
+
+    def save_tracking(self, record: TrackingRecord) -> str:
+        key = model_prefix(record.model_id) + TRACKING
+        self._put(key, record.model_dump_json(indent=2).encode(), "application/json")
+        return key
+
+    def load_tracking(self, model_id: str) -> TrackingRecord | None:
+        body = self._get(model_prefix(model_id) + TRACKING)
+        return TrackingRecord.model_validate_json(body) if body is not None else None
+
+    def model_uri(self, model_id: str) -> str:
+        return f"s3://{self.bucket}/{model_prefix(model_id)}"
 
     def checkpoints(self, model_id: str) -> S3Checkpoints:
         return S3Checkpoints(self, model_id)
