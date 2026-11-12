@@ -25,9 +25,13 @@ and fed straight into `nn.EmbeddingBag` (values + offsets).
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -94,12 +98,15 @@ class IcebergSource:
     the inference job's OOM. This uses pyiceberg's private per-file iterator;
     `tests/test_data.py::test_iceberg_source_*` catches an upgrade that changes it."""
 
-    def __init__(self, database: str, region: str) -> None:
+    def __init__(self, database: str, region: str, cache_dir: str | None = None) -> None:
+        """`cache_dir`: keep a local copy of every data file read (`CachingFileIO`), so later
+        runs on the same snapshot read from disk instead of S3 (local experiments)."""
         from pyiceberg.catalog import load_catalog
 
         self._database = database
         self._catalog = load_catalog("glue", type="glue", **{"glue.region": region})
         self._tables: dict = {}
+        self._cache_dir = cache_dir
 
     def _table(self, name: str):
         if name not in self._tables:
@@ -113,25 +120,86 @@ class IcebergSource:
     def batches(
         self, table: str, columns: list[str], snapshot_id: int | None
     ) -> Iterator[pa.RecordBatch]:
-        yield from iceberg_batches(self._table(table), columns, snapshot_id)
+        cache = getattr(self, "_cache_dir", None)
+        yield from iceberg_batches(self._table(table), columns, snapshot_id, cache)
 
 
-def iceberg_batches(table, columns: list[str], snapshot_id: int | None) -> Iterator[pa.RecordBatch]:
+def iceberg_batches(
+    table, columns: list[str], snapshot_id: int | None, cache_dir: str | None = None
+) -> Iterator[pa.RecordBatch]:
     """The selected columns of a pyiceberg `table` at `snapshot_id`, streamed batch by batch
-    (at most one file's current batch in memory; see `IcebergSource`)."""
+    (at most one file's current batch in memory; see `IcebergSource`). `cache_dir`: data and
+    delete files are read through `CachingFileIO`."""
     from pyiceberg.io.pyarrow import ArrowScan, _read_all_delete_files, schema_to_pyarrow
 
     scan = table.scan(selected_fields=tuple(columns), snapshot_id=snapshot_id)
     tasks = list(scan.plan_files())
     projected = scan.projection()
     target = schema_to_pyarrow(projected)
-    arrow = ArrowScan(scan.table_metadata, scan.io, projected, scan.row_filter, scan.case_sensitive)
+    io = CachingFileIO(scan.io, cache_dir) if cache_dir else scan.io
+    arrow = ArrowScan(scan.table_metadata, io, projected, scan.row_filter, scan.case_sensitive)
     # the same projection / deletes / cast as scan.to_arrow_batch_reader(), without reading
     # every file up front
     batches = arrow._record_batches_from_scan_tasks_and_deletes(
-        tasks, _read_all_delete_files(scan.io, tasks)
+        tasks, _read_all_delete_files(io, tasks)
     )
     yield from pa.RecordBatchReader.from_batches(target, batches).cast(target)
+
+
+REMOTE_SCHEMES = ("s3", "s3a", "s3n", "gs", "abfs", "abfss", "oss")
+
+
+class CachingFileIO:
+    """A pyiceberg FileIO that reads remote files from a local copy, downloading each one the
+    first time (whole file, to `<cache_dir>/<scheme>/<bucket>/<key>`). Iceberg data and delete
+    files are immutable once written (a path never gets new content), so a cached copy never
+    goes stale; a new snapshot only downloads the files it added. Downloads go to a `.part`
+    file that is renamed when complete, so an interrupted run never leaves a truncated copy.
+    Only reads are cached; writes and deletes go to the wrapped FileIO. pyiceberg (0.12) opens
+    every data file through `new_input(path).open()`; `test_caching_file_io_*` checks that."""
+
+    def __init__(self, io, cache_dir: str, schemes: tuple[str, ...] | None = None) -> None:
+        from pyiceberg.io.pyarrow import PyArrowFileIO
+
+        self._io = io
+        self._local = PyArrowFileIO()
+        self._root = Path(cache_dir)
+        self._schemes = schemes if schemes is not None else REMOTE_SCHEMES
+        self.properties = getattr(io, "properties", {})
+
+    def _cached_path(self, location: str) -> Path | None:
+        scheme, sep, rest = location.partition("://")
+        if not sep or scheme not in self._schemes:
+            return None
+        return self._root / scheme / rest.lstrip("/")
+
+    def new_input(self, location: str):
+        path = self._cached_path(location)
+        if path is None:
+            return self._io.new_input(location)
+        if not path.exists():
+            self._download(location, path)
+        return self._local.new_input(str(path))
+
+    def _download(self, location: str, path: Path) -> None:
+        source = self._io.new_input(location)
+        size = len(source)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_name(f"{path.name}.{os.getpid()}.part")
+        started = time.monotonic()
+        with source.open() as fin, open(part, "wb") as fout:
+            shutil.copyfileobj(fin, fout, length=8 << 20)
+        if part.stat().st_size != size:
+            part.unlink()
+            raise OSError(f"incomplete download of {location}")
+        os.replace(part, path)
+        log.info("cached %s (%.0f MB, %.0fs)", location, size / 1e6, time.monotonic() - started)
+
+    def new_output(self, location: str):
+        return self._io.new_output(location)
+
+    def delete(self, location) -> None:
+        self._io.delete(location)
 
 
 # ---- in-memory layout ----------------------------------------------------------------------

@@ -276,3 +276,54 @@ def test_iceberg_source_reads_the_pinned_snapshot(tmp_path):
     table.append(pa.table({"id": pa.array([3], pa.int64())}))
     old = [b for b in iceberg_batches(table, ["id"], pinned)]
     assert sorted(pa.concat_arrays([b["id"] for b in old]).to_pylist()) == [1, 2]
+
+
+def test_caching_file_io_downloads_each_file_once(tmp_path, monkeypatch):
+    """Reads go through `new_input` (pyiceberg 0.12): the first read copies each data file to
+    the cache, later reads of the same snapshot never touch the original."""
+    import steam_training.data as data_module
+    from steam_training.data import iceberg_batches
+
+    big = pa.table({"id": pa.array(range(50_000), pa.int64()), "v": pa.array([1.0] * 50_000)})
+    small = pa.table({"id": pa.array([-1, -2], pa.int64()), "v": pa.array([2.0, 3.0])})
+    _, table = _iceberg_table(tmp_path / "warehouse", [big, small])
+    snapshot = table.current_snapshot().snapshot_id
+    monkeypatch.setattr(data_module, "REMOTE_SCHEMES", ("file",))  # the test "remote"
+    cache = tmp_path / "cache"
+
+    def ids(batches):
+        return sorted(pa.concat_arrays([b["id"] for b in batches]).to_pylist())
+
+    expected = ids(iceberg_batches(table, ["id"], snapshot))
+    assert ids(iceberg_batches(table, ["id"], snapshot, str(cache))) == expected
+    cached = sorted(p for p in cache.rglob("*.parquet"))
+    assert len(cached) == 2 and not list(cache.rglob("*.part"))
+
+    # second read: served from the cache only
+    opened = []
+    original = data_module.CachingFileIO._download
+
+    def counting(self, location, path):
+        opened.append(location)
+        return original(self, location, path)
+
+    monkeypatch.setattr(data_module.CachingFileIO, "_download", counting)
+    assert ids(iceberg_batches(table, ["id", "v"], snapshot, str(cache))) == expected
+    assert opened == []
+    # a new snapshot downloads only its new file
+    table.append(pa.table({"id": pa.array([7], pa.int64()), "v": pa.array([0.5])}))
+    newer = ids(iceberg_batches(table, ["id"], table.current_snapshot().snapshot_id, str(cache)))
+    assert newer == sorted([*expected, 7]) and len(opened) == 1
+
+
+def test_caching_file_io_leaves_local_paths_alone(tmp_path):
+    from steam_training.data import CachingFileIO
+
+    class Recorder:
+        def new_input(self, location):
+            return location
+
+    io = CachingFileIO(Recorder(), str(tmp_path / "cache"))
+    assert io.new_input("/data/x.parquet") == "/data/x.parquet"
+    assert io.new_input("file:///data/x.parquet") == "file:///data/x.parquet"
+    assert io._cached_path("s3://bucket/a/b.parquet") == tmp_path / "cache/s3/bucket/a/b.parquet"

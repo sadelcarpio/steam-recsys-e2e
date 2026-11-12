@@ -194,7 +194,7 @@ flowchart TB
 | A1 | Drop explicit negatives from the retrieval loss | Disliked games fit the user's liked games almost as well as liked ones (90% of the way from random to positive), and the next pick stays as close after a dislike as after a like (Q7). They mark interest, so as negatives they push the user away from games they'd engage with. | `EXPLICIT_NEGATIVES=false`. **Rejected (2026-11-12)**: warm recall@50 0.1787 vs 0.1804 for a control on the same split (2 epochs, 5-game exclusion), behind at every K and almost every activity bucket. Explicit negatives stay on |
 | A2 | Disliked games as history tokens with a learned "disliked" offset | Same as A1: interest, with the dislike kept as information. The ranker (spec 9) learns like vs dislike (label 0). Variants: plain tokens (no flag), additive offset `flag × w` (one 64-d vector shared by every disliked token), or a gate `token × (1 − flag·α)` with α learned in [0, 1], which can only shrink a disliked game's weight. | `user_features` history with negatives + polarity |
 | A3 | Self-attention over a longer, ordered history | The previous game is 21% more similar to the next one than the game 20 reviews back. With shuffled order there's no decay (Q5). 22% of consecutive reviews are written the same day, hence the time-gap embedding. | longer `games_reviewed_*` + timestamps; numpy port of the attention in `export.py` / serving |
-| A4 | History tag profile | 42% of heavy users are more concentrated on one tag than 95% of shuffled users. Tags separate users better than genres (Q1). | `USER_TAG_PROFILE=true`. **Accepted (2026-11-12)**: warm recall@50 0.1996 vs 0.1826 for a control on the same split (+9.3%, full-history exclusion, 2 epochs), +4% for new users rising to +40% / +76% for the top 5% / 1% most active, coverage@50 0.105 vs 0.053. Learned recency: the most recent game's tags weigh 1.67× the oldest's. Built over the 5-game history; the whole-history profile needs the longer history of A3). Experiment-only until serving's numpy user tower supports it: such a model saves no `user_tower.npz` and promotion refuses it |
+| A4 | History tag profile | 42% of heavy users are more concentrated on one tag than 95% of shuffled users. Tags separate users better than genres (Q1). | `USER_TAG_PROFILE=true`. **Accepted (2026-11-12)**: warm recall@50 0.1996 vs 0.1826 for a control on the same split (+9.3%, full-history exclusion, 2 epochs), +4% for new users rising to +40% / +76% for the top 5% / 1% most active, coverage@50 0.105 vs 0.053. Learned recency: the most recent game's tags weigh 1.67× the oldest's. Built over the 5-game history; the whole-history profile needs the longer history of A3. Promotable: its `user_tower.npz` is numpy format 2 (+ the tag lookup, table and position weights), which serving reads from the serving release that added it, so deploy serving first |
 | A5 | Playtime at review: an attribute of each history token + log1p sample weight on the target | Playtime tracks taste fit (ρ +0.07) and liking (ρ +0.14). Votes don't (ρ −0.02) and grow with review age (Q2, E1). It belongs to a (user, game) interaction: on history tokens it describes past interactions, so the user tower can compute it without the candidate; on the target it only weights the loss, never an input (it's the outcome). `POST /recommendations` sends liked games without playtime, so the token needs an "unknown" bucket, also used as dropout in training. Only `playtime_at_review`: `playtime_forever` is measured at scrape time, after the review. | `playtime_at_review` in `interactions` |
 | A6 | Recent popularity (30 / 90 days) and game age, as of t | Top-100 games overlap only 62% between consecutive 90-day windows. 31% of recent reviews go to games released in the last year (E3). Reviews are 1.4× front-loaded in the first year, and the positive rate drops 5 points after a game's first 90 days (Q3). | time-versioned counts in `game_features` |
 | A7 | User language + free share | Non-English reviewers pick games whose reviewers mostly share their language 17% of the time vs 6% by chance (E4). Users lean free / paid beyond chance (Q4). | `language` in `interactions` |
@@ -212,6 +212,22 @@ and `votes_*` are measured at scrape time, so they are not as-of-t features.
 Suggested order (cheapest first, each against the champion on warm recall@50): A1 → A4 → A5 →
 A6 → A3 + A2 → A7 → A8. A1 and A4 need no ETL change. A3 changes the user tower's state dict and
 the numpy serving port, so it needs an `ARCHITECTURE_VERSION` bump.
+
+**Results so far** (cutoff 2026-05-01, full-history exclusion, warm recall@50 on 500k
+validation rows; models `local-<sha>-…` in the bucket, runs in MLflow):
+
+| Run | Epochs | warm recall@50 | coverage@50 |
+|---|---|---|---|
+| control (champion settings) | 2 | 0.1826 | 0.053 |
+| A1: no explicit negatives (old exclusion, vs its control 0.1804) | 2 | 0.1787 | 0.050 |
+| control + `USER_TABLE_SYNC_STEPS=1000` | 1 | 0.1894 | 0.082 |
+| A4: `USER_TAG_PROFILE=true` | 2 | 0.1996 | 0.105 |
+| **A4 + `USER_TABLE_SYNC_STEPS=1000`** | **1** | **0.2118** | **0.124** |
+
+With the in-epoch sync every run peaks after epoch 1 (2 epochs: control 0.1801, A4 0.2027, back
+when training kept the last epoch). `KEEP_BEST_EPOCH` (default) now saves the best monitor
+epoch and `EARLY_STOPPING_PATIENCE=1` stops one epoch after the peak. The gain grows
+with activity: A4 + sync is +5% for new users and +82% for the top 1% (0.0622 vs 0.0341).
 
 ## Evaluation
 
@@ -378,17 +394,21 @@ forwards them to the job:
 | `COLD_ROW_FRACTION` | 0.1 | share of empty-history rows trained on |
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |
 | `LOGQ_CORRECTION` | true | |
+| `USER_TABLE_SYNC_STEPS` | 0 | also re-sync the user tower's frozen game table every N steps (0 = once per epoch; in epoch 1 that copy is the random init) |
 | `EXPLICIT_NEGATIVES` / `MINED_NEGATIVES` | true / true | hard negatives |
 | `MINING_START_EPOCH` / `MINE_SKIP_TOP` / `MINE_POOL_SIZE` | 1 / 5 / 50 | |
 | `RECALL_KS` / `PRIMARY_K` | `[30,50,100]` / 50 | JSON list |
 | `MINE_MAX_ROWS` | 2000000 | examples re-mined per epoch (the others keep their previous negative) |
 | `EVAL_MAX_ROWS` | 500000 | validation positives kept (uniform sample; recall within ~±0.002) |
-| `EPOCH_EVAL_ROWS` | 50000 | validation rows scored after each epoch (logs only) |
+| `EPOCH_EVAL_ROWS` | 50000 | validation rows scored after each epoch (monitor; drives best-epoch selection) |
+| `KEEP_BEST_EPOCH` | true | save the epoch with the best monitor warm recall@`PRIMARY_K`, not the last one (`metadata.best_epoch`) |
+| `EARLY_STOPPING_PATIENCE` | 1 | stop after this many epochs without a better monitor score (0 = run all `EPOCHS`) |
 | `MIN_IMPROVEMENT` | 0 | promotion margin over the champion |
 | `FORCE_PROMOTION` | false | promote even when the candidate loses (report keeps the real metrics) |
 | `DEVICE` | auto | `auto` / `cpu` / `cuda` |
 | `RESUME` | true | resume from a matching checkpoint |
-| `USER_TAG_PROFILE` | false | A4: tag profile of the history in the user tower (needs `USE_GAME_TAGS`; not promotable yet) |
+| `DATA_CACHE_DIR` | unset | local runs: keep a copy of every Iceberg data file read (see below) |
+| `USER_TAG_PROFILE` | false | A4: tag profile of the history in the user tower (needs `USE_GAME_TAGS`; numpy user tower format 2) |
 | `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |
 | `GIT_COMMIT` | `git rev-parse HEAD` | lineage tag (set by the launcher on SageMaker jobs) |
 
@@ -409,6 +429,14 @@ the same command again to resume:
 AWS_PROFILE=<profile> AWS_REGION=us-east-1 MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> \
   MODEL_ID=local-$(git rev-parse --short HEAD) uv run python -m steam_training train
 ```
+
+**Cache the data locally.** Each run reads ~8 GB of marts (four passes over `interactions`,
+plus `game_features`); from a workstation that is S3 internet egress (100 GB/month free across
+AWS, then ~$0.09/GB) and ~6 minutes per run. With `DATA_CACHE_DIR=~/.cache/steam-recsys/iceberg`
+every data file is downloaded once and later runs read it from disk. Iceberg data files never
+change, so the copy is never stale, and a new snapshot only downloads the files it added.
+Delete the folder to reclaim the space (~8 GB per snapshot, shared between snapshots).
+SageMaker jobs leave it unset (same-region S3 reads are free).
 
 Promote it with *training promote* (`model_id=local-…`, `image_tag=<a pushed commit sha>`), or
 locally with `python -m steam_training promote` and the same variables. Local runs need

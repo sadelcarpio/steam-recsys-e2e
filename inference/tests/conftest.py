@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 import boto3
+import numpy as np
 import pyarrow as pa
 import pytest
 import torch
@@ -19,6 +20,7 @@ from steam_training.contracts import (
     SplitInfo,
     VocabSizes,
 )
+from steam_training.data import Ragged
 from steam_training.model import TwoTowerModel
 
 from steam_inference.config import InferenceSettings
@@ -208,7 +210,7 @@ class FakeSource:
         yield from self.tables[table].select(columns).to_batches(max_chunksize=self.batch_rows)
 
 
-def make_model(seed: int = 0, tags: int | None = None) -> TwoTowerModel:
+def make_model(seed: int = 0, tags: int | None = None, tag_profile: bool = False) -> TwoTowerModel:
     torch.manual_seed(seed)
     config = ModelConfig(
         vocab=VocabSizes(
@@ -219,8 +221,27 @@ def make_model(seed: int = 0, tags: int | None = None) -> TwoTowerModel:
         hidden_dim=16,
         output_dim=8,
         temperature=0.05,
+        user_tag_profile=tag_profile,
     )
     model = TwoTowerModel(config)
+    if tag_profile:
+        # game g: tags 2 + g % (tags - 2) and 2 + (g * 3) % (tags - 2) (weights 0.7 / 0.3);
+        # padding, OOV and game 7 have none; one tag id beyond the table (game 8)
+        rows = []
+        for g in range(MODEL_GAMES):
+            if g < 2 or g == 7:
+                rows.append([])
+            elif g == 8:
+                rows.append([tags + 5])
+            else:
+                rows.append([2 + g % (tags - 2), 2 + (g * 3) % (tags - 2)])
+        lists = Ragged.from_lists(rows)
+        weights = np.concatenate(
+            [np.array([0.7, 0.3][: len(r)] if len(r) == 2 else [1.0] * len(r)) for r in rows]
+        ).astype(np.float32)
+        model.set_game_tags(Ragged(lists.values, lists.offsets, weights))
+        with torch.no_grad():
+            model.user_tower.tag_recency.copy_(torch.tensor([0.4, 0.1, 0.0, -0.2, -0.3]))
     model.sync_user_table()
     return model.eval()
 

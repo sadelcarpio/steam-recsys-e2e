@@ -41,6 +41,7 @@ _NOT_HYPERPARAMETERS = {
     "model_id",
     "glue_database",
     "aws_region",
+    "data_cache_dir",
     "mlflow_tracking_uri",
     "mlflow_experiment",
     "git_commit",
@@ -165,7 +166,7 @@ def _train(
 
     # 3. training (checkpointed per epoch, resumed when the same run restarts)
     checkpoints = store.checkpoints(settings.model_id)
-    model, losses = train_model(
+    result = train_model(
         settings,
         examples,
         data.catalog,
@@ -175,6 +176,10 @@ def _train(
         checkpoints=checkpoints,
         run_fingerprint=run_fingerprint,
         on_epoch=tracker.epoch,
+    )
+    model, losses = result
+    tracker.tag(
+        {"best_epoch": str(result.best_epoch), "epochs_trained": str(result.epochs_trained)}
     )
     tracker.tag(
         lineage_tags(
@@ -215,6 +220,7 @@ def _train(
         validation=diagnostics.recall,
         popularity_baseline=baseline.recall,
         epoch_losses=losses,
+        best_epoch=result.best_epoch,
     )
     record = tracker.record(
         evaluation=data.split.evaluation,
@@ -283,12 +289,6 @@ def run_promotion(
     settings: TrainingSettings, source: TableSource, store: ArtifactStore
 ) -> EvaluationReport:
     candidate, candidate_meta = store.load_model(settings.model_id)
-    if candidate_meta.config.user_tag_profile:
-        # online serving runs the numpy user tower, which has no tag profile yet
-        raise ValueError(
-            f"{settings.model_id} uses the A4 tag profile, which serving's numpy user tower "
-            "can't run yet: port it (export.py + serving online.py) before promoting"
-        )
     champion, champion_meta = _load_champion(store, settings.model_id)
     now = datetime.now(UTC)
 
