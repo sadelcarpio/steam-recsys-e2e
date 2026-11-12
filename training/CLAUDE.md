@@ -102,9 +102,12 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   is then a lazy `data.HistoryIndex` (sorted games + a pointer per row; `index[rows]` gathers a
   matrix, `take` stays lazy), never a [rows, N] matrix. The derived history must start with the
   mart's 5 games (`test_derived_histories_extend_the_mart_history`; the load logs the match
-  rate on real data). The attention encoder (`HistoryAttention`) has no numpy port:
-  `save_model` writes no `user_tower.npz` for it, `export` refuses it, and `run_promotion`
-  refuses any model that isn't `ModelConfig.servable` (inference reads the 5-game mart).
+  rate on real data). The attention encoder (`HistoryAttention`) exports as numpy format 3
+  (`USER_TOWER_ATTENTION_FORMAT`, `ATTENTION_ARRAYS`; serving's port, parity in inference's
+  `test_online_parity.py`). Inference derives the same history (`steam_inference.features`,
+  `Reviews.histories`) at the model's `history_length`. Promotion loads the longer history of
+  candidate and champion; `evaluation.model_scores` feeds each model its own prefix (most
+  recent first, so the prefix is that model's history).
 - `DATA_CACHE_DIR` (local runs): `iceberg_batches` reads through `data.CachingFileIO`, which
   copies each remote data / delete file once (`<dir>/<scheme>/<bucket>/<key>`, `.part` +
   rename) and serves it from disk. Safe because Iceberg files are immutable. It relies on

@@ -1,6 +1,8 @@
 """A3 (spec 17): histories longer than the mart's 5 games, derived from `interactions`, and the
 self-attention history encoder."""
 
+import io
+
 import boto3
 import numpy as np
 import pytest
@@ -8,10 +10,15 @@ import torch
 from moto import mock_aws
 from pydantic import ValidationError
 
-from steam_training.artifacts import ArtifactStore, model_prefix
+from steam_training.artifacts import USER_TOWER_NUMPY, ArtifactStore, model_prefix
 from steam_training.config import TrainingSettings
 from steam_training.contracts import ModelConfig, VocabSizes
 from steam_training.data import HistoryIndex, build_history_index, load_training_data
+from steam_training.export import (
+    ATTENTION_ARRAYS,
+    TAG_PROFILE_ARRAYS,
+    USER_TOWER_ATTENTION_FORMAT,
+)
 from steam_training.model import HistoryAttention, TwoTowerModel
 from steam_training.pipeline import run_promotion, run_training
 from tests.conftest import BUCKET, FakeSource, make_marts
@@ -126,7 +133,12 @@ def store(aws_env):
         yield ArtifactStore(BUCKET, s3)
 
 
-def test_train_save_reload_and_refuse_promotion(settings, source, store):
+def test_train_export_and_promote_over_a_shorter_champion(settings, source, store):
+    # champion: the plain 5-game model
+    champion = settings.model_copy(update={"model_id": "plain5", "epochs": 1})
+    run_training(champion, source, store)
+    assert run_promotion(champion, source, store).promoted
+
     settings = settings.model_copy(
         update={
             "history_length": 8,
@@ -138,12 +150,18 @@ def test_train_save_reload_and_refuse_promotion(settings, source, store):
     metadata = run_training(settings, source, store)
     config = metadata.config
     assert (config.history_length, config.history_encoder) == (8, "attention")
-    assert not config.servable
     assert metadata.validation.warm.recall[5] > metadata.popularity_baseline.warm.recall[5]
     model, _ = store.load_model(settings.model_id)
     assert model.user_tower.tag_recency.shape == (8,)
     assert torch.isfinite(model.user_tower(torch.tensor([[2, 3, 4, 0, 0, 0, 0, 0]]))).all()
-    # no numpy port of attention yet: no user_tower.npz, and promotion refuses the model
-    assert not store._exists(model_prefix(settings.model_id) + "user_tower.npz")
-    with pytest.raises(ValueError, match="can't be promoted"):
-        run_promotion(settings, source, store)
+    # numpy format 3: attention + the tag profile
+    body = store._get(model_prefix(settings.model_id) + USER_TOWER_NUMPY)
+    with np.load(io.BytesIO(body)) as npz:
+        assert int(npz["format_version"]) == USER_TOWER_ATTENTION_FORMAT
+        assert int(npz["history_length"]) == 8
+        assert set(ATTENTION_ARRAYS) | set(TAG_PROFILE_ARRAYS) <= set(npz.files)
+        assert npz["attn_qkv_w"].shape == (1, 48, 16)
+    # scored on the same rows as the 5-game champion (each reads its own history prefix)
+    report = run_promotion(settings, source, store)
+    assert report.champion is not None and report.champion.model_id == "plain5"
+    assert report.candidate.metrics.warm.rows == report.champion.metrics.warm.rows

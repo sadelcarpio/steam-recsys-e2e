@@ -7,14 +7,28 @@ from steam_inference import features
 from steam_inference.features import load_inference_data, truncate
 
 
-def test_users_are_their_latest_features(source):
+def test_user_histories_are_their_last_positives(source, marts):
     data = load_inference_data(source)
     users = data.users
-    assert users.user_id.tolist() == [101, 102, 103, 104]  # 105 has no user_features row
+    assert users.user_id.tolist() == [101, 102, 103, 104]  # 105: negative reviews only
     u101 = users.user_id.tolist().index(101)
     assert users.history[u101].tolist() == [7, 6, 5, 3, 2]  # most recent positives first
     u103 = users.user_id.tolist().index(103)
     assert users.history[u103].tolist() == [2, 0, 0, 0, 0]
+    # the same as the latest row of the mart's `user_features` (the 5-game history)
+    rows = marts["user_features"].to_pylist()
+    for i, user in enumerate(users.user_id.tolist()):
+        latest = max((r for r in rows if r["user_id"] == user), key=lambda r: r["timestamp"])
+        assert users.history[i].tolist() == latest["games_reviewed_positive"]
+
+
+def test_longer_histories_extend_the_five_game_history(source):
+    short = load_inference_data(source).users
+    long = load_inference_data(source, history_length=12).users
+    assert long.history.shape == (len(short), 12)
+    assert np.array_equal(long.history[:, :5], short.history)
+    u104 = long.user_id.tolist().index(104)  # 18 reviews: more than 5 positives
+    assert (long.history[u104, 5:] != 0).any()
 
 
 def test_reviews_are_grouped_per_user_newest_first(source):
@@ -58,17 +72,6 @@ def test_streamed_reduction_matches_single_pass(monkeypatch, marts):
     streamed = load_inference_data(FakeSource(marts, batch_rows=2)).users
     assert np.array_equal(once.user_id, streamed.user_id)
     assert np.array_equal(once.history, streamed.history)
-
-
-def test_null_history_is_padded(marts):
-    table = marts["user_features"]
-    column = table["games_reviewed_positive"].to_pylist()
-    column[-1] = None
-    marts["user_features"] = table.set_column(
-        2, "games_reviewed_positive", pa.array(column, pa.list_(pa.int64()))
-    )
-    users = load_inference_data(FakeSource(marts)).users
-    assert users.history.shape[1] == 5
 
 
 def test_popular_counts_are_recent_positive_reviews_per_game():
@@ -168,11 +171,10 @@ def test_as_of_reads_ignore_later_rows(source):
     activity = features.review_activity(source, 7, until=cutoff)
     u101 = activity.user_id.tolist().index(101)
     assert (activity.reviews[u101], activity.positives[u101]) == (3, 2)
-    users = features.latest_users(
-        source.batches("user_features", ["user_id", "timestamp", "games_reviewed_positive"], 7),
-        keep=np.array([101]),
-        until=cutoff,
+    review_users, reviews, _ = features.collect_reviews(
+        source, 7, np.array([101]), popular_since=0, until=cutoff
     )
+    users = features.users_of(review_users, reviews, np.array([101]), 5)
     assert users.user_id.tolist() == [101]
     assert users.history[0].tolist() == [3, 2, 0, 0, 0]
 

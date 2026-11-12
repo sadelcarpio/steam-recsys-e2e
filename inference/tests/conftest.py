@@ -210,7 +210,15 @@ class FakeSource:
         yield from self.tables[table].select(columns).to_batches(max_chunksize=self.batch_rows)
 
 
-def make_model(seed: int = 0, tags: int | None = None, tag_profile: bool = False) -> TwoTowerModel:
+def make_model(
+    seed: int = 0,
+    tags: int | None = None,
+    tag_profile: bool = False,
+    history_length: int = 5,
+    attention_layers: int = 0,
+) -> TwoTowerModel:
+    """`attention_layers` > 0: the A3 attention encoder (2 heads), its parameters randomized so
+    every LayerNorm / projection matters in parity tests."""
     torch.manual_seed(seed)
     config = ModelConfig(
         vocab=VocabSizes(
@@ -222,8 +230,16 @@ def make_model(seed: int = 0, tags: int | None = None, tag_profile: bool = False
         output_dim=8,
         temperature=0.05,
         user_tag_profile=tag_profile,
+        history_length=history_length,
+        history_encoder="attention" if attention_layers else "mean",
+        attention_heads=2,
+        attention_layers=max(attention_layers, 1),
     )
     model = TwoTowerModel(config)
+    if attention_layers:
+        with torch.no_grad():
+            for parameter in model.user_tower.attention.parameters():
+                parameter.add_(torch.randn_like(parameter) * 0.3)
     if tag_profile:
         # game g: tags 2 + g % (tags - 2) and 2 + (g * 3) % (tags - 2) (weights 0.7 / 0.3);
         # padding, OOV and game 7 have none; one tag id beyond the table (game 8)
@@ -241,7 +257,8 @@ def make_model(seed: int = 0, tags: int | None = None, tag_profile: bool = False
         ).astype(np.float32)
         model.set_game_tags(Ragged(lists.values, lists.offsets, weights))
         with torch.no_grad():
-            model.user_tower.tag_recency.copy_(torch.tensor([0.4, 0.1, 0.0, -0.2, -0.3]))
+            recency = torch.linspace(0.4, -0.3, history_length)
+            model.user_tower.tag_recency.copy_(recency)
     model.sync_user_table()
     return model.eval()
 

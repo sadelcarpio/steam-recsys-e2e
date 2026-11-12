@@ -83,7 +83,7 @@ def test_user_tower_checks_its_format():
     with np.load(io.BytesIO(make_user_tower())) as npz:
         arrays = {name: npz[name] for name in npz.files}
     buffer = io.BytesIO()
-    np.savez(buffer, **{**arrays, "format_version": np.int64(3)})
+    np.savez(buffer, **{**arrays, "format_version": np.int64(4)})
     with pytest.raises(ValueError, match="user tower format"):
         UserTower.from_bytes(buffer.getvalue())
 

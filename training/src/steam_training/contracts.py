@@ -64,11 +64,6 @@ class ModelConfig(_Frozen):
     attention_heads: int = Field(2, ge=1)
     attention_layers: int = Field(1, ge=1)
 
-    @property
-    def servable(self) -> bool:
-        """Inference and serving read the mart's 5-game history and the mean-pooled tower."""
-        return self.history_length == USER_HISTORY_LENGTH and self.history_encoder == "mean"
-
 
 class SplitInfo(_Frozen):
     """Temporal split: the model trains on timestamp < cutoff and is evaluated on

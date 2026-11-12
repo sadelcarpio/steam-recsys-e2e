@@ -75,10 +75,7 @@ class ArtifactStore:
             buffer = io.BytesIO()
             torch.save({k: v.cpu() for k, v in module.state_dict().items()}, buffer)
             self._put(prefix + name, buffer.getvalue(), "application/octet-stream")
-        if model.user_tower.attention is None:
-            self.save_user_tower_numpy(model, metadata.model_id)
-        else:
-            log.info("no user_tower.npz: the A3 attention encoder has no numpy port yet")
+        self.save_user_tower_numpy(model, metadata.model_id)
         # metadata last: its presence marks a complete model
         self._put(
             prefix + METADATA, metadata.model_dump_json(indent=2).encode(), "application/json"

@@ -280,3 +280,20 @@ def test_a_model_with_tags_scores_the_tagged_catalog(settings, marts, store):
     assert summary.model_id == "tags1" and summary.users == 4
     with pytest.raises(RuntimeError, match="tags"):
         run_inference(settings, FakeSource(marts), store, _writer(settings), None, now=NOW)
+
+
+def test_an_a3_model_reads_its_longer_history(settings, source, store, tmp_path):
+    """A3: 7-game history + attention. The stored liked games stay the last 5."""
+    from steam_inference.online import LocalBundleStore
+
+    model = make_model(history_length=7, attention_layers=1)
+    store.save_model(model, make_metadata(model, "a3"))
+    settings = settings.model_copy(update={"model_id": "a3"})
+    bundle = LocalBundleStore(str(tmp_path / "online"))
+    summary = run_inference(
+        settings, source, store, _writer(settings), None, bundle_store=bundle, now=NOW
+    )
+    assert summary.model_id == "a3" and summary.users == 4
+    items = _items()
+    assert all(1 <= len(item["liked"]) <= 5 for item in items.values())
+    assert (tmp_path / "online" / "manifest.json").exists()  # format 3 user tower: published

@@ -14,6 +14,11 @@ Format 2 (A4 tag profile) appends a profile to x: the history games' tags (raw g
 games without training interactions count too; beyond the vocabulary: none), each weighted by
 its Steam tag weight * exp(tag_recency[position]), normalized to sum 1 over the history, as a
 weighted sum of tag_table rows (tags beyond the table: oov_id).
+Format 3 (A3) appends, before the tag profile (present iff its arrays are), a self-attention
+summary of the history: tokens = [attn_summary, game_table[ids] + attn_position[slot] for the
+non-padding slots], then per block x += MHA(LN1(x)), x += FFN(LN2(x)) (ReLU), and the summary
+token's LayerNorm-ed final state (training `HistoryAttention`; padding is masked out of every
+block there, so dropping it here is exact).
 Scores are cosine similarities with the (already normalized) item embeddings. The inference
 test `test_online_parity.py` checks this against torch and batch retrieval.
 """
@@ -35,9 +40,11 @@ from pydantic import BaseModel, ConfigDict
 log = logging.getLogger(__name__)
 
 SUPPORTED_MANIFEST_FORMAT = 2
-# 1: plain user tower; 2: + the A4 tag profile (training `export.py`)
-SUPPORTED_USER_TOWER_FORMATS = (1, 2)
+# 1: plain user tower; 2: + the A4 tag profile; 3: + the A3 attention encoder, tag profile
+# optional (training `export.py`)
+SUPPORTED_USER_TOWER_FORMATS = (1, 2, 3)
 TAG_PROFILE_FORMAT = 2
+ATTENTION_FORMAT = 3
 EPS = 1e-12  # torch.nn.functional.normalize
 ROUND_DECIMALS = 4  # returned scores; ranking ties at this precision go to the lowest appid
 CATALOG_ARRAYS = (
@@ -61,6 +68,67 @@ USER_TOWER_ARRAYS = (
     "b2",
 )
 TAG_PROFILE_ARRAYS = ("tag_values", "tag_offsets", "tag_weights", "tag_recency", "tag_table")
+ATTENTION_ARRAYS = (
+    "attn_heads",
+    "attn_ln_eps",
+    "attn_summary",
+    "attn_position",
+    "attn_norm_w",
+    "attn_norm_b",
+    "attn_ln1_w",
+    "attn_ln1_b",
+    "attn_qkv_w",
+    "attn_qkv_b",
+    "attn_out_w",
+    "attn_out_b",
+    "attn_ln2_w",
+    "attn_ln2_b",
+    "attn_ffn_w1",
+    "attn_ffn_b1",
+    "attn_ffn_w2",
+    "attn_ffn_b2",
+)
+
+
+@dataclass(frozen=True)
+class HistoryAttention:
+    """Format 3: training's `HistoryAttention` for one history (arrays as exported)."""
+
+    heads: int
+    eps: float
+    arrays: dict[str, np.ndarray]  # ATTENTION_ARRAYS, float32 (per block: leading layer axis)
+
+    @property
+    def layers(self) -> int:
+        return len(self.arrays["attn_qkv_w"])
+
+    def _norm(self, x: np.ndarray, weight: np.ndarray, bias: np.ndarray) -> np.ndarray:
+        mean = x.mean(axis=-1, keepdims=True)
+        var = ((x - mean) ** 2).mean(axis=-1, keepdims=True)
+        return (x - mean) / np.sqrt(var + self.eps) * weight + bias
+
+    def summarize(self, games: np.ndarray, slots: np.ndarray) -> np.ndarray:
+        """games: float32 [n, d], the non-padding history games; slots: their positions."""
+        a = self.arrays
+        x = np.concatenate([a["attn_summary"][None], games + a["attn_position"][slots]])
+        tokens, dim = x.shape
+        head_dim = dim // self.heads
+        for i in range(self.layers):
+            h = self._norm(x, a["attn_ln1_w"][i], a["attn_ln1_b"][i])
+            qkv = h @ a["attn_qkv_w"][i].T + a["attn_qkv_b"][i]
+            q, k, v = (
+                part.reshape(tokens, self.heads, head_dim).transpose(1, 0, 2)
+                for part in np.split(qkv, 3, axis=-1)
+            )
+            scores = q @ k.transpose(0, 2, 1) / np.sqrt(head_dim)
+            scores = np.exp(scores - scores.max(axis=-1, keepdims=True))
+            weights = scores / scores.sum(axis=-1, keepdims=True)
+            mixed = (weights @ v).transpose(1, 0, 2).reshape(tokens, dim)
+            x = x + mixed @ a["attn_out_w"][i].T + a["attn_out_b"][i]
+            h = self._norm(x, a["attn_ln2_w"][i], a["attn_ln2_b"][i])
+            hidden = np.maximum(h @ a["attn_ffn_w1"][i].T + a["attn_ffn_b1"][i], 0.0)
+            x = x + hidden @ a["attn_ffn_w2"][i].T + a["attn_ffn_b2"][i]
+        return self._norm(x[0], a["attn_norm_w"], a["attn_norm_b"]).astype(np.float32)
 
 
 class BundleManifest(BaseModel):
@@ -104,6 +172,8 @@ class UserTower:
     tag_weights: np.ndarray | None = None  # float32
     tag_recency: np.ndarray | None = None  # float32 [history_length], weight = exp
     tag_table: np.ndarray | None = None  # float32 [tags, dim]
+    # format 3 only (A3 attention encoder), else None
+    attention: HistoryAttention | None = None
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> UserTower:
@@ -113,11 +183,28 @@ class UserTower:
             raise ValueError(
                 f"user tower format {version}, this code reads {SUPPORTED_USER_TOWER_FORMATS}"
             )
-        names = USER_TOWER_ARRAYS + (TAG_PROFILE_ARRAYS if version >= TAG_PROFILE_FORMAT else ())
+        with np.load(io.BytesIO(payload), allow_pickle=False) as npz:
+            files = set(npz.files)
+        # format 2 always has the tag profile; format 3 when its arrays are there
+        has_profile = version == TAG_PROFILE_FORMAT or (
+            version >= ATTENTION_FORMAT and "tag_table" in files
+        )
+        names = USER_TOWER_ARRAYS + (TAG_PROFILE_ARRAYS if has_profile else ())
+        if version >= ATTENTION_FORMAT:
+            names += ATTENTION_ARRAYS
         arrays = _load_npz(payload, names, "user tower")
-        profile = {}
-        if version >= TAG_PROFILE_FORMAT:
-            profile = {
+        profile: dict = {}
+        if version >= ATTENTION_FORMAT:
+            profile["attention"] = HistoryAttention(
+                heads=int(arrays["attn_heads"]),
+                eps=float(arrays["attn_ln_eps"]),
+                arrays={
+                    name: arrays[name].astype(np.float32, copy=False)
+                    for name in ATTENTION_ARRAYS[2:]
+                },
+            )
+        if has_profile:
+            profile |= {
                 "tag_values": arrays["tag_values"].astype(np.int64, copy=False),
                 "tag_offsets": arrays["tag_offsets"].astype(np.int64, copy=False),
                 "tag_weights": arrays["tag_weights"].astype(np.float32, copy=False),
@@ -147,6 +234,9 @@ class UserTower:
         length = float(present.sum())
         pooled = self.game_table[ids[present]].sum(axis=0) / max(length, 1.0)
         parts = [pooled, [length / self.history_length]]
+        if self.attention is not None:
+            slots = np.flatnonzero(present)
+            parts.append(self.attention.summarize(self.game_table[ids[slots]], slots))
         if self.tag_table is not None:
             parts.append(self._tag_profile(history))
         x = np.concatenate(parts).astype(np.float32)

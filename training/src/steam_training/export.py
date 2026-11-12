@@ -23,7 +23,22 @@ Format 2 (a model with the A4 tag profile) adds, and x gets the profile appended
     tag_recency      float32 [history_length]  raw per-position parameter (weight = exp)
     tag_table        float32 [vocab_tags, attribute_embedding_dim]
 Format 1 (no tag profile) stays byte-compatible with servers that only read format 1.
-A3's attention encoder has no numpy port yet: `user_tower_arrays` refuses it (`servable`).
+
+Format 3 (A3 attention encoder, `HistoryAttention`), with or without the tag profile arrays
+above (present iff the model has the profile), adds `ATTENTION_ARRAYS`, and x becomes
+[pooled, length / history_length, attention summary, tag profile?]:
+    attn_heads       int64 scalar
+    attn_ln_eps      float64 scalar      LayerNorm eps (torch default 1e-5)
+    attn_summary     float32 [d]         learned summary token (d = game_embedding_dim)
+    attn_position    float32 [history_length, d]  added to the history games (0 = most recent)
+    attn_norm_w, attn_norm_b  float32 [d]  final LayerNorm of the summary token
+    per block, stacked on a leading [layers] axis (pre-LN, see `_AttentionBlock`):
+    attn_ln1_w, attn_ln1_b  [layers, d]; attn_qkv_w [layers, 3d, d], attn_qkv_b [layers, 3d]
+    attn_out_w [layers, d, d], attn_out_b [layers, d]; attn_ln2_w, attn_ln2_b [layers, d]
+    attn_ffn_w1 [layers, 2d, d], attn_ffn_b1 [layers, 2d]; attn_ffn_w2 [layers, d, 2d],
+    attn_ffn_b2 [layers, d]
+Padding never takes part (it is masked as a key and only the summary token is read), so a
+port may drop the padding slots.
 """
 
 from __future__ import annotations
@@ -38,7 +53,28 @@ from steam_training.model import TwoTowerModel
 
 USER_TOWER_NUMPY_FORMAT = 1
 USER_TOWER_TAG_PROFILE_FORMAT = 2
+USER_TOWER_ATTENTION_FORMAT = 3
 TAG_PROFILE_ARRAYS = ("tag_values", "tag_offsets", "tag_weights", "tag_recency", "tag_table")
+ATTENTION_ARRAYS = (
+    "attn_heads",
+    "attn_ln_eps",
+    "attn_summary",
+    "attn_position",
+    "attn_norm_w",
+    "attn_norm_b",
+    "attn_ln1_w",
+    "attn_ln1_b",
+    "attn_qkv_w",
+    "attn_qkv_b",
+    "attn_out_w",
+    "attn_out_b",
+    "attn_ln2_w",
+    "attn_ln2_b",
+    "attn_ffn_w1",
+    "attn_ffn_b1",
+    "attn_ffn_w2",
+    "attn_ffn_b2",
+)
 USER_TOWER_ARRAYS = (
     "format_version",
     "model_id",
@@ -56,8 +92,6 @@ USER_TOWER_ARRAYS = (
 
 def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarray]:
     tower = model.user_tower
-    if tower.attention is not None:
-        raise NotImplementedError("no numpy port of the A3 attention encoder yet")
     first, second = tower.mlp[0], tower.mlp[2]
     assert isinstance(first, nn.Linear) and isinstance(second, nn.Linear), tower.mlp
 
@@ -65,7 +99,12 @@ def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarr
         return tensor.detach().cpu().numpy()
 
     profile = tower.tag_profile is not None
-    version = USER_TOWER_TAG_PROFILE_FORMAT if profile else USER_TOWER_NUMPY_FORMAT
+    if tower.attention is not None:
+        version = USER_TOWER_ATTENTION_FORMAT
+    elif profile:
+        version = USER_TOWER_TAG_PROFILE_FORMAT
+    else:
+        version = USER_TOWER_NUMPY_FORMAT
     arrays = {
         "format_version": np.int64(version),
         "model_id": np.str_(model_id),
@@ -89,6 +128,40 @@ def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarr
             "tag_recency": numpy(tower.tag_recency).astype(np.float32),
             "tag_table": numpy(tower.tag_profile.weight).astype(np.float32),
         }
+    if tower.attention is not None:
+        arrays |= _attention_arrays(tower.attention, numpy)
+    return arrays
+
+
+def _attention_arrays(attention, numpy) -> dict[str, np.ndarray]:
+    blocks = list(attention.blocks)
+    eps = {block.attention_norm.eps for block in blocks} | {attention.norm.eps}
+    assert len(eps) == 1, eps
+
+    def stack(get) -> np.ndarray:
+        return np.stack([numpy(get(block)) for block in blocks]).astype(np.float32)
+
+    arrays = {
+        "attn_heads": np.int64(blocks[0].heads),
+        "attn_ln_eps": np.float64(eps.pop()),
+        "attn_summary": numpy(attention.summary).astype(np.float32),
+        "attn_position": numpy(attention.position).astype(np.float32),
+        "attn_norm_w": numpy(attention.norm.weight).astype(np.float32),
+        "attn_norm_b": numpy(attention.norm.bias).astype(np.float32),
+        "attn_ln1_w": stack(lambda b: b.attention_norm.weight),
+        "attn_ln1_b": stack(lambda b: b.attention_norm.bias),
+        "attn_qkv_w": stack(lambda b: b.qkv.weight),
+        "attn_qkv_b": stack(lambda b: b.qkv.bias),
+        "attn_out_w": stack(lambda b: b.out.weight),
+        "attn_out_b": stack(lambda b: b.out.bias),
+        "attn_ln2_w": stack(lambda b: b.ffn_norm.weight),
+        "attn_ln2_b": stack(lambda b: b.ffn_norm.bias),
+        "attn_ffn_w1": stack(lambda b: b.ffn[0].weight),
+        "attn_ffn_b1": stack(lambda b: b.ffn[0].bias),
+        "attn_ffn_w2": stack(lambda b: b.ffn[2].weight),
+        "attn_ffn_b2": stack(lambda b: b.ffn[2].bias),
+    }
+    assert tuple(arrays) == ATTENTION_ARRAYS
     return arrays
 
 

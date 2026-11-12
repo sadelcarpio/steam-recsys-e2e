@@ -74,9 +74,13 @@ def model_scores(
     model.eval()
     item_embeddings = embed_catalog(model, catalog, batch_size, device)
 
+    length = model.user_tower.history_length
+
     @torch.no_grad()
     def score(history: torch.Tensor) -> torch.Tensor:
-        return model.score(model.user_tower(history), item_embeddings)
+        # histories are most recent first: a model with a shorter history reads the prefix
+        # (promotion scores models of different lengths on the same rows)
+        return model.score(model.user_tower(history[:, :length]), item_embeddings)
 
     return score
 

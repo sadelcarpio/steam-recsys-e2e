@@ -13,7 +13,7 @@ from itertools import chain
 
 import numpy as np
 from steam_training.artifacts import ArtifactStore
-from steam_training.contracts import ARCHITECTURE_VERSION, PADDING_ID
+from steam_training.contracts import ARCHITECTURE_VERSION, PADDING_ID, USER_HISTORY_LENGTH
 from steam_training.data import TableSource
 
 from steam_inference.adult import adult_mask
@@ -43,6 +43,9 @@ from steam_inference.user_index import encode_user_index, load_user_index
 from steam_inference.writer import Writer
 
 log = logging.getLogger(__name__)
+# Liked games in the rerank prompt and the stored `liked` list (most recent first): the mart's
+# 5 whatever the model's history length (A3), so stored items don't change with the model.
+LIKED_GAMES = USER_HISTORY_LENGTH
 
 
 def run_inference(
@@ -77,6 +80,7 @@ def run_inference(
         popular_window_days=settings.popular_window_days,
         description_chars=settings.rerank_description_chars if settings.rerank_enabled else 0,
         require_tags=metadata.config.vocab.tags is not None,
+        history_length=metadata.config.history_length,
     )
     # adult and unreleased (spec 10) games: never recommended, published or searchable
     adult = adult_mask(data.games) if settings.exclude_adult else np.zeros(len(data.games), bool)
@@ -296,10 +300,11 @@ def select_rerank_users(
 def rerank_request(
     data: InferenceData, candidates: Candidates, user: int, excluded: np.ndarray | None = None
 ) -> RerankRequest:
-    """The user's `games_reviewed_positive` (what the user tower saw) + their candidates. Liked
-    `excluded` (adult) games stay out of the prompt, so explanations never name them."""
+    """The user's last `LIKED_GAMES` liked games (the start of what the user tower saw) + their
+    candidates. Liked `excluded` (adult) games stay out of the prompt, so explanations never
+    name them."""
     games = data.games
-    liked = data.users.history[user]
+    liked = data.users.history[user][:LIKED_GAMES]
     liked_rows = games.catalog.rows(liked[liked != PADDING_ID])
     rows, _ = candidates.of(user)
     return RerankRequest(
@@ -316,10 +321,10 @@ def rerank_request(
 def liked_games(
     data: InferenceData, user: int, excluded: np.ndarray | None = None
 ) -> list[LikedGame]:
-    """The user's history (the same liked games as the rerank prompt), most recent first:
-    catalog games only, never an `excluded` (adult / unreleased) one."""
+    """The user's last `LIKED_GAMES` liked games (the same as the rerank prompt), most recent
+    first: catalog games only, never an `excluded` (adult / unreleased) one."""
     games = data.games
-    history = data.users.history[user]
+    history = data.users.history[user][:LIKED_GAMES]
     rows = games.catalog.rows(history[history != PADDING_ID])
     return [
         LikedGame(game_id=int(games.game_id[row]), name=str(games.name[row]))

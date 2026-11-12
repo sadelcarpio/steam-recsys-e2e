@@ -18,8 +18,9 @@ Human docs: `README.md`.
   - `features.py`: stage 1. `review_activity` (pass 1 over `interactions`: reviews /
     positives per user, `Activity.most_active` picks the `MAX_USERS`), `collect_reviews`
     (pass 2: only the kept users' reviews, grouped per user newest first -> `Reviews.of` CSR,
-    plus the popularity counts of every user), `latest_users` (latest `user_features` row of
-    the kept users; `until` = as-of reads), latest `game_features` per game (all current games,
+    plus the popularity counts of every user, and each review's polarity), `users_of` /
+    `Reviews.histories` (each kept user's last `history_length` positives, most recent first:
+    the model's history, A3; `until` = as-of reads), latest `game_features` per game (all current games,
     even beyond the model vocab), lookup names, `Games.info` / `describe` (prompt lines),
     truncated short descriptions and the release status (`Games.coming_soon`)
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
@@ -111,8 +112,13 @@ Human docs: `README.md`.
   a reranked user has an explanation (checked LLM text or the template), and no other entry
   has one. An explanation never names the recommended game itself. One user's failure never
   fails the run.
-- Memory: everything is streamed per batch, and only the `MAX_USERS` kept users' reviews and
-  `user_features` rows are held. Kept state is the per-user review counts of pass 1 (3 ints per
+- User histories come from `interactions` (the model's `ModelConfig.history_length`, same
+  derivation as training's `HistoryIndex`; the first 5 games equal the mart's `user_features`
+  history). `user_features` isn't read. The rerank prompt and the stored `liked` list keep the
+  last `LIKED_GAMES` (5) whatever the model's length, so a longer-history model doesn't change
+  what users see there.
+- Memory: everything is streamed per batch, and only the `MAX_USERS` kept users' reviews are
+  held. Kept state is the per-user review counts of pass 1 (3 ints per
   user of `interactions`), the kept users' reviewed game ids, users x K candidates, one score
   chunk (`USER_BATCH_SIZE` x games) and the stored hashes (a dict with one entry per item,
   about 150 MB at 1.4M users). Never load a whole mart when a per-batch filter will do.
