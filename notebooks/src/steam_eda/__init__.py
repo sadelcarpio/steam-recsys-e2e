@@ -1,0 +1,51 @@
+"""Data loading and analysis helpers for the EDA notebooks (see README.md)."""
+
+from steam_eda.data import (
+    cached,
+    files,
+    load_games,
+    load_reviews,
+    parse_release_date,
+    scan,
+    settings,
+    user_sample,
+)
+from steam_eda.signals import (
+    auc,
+    binned_mean,
+    consecutive_pairs,
+    gini,
+    jaccard,
+    lag_similarity,
+    profile_fit,
+    sequence,
+    shuffle_games,
+    shuffle_order,
+    smoothed_ratio,
+    spearman,
+    user_concentration,
+)
+
+__all__ = [
+    "auc",
+    "binned_mean",
+    "cached",
+    "consecutive_pairs",
+    "files",
+    "gini",
+    "jaccard",
+    "lag_similarity",
+    "load_games",
+    "load_reviews",
+    "parse_release_date",
+    "profile_fit",
+    "scan",
+    "sequence",
+    "settings",
+    "shuffle_games",
+    "shuffle_order",
+    "smoothed_ratio",
+    "spearman",
+    "user_concentration",
+    "user_sample",
+]
