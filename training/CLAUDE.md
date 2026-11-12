@@ -95,6 +95,11 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   (`USER_TOWER_TAG_PROFILE_FORMAT`, + `TAG_PROFILE_ARRAYS`); plain models stay format 1, so a
   serving deploy that only reads format 1 keeps working until an A4 model is promoted. Deploy
   serving (reads 1 and 2) before promoting an A4 model.
+- `DATA_CACHE_DIR` (local runs): `iceberg_batches` reads through `data.CachingFileIO`, which
+  copies each remote data / delete file once (`<dir>/<scheme>/<bucket>/<key>`, `.part` +
+  rename) and serves it from disk. Safe because Iceberg files are immutable. It relies on
+  pyiceberg opening files via `io.new_input(path).open()` (0.12); guarded by
+  `tests/test_data.py::test_caching_file_io_*`.
 - Best epoch / early stopping: `train_model` returns `TrainResult` (unpacks as `(model,
   losses)`, plus `best_epoch` / `epochs_trained`). The best weights (CPU copy) go into the
   checkpoint's `best` entry when they aren't its `model`, so a resume keeps them. The early

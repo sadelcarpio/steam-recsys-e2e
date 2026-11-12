@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = TrainingSettings()
     configure_logging(settings.log_level)
     store = ArtifactStore(settings.model_artifacts_bucket)
-    source = IcebergSource(settings.glue_database, settings.aws_region)
+    source = IcebergSource(settings.glue_database, settings.aws_region, settings.data_cache_dir)
     if args.mode == "train":
         metadata = run_training(settings, source, store)
         log.info("trained %s: %s", metadata.model_id, metadata.validation.model_dump_json())

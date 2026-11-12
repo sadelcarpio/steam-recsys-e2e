@@ -41,6 +41,7 @@ _NOT_HYPERPARAMETERS = {
     "model_id",
     "glue_database",
     "aws_region",
+    "data_cache_dir",
     "mlflow_tracking_uri",
     "mlflow_experiment",
     "git_commit",

@@ -80,6 +80,9 @@ class TrainingSettings(_SsmSettings):
     # Glue database of the ETL marts (interactions, game_features, lkp_*).
     glue_database: str = "steam_marts"
     aws_region: str = "us-east-1"
+    # Local copy of the Iceberg data files read (local runs: each file downloads once, later
+    # runs on the same snapshot read from disk). Unset in SageMaker jobs.
+    data_cache_dir: str | None = None
 
     # ---- data ----
     # Temporal split by row share: [train | validation | test], test = the newest rows.
@@ -206,6 +209,7 @@ NOT_FINGERPRINTED = {
     "mlflow_tracking_uri",
     "mlflow_experiment",
     "git_commit",
+    "data_cache_dir",
     "log_level",
 }
 

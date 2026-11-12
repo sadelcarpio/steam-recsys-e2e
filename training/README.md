@@ -407,6 +407,7 @@ forwards them to the job:
 | `FORCE_PROMOTION` | false | promote even when the candidate loses (report keeps the real metrics) |
 | `DEVICE` | auto | `auto` / `cpu` / `cuda` |
 | `RESUME` | true | resume from a matching checkpoint |
+| `DATA_CACHE_DIR` | unset | local runs: keep a copy of every Iceberg data file read (see below) |
 | `USER_TAG_PROFILE` | false | A4: tag profile of the history in the user tower (needs `USE_GAME_TAGS`; numpy user tower format 2) |
 | `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |
 | `GIT_COMMIT` | `git rev-parse HEAD` | lineage tag (set by the launcher on SageMaker jobs) |
@@ -428,6 +429,14 @@ the same command again to resume:
 AWS_PROFILE=<profile> AWS_REGION=us-east-1 MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> \
   MODEL_ID=local-$(git rev-parse --short HEAD) uv run python -m steam_training train
 ```
+
+**Cache the data locally.** Each run reads ~8 GB of marts (four passes over `interactions`,
+plus `game_features`); from a workstation that is S3 internet egress (100 GB/month free across
+AWS, then ~$0.09/GB) and ~6 minutes per run. With `DATA_CACHE_DIR=~/.cache/steam-recsys/iceberg`
+every data file is downloaded once and later runs read it from disk. Iceberg data files never
+change, so the copy is never stale, and a new snapshot only downloads the files it added.
+Delete the folder to reclaim the space (~8 GB per snapshot, shared between snapshots).
+SageMaker jobs leave it unset (same-region S3 reads are free).
 
 Promote it with *training promote* (`model_id=local-…`, `image_tag=<a pushed commit sha>`), or
 locally with `python -m steam_training promote` and the same variables. Local runs need
