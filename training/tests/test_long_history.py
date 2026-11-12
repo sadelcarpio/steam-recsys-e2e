@@ -57,20 +57,27 @@ def _load(source, length, **kwargs):
     )
 
 
-def test_derived_histories_extend_the_mart_history():
-    source = FakeSource(make_marts(n_users=200, reviews_per_user=14))  # up to 10 positives
-    mart, long = _load(source, 5), _load(source, 12)
+def test_histories_are_the_last_positives_before_each_row():
+    """The synthetic marts carry the reference 5-game history (the old mart column, built from
+    the events in order): the loaded histories start with it, and run longer."""
+    marts = make_marts(n_users=200, reviews_per_user=14)  # up to 10 positives per user
+    reference = {
+        (row["user_id"], row["game_idx"]): row["games_reviewed_positive"]
+        for row in marts["interactions"].to_pylist()
+    }
+    source = FakeSource(marts)
+    short, long = _load(source, 5), _load(source, 12)
     assert isinstance(long.train.history, HistoryIndex)
-    train_long = long.train.history.matrix()
-    assert train_long.shape == (len(mart.train), 12)
-    # same rows, and the derived history starts with the mart's 5 games
-    assert np.array_equal(long.train.target, mart.train.target)
-    assert np.array_equal(train_long[:, :5], mart.train.history)
-    assert np.array_equal(long.validation.history[:, :5], mart.validation.history)
-    assert np.array_equal(long.validation.is_warm, mart.validation.is_warm)
-    # and is longer for users with more than 5 earlier positives
-    assert (train_long[:, 5] != 0).any()
-    assert long.train.timestamp is None  # only kept to build the index
+    for data in (short, long):
+        for rows in (data.train, data.validation):
+            history = rows.history[np.arange(len(rows))]
+            expected = [reference[u, g] for u, g in zip(rows.user_id, rows.target, strict=True)]
+            assert np.array_equal(history[:, :5], np.array(expected))
+    # same rows whatever the length, longer histories for users with > 5 earlier positives
+    assert np.array_equal(long.train.target, short.train.target)
+    assert np.array_equal(long.validation.is_warm, short.validation.is_warm)
+    assert (long.train.history[np.arange(len(long.train))][:, 5] != 0).any()
+    assert long.train.timestamp is None and long.train.cold_draw is None
 
 
 def _model(encoder="attention", length=6):

@@ -16,7 +16,7 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
                                            lkp_games, lkp_developers, lkp_publishers,
                                            lkp_genres, lkp_categories,
                                            lkp_tags                    dense id vocabularies
-                                           game_features, user_features  time-versioned features
+                                           game_features                 time-versioned features
                                            interactions                  training examples (ASOF join)
                                            game_details                  human-readable details (serving)
                                            game_tags                     current Steam user tags per game
@@ -29,16 +29,22 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
 |---|---|---|
 | `lkp_*` | one value | `id` (`game_idx` for games), `name` (`game_id`), `_batch_at` |
 | `game_features` | (`game_id`, `timestamp`): a 1970-01-01 row (no reviews yet), then one row per second in which the game got reviews | `game_idx`, `game_name`, `game_is_free`, `game_developers` / `_publishers` / `_genres` / `_categories` (id arrays), `game_reviews_ratio` = Laplace-smoothed (pos + α) / (pos + neg + 2α), α = var `reviews_ratio_prior` (1), 0.5 without reviews |
-| `user_features` | (`user_id`, `timestamp`) of each positive review | `games_reviewed_positive`: last 5 positively reviewed `game_idx`, most recent first, right-padded with 0 |
 | `game_details` | one current catalog game (the same rows as `int_games__deduplicated`) | `game_id`, `game_name_key`, `game_name`, `game_short_description`, `game_header_image` (URL), `game_release_date` (text as shown on Steam), `game_is_free`, `game_price`, `game_developers` / `_publishers` / `_genres` / `_categories` (**names**), `game_coming_soon` (unreleased at its latest scrape, spec 10: inference never recommends or indexes these). Not a model feature: inference loads it into DynamoDB `game-details` for serving. |
 | `game_tags` | one catalog game with tags (spec 8) | `game_idx`, `game_tags` (`lkp_tags` ids, weight descending), `game_tag_weights` (Steam's weights, same order), `scraped_at`, `scrape_date`. The latest tags scrape: a static feature like the genres, not time-versioned (later votes leak into older training rows, accepted) |
-| `interactions` | `review_id` | `timestamp`, `user_id`, `game_id`, `is_positive` (label) + all user and game features **as of strictly before** the review |
+| `interactions` | `review_id` | `timestamp`, `user_id`, `game_id`, `is_positive` (label) + the game features **as of strictly before** the review. No stored user history: training and inference take each user's last N positives before a row from these rows (N per model, A3) |
 | `user_index` | one user of `interactions` (spec 13) | `user_idx` (1 = most reviews ... `count(*)`, ties by lowest `user_id`: the order inference uses for `MAX_USERS` and the rerank), `user_id`, `num_reviews`, `num_positive`, `last_reviewed_at`. A plain Iceberg table **rebuilt every run**: `user_idx` changes as reviews arrive, so it is for demo queries only (`/u/<user_idx>`), never a join key or an export column. Inference publishes it for serving. |
 
 `user_id` is pseudonymous everywhere (spec 13): the scraper stores a keyed hash of the Steam
 author id (63-bit, non-negative), never the SteamID64.
 
-The latest `game_features` / `user_features` row per key is the current state (for inference).
+The latest `game_features` row per game is its current state (for inference).
+
+`user_features` (each user's last 5 positives per second of a positive review) and
+`interactions.games_reviewed_positive` were dropped in 2026-11 (A3): a fixed length baked into
+the marts (and a 95M-row ASOF join every run) for data `interactions` already has. The column
+is dropped by `on_schema_change: sync_all_columns` on `interactions` (an Iceberg metadata
+change); the orphaned Glue table `steam_marts.user_features` is dropped by hand once nothing
+reads it (`docs/deployment.md`).
 
 Steam's `review_score` (0-9 summary bucket) is **not** a feature: it is scraped once per game, so
 a review from years earlier would see a score computed from later reviews. `game_reviews_ratio`
@@ -67,9 +73,8 @@ Row contracts: `src/steam_etl/contracts.py`.
   mart takes ledger rows newer than its own max `_batch_at`, so a review is processed exactly
   once per mart, even after a run that failed half-way.
 - `int_game_review_counts` adds new counts on top of each game's latest row (raw counts stay in
-  the intermediate layer; the marts only carry the smoothed ratio). `user_features` recomputes
-  the users with new positive reviews from their full history. `interactions` ASOF-joins only
-  the new reviews.
+  the intermediate layer; the marts only carry the smoothed ratio). `interactions` ASOF-joins
+  only the new reviews.
 - `lkp_*` are append-only (`full_refresh: false`): new values get the next ids, existing ids
   never change.
 - Rerunning with no new raw data writes nothing. The Athena integration test checks this, and that
@@ -94,9 +99,9 @@ so where the mapping happens does not matter for cost. The choice rests on these
   id >= that model's vocabulary size, and inference maps it to OOV (1).
 - **One mapping.** Training and batch inference read the same tables, so there is no artifact to
   keep in sync, and Iceberg time travel reproduces the vocabulary of any training run.
-- **Embedding-ready marts.** Features are already integers, and history lists are already padded.
+- **Embedding-ready marts.** Features are already integers.
 - User ids are not encoded. There are millions of users with sparse signal, so the user tower is
-  built from `games_reviewed_positive`, not from a user-id embedding.
+  built from the user's liked games (derived from `interactions`), not from a user-id embedding.
 
 A training-artifact vocabulary would tie the ids to the model instead. Its drawbacks are that
 ids change on every retrain and inference needs extra mapping code. It becomes worthwhile only

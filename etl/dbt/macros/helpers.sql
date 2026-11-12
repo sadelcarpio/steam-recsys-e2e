@@ -25,11 +25,6 @@
   transform({{ column }}, x -> coalesce(element_at({{ lookup_map }}, x), cast({{ oov_id() }} as bigint)))
 {%- endmacro %}
 
-{#- Right-pad with the padding id / truncate an array(bigint) to exactly n elements. -#}
-{% macro pad_ids(column, n) -%}
-  slice(coalesce({{ column }}, cast(array[] as array(bigint))) || repeat(cast({{ padding_id() }} as bigint), {{ n }}), 1, {{ n }})
-{%- endmacro %}
-
 {#- Latest value of `column` already loaded in this model, with a lower bound for empty tables. -#}
 {% macro incremental_max(column, default) -%}
   (select coalesce(max({{ column }}), {{ default }}) from {{ this }})

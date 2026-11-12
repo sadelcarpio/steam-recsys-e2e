@@ -67,7 +67,7 @@ vocabulary sizes grow with the catalog.
 flowchart TB
   subgraph user["User tower"]
     direction TB
-    H["games_reviewed_positive<br/>last 5 liked games, most recent first (0 = padding)"]
+    H["history: last HISTORY_LENGTH (5) liked games, most recent first (0 = padding)<br/>derived from interactions"]
     UM["id mapper: unseen or newer ids → OOV (1)"]
     GT["game_table (frozen copy)<br/>176,324 × 64"]
     POOL["mean over the non-padding games · 64"]
@@ -101,7 +101,7 @@ flowchart TB
 
 | Tower | Input | Architecture |
 |---|---|---|
-| User | `games_reviewed_positive` (last 5 positively reviewed games) | mean pooling over a **frozen copy** of the item tower's game embedding table + history length → MLP → L2 norm |
+| User | the last `HISTORY_LENGTH` (5) positively reviewed games before the review, derived from `interactions` | mean pooling over a **frozen copy** of the item tower's game embedding table + history length → MLP → L2 norm |
 | Item | `game_idx`, `game_developers`, `game_publishers`, `game_genres`, `game_categories`, `game_tags` + `game_tag_weights`, `game_is_free`, `game_reviews_ratio` | game embedding + mean-pooled attribute embeddings (`EmbeddingBag`) + the tag embeddings averaged with the game's normalized tag weights + numerical features → MLP → L2 norm |
 
 - **Shared game table, synced per epoch.** The user tower reads the item tower's game
@@ -434,7 +434,7 @@ forwards them to the job:
 | `RESUME` | true | resume from a matching checkpoint |
 | `DATA_CACHE_DIR` | unset | local runs: keep a copy of every Iceberg data file read (see below) |
 | `USER_TAG_PROFILE` | false | A4: tag profile of the history in the user tower (needs `USE_GAME_TAGS`; numpy user tower format 2) |
-| `HISTORY_LENGTH` | 5 | A3: games in the user history. 5 = the mart's `games_reviewed_positive`; any other length is derived from `interactions` (last N positives strictly before each row); inference derives the same |
+| `HISTORY_LENGTH` | 5 | games in the user history: the last N positives strictly before each row, derived from `interactions` (A3: 20 / 50); inference derives the same |
 | `HISTORY_ENCODER` | mean | A3: `mean`, or `attention` (adds a self-attention summary of the history to the mean). numpy user tower format 3 |
 | `ATTENTION_HEADS` / `ATTENTION_LAYERS` / `ATTENTION_DROPOUT` | 2 / 1 / 0.1 | the attention encoder (heads must divide `GAME_EMBEDDING_DIM`) |
 | `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |

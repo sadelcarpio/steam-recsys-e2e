@@ -24,7 +24,6 @@ def interaction(**overrides):
         "game_id": 10,
         "game_idx": 2,
         "is_positive": True,
-        "games_reviewed_positive": [3, 2, 0, 0, 0],
         "game_name": "Alpha",
         "game_is_free": False,
         "game_developers": [2, OOV_ID],
@@ -37,14 +36,13 @@ def interaction(**overrides):
 
 
 def test_valid_row():
-    assert interaction().games_reviewed_positive == [3, 2, 0, 0, 0]
+    assert interaction().game_developers == [2, OOV_ID]
 
 
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"games_reviewed_positive": [3, OOV_ID, 0, 0, 0]},  # OOV is not padding
-        {"games_reviewed_positive": [3, 2, 0, 0]},  # fixed length
+        {"games_reviewed_positive": [3, 2, 0, 0, 0]},  # no stored history (derived downstream)
         {"game_developers": [PADDING_ID]},  # padding is never a value
         {"game_idx": OOV_ID},
         {"game_reviews_ratio": 1.0},  # smoothed: never 0 or 1

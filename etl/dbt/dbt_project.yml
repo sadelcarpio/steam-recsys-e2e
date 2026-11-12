@@ -12,8 +12,6 @@ vars:
   # Late-landing raw files: re-read this many scrape days before the latest one loaded.
   reviews_lookback_days: 3
   games_lookback_days: 3
-  # Length of users.games_reviewed_positive (most recent first, right-padded with 0).
-  user_history_length: 5
   # Laplace smoothing of game_reviews_ratio: (pos + a) / (pos + neg + 2a).
   reviews_ratio_prior: 1
   # OPTIMIZE + VACUUM after each incremental model (the integration test turns it off for speed).

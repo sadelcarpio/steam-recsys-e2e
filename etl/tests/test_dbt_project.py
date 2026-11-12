@@ -1,11 +1,10 @@
 """Static checks of the dbt project (`dbt parse`, no warehouse connection)."""
 
 import pytest
-import yaml
 from dbt.cli.main import dbtRunner
 
 from steam_etl.config import DEFAULT_DBT_PROJECT_DIR, EtlSettings
-from steam_etl.contracts import MART_CONTRACTS, USER_HISTORY_LENGTH
+from steam_etl.contracts import MART_CONTRACTS
 from steam_etl.runner import dbt_env
 
 
@@ -73,14 +72,12 @@ def test_incremental_models_are_idempotent_by_construction(manifest):
             assert m.config.unique_key, m.name
 
 
-def test_interactions_depend_on_feature_tables(manifest):
-    deps = _models(manifest)["interactions"].depends_on.nodes
-    assert {"model.steam_recsys.user_features", "model.steam_recsys.game_features"} <= set(deps)
-
-
-def test_history_length_matches_contract():
-    project = yaml.safe_load((DEFAULT_DBT_PROJECT_DIR / "dbt_project.yml").read_text())
-    assert project["vars"]["user_history_length"] == USER_HISTORY_LENGTH
+def test_interactions_depend_on_game_features_only(manifest):
+    deps = set(_models(manifest)["interactions"].depends_on.nodes)
+    assert "model.steam_recsys.game_features" in deps
+    # no stored user history: training / inference derive it from interactions
+    assert "user_features" not in _models(manifest)
+    assert _models(manifest)["interactions"].config.on_schema_change == "sync_all_columns"
 
 
 def test_user_index_is_ranked_from_interactions(manifest):
