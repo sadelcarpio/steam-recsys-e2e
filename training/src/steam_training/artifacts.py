@@ -10,8 +10,8 @@ import torch
 from botocore.exceptions import ClientError
 
 from steam_training.config import CHAMPION
-from steam_training.contracts import EvaluationReport, ModelMetadata
-from steam_training.export import encode_user_tower
+from steam_training.contracts import EvaluationReport, ModelMetadata, TrackingRecord
+from steam_training.export import encode_user_tower, supports
 from steam_training.model import TwoTowerModel
 
 log = logging.getLogger(__name__)
@@ -21,6 +21,8 @@ ITEM_TOWER = "item_tower.pt"
 # numpy export of the user tower for the serving Lambda (`export.py`)
 USER_TOWER_NUMPY = "user_tower.npz"
 METADATA = "metadata.json"
+# experiment tracking record (spec 18); not part of MODEL_FILES, so promotion doesn't copy it
+TRACKING = "tracking.json"
 METRICS = "metrics.json"
 # metadata last: copied / written after the files it describes
 MODEL_FILES = (USER_TOWER, ITEM_TOWER, USER_TOWER_NUMPY, METADATA)
@@ -73,7 +75,14 @@ class ArtifactStore:
             buffer = io.BytesIO()
             torch.save({k: v.cpu() for k, v in module.state_dict().items()}, buffer)
             self._put(prefix + name, buffer.getvalue(), "application/octet-stream")
-        self.save_user_tower_numpy(model, metadata.model_id)
+        if supports(model):
+            self.save_user_tower_numpy(model, metadata.model_id)
+        else:
+            log.warning(
+                "no %s for %s: serving's numpy port can't run it",
+                USER_TOWER_NUMPY,
+                metadata.model_id,
+            )
         # metadata last: its presence marks a complete model
         self._put(
             prefix + METADATA, metadata.model_dump_json(indent=2).encode(), "application/json"
@@ -122,6 +131,18 @@ class ArtifactStore:
             )
         model.eval()
         return model, metadata
+
+    def save_tracking(self, record: TrackingRecord) -> str:
+        key = model_prefix(record.model_id) + TRACKING
+        self._put(key, record.model_dump_json(indent=2).encode(), "application/json")
+        return key
+
+    def load_tracking(self, model_id: str) -> TrackingRecord | None:
+        body = self._get(model_prefix(model_id) + TRACKING)
+        return TrackingRecord.model_validate_json(body) if body is not None else None
+
+    def model_uri(self, model_id: str) -> str:
+        return f"s3://{self.bucket}/{model_prefix(model_id)}"
 
     def checkpoints(self, model_id: str) -> S3Checkpoints:
         return S3Checkpoints(self, model_id)

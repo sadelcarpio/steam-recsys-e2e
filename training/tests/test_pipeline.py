@@ -48,6 +48,7 @@ def test_training_writes_artifacts_that_reload(settings, source, store):
         "models/abc123/item_tower.pt",
         "models/abc123/user_tower.npz",
         "models/abc123/metadata.json",
+        "models/abc123/tracking.json",
         "checkpoints/abc123/checkpoint.pt",
     }
     assert metadata.snapshots["interactions"] == 123

@@ -1,17 +1,20 @@
 """Stage 1, dataset + split: stream the Iceberg marts and keep only what training needs.
 
 Memory scales with the rows *kept*, not with the table: `interactions` is read in Arrow batches
-(pinned to one snapshot) in three passes:
+(pinned to one snapshot) in three passes, plus a cheap fourth one:
   1. `timestamp`, `is_positive` only -> temporal cutoff (last ~10% of rows = validation) and the
      sampling rate that caps the validation rows at `eval_max_rows`;
   2. every column, filtered batch by batch:
        - training positives: all warm (non-empty history) rows + `cold_row_fraction` of the cold
          ones -> history, target game, as-of numerical features, user;
        - training negatives (`is_positive = false`): user + game only (explicit hard negatives);
-       - validation positives, uniformly sampled -> history, target, warm flag;
+       - validation positives, uniformly sampled -> history, target, warm flag, user;
        - positive counts per game in the training split (popularity baseline + logQ);
   3. `game_features` rows before the cutoff, reduced to the latest row per game (the catalog),
-     joined with each game's current tags (`game_tags`, `with_tags`).
+     joined with each game's current tags (`game_tags`, `with_tags`);
+  4. `timestamp`, `user_id`, `game_idx` -> each validation user's reviews: activity (reviews
+     before the cutoff) and, per validation row, the games reviewed before it (excluded from
+     its candidates).
 Game list features (developers, publishers, genres, categories, tags) come from the catalog: they
 are static per game, only `game_reviews_ratio` / `game_is_free` are kept per row (as of the review).
 
@@ -23,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
 
@@ -245,6 +248,22 @@ class Catalog:
         inside = (game_idx >= 0) & (game_idx < len(self.row_of))
         return np.where(inside, self.row_of[np.clip(game_idx, 0, len(self.row_of) - 1)], -1)
 
+    def game_tags(self, num_games: int) -> Ragged:
+        """Tags (+ weights) of every game_idx < `num_games` (row = game_idx); games outside the
+        catalog, padding and OOV have none."""
+        game = np.arange(num_games)
+        row = self.rows(game)
+        present = row >= 0
+        taken = self.items.tags.take(np.where(present, row, 0))
+        lengths = np.where(present, np.diff(taken.offsets), 0)
+        keep = np.repeat(present, np.diff(taken.offsets))
+        offsets = np.zeros(num_games + 1, dtype=np.int64)
+        np.cumsum(lengths, out=offsets[1:])
+        weights = taken.weights[keep] if taken.weights is not None else None
+        if weights is None:
+            weights = (1.0 / np.repeat(np.maximum(lengths, 1), lengths)).astype(np.float32)
+        return Ragged(taken.values[keep], offsets, weights)
+
 
 @dataclass(frozen=True)
 class TrainRows:
@@ -277,20 +296,36 @@ class NegativeRows:
 
 @dataclass(frozen=True)
 class EvalRows:
-    """Sampled positive validation rows."""
+    """Sampled positive validation rows. `user_id` / `activity` (reviews of the user before the
+    cutoff, 0 = new user) feed the per-user and per-activity metrics, `reviewed` the candidate
+    exclusion; None when unknown (only `history` is excluded then)."""
 
     history: np.ndarray  # int64 [n, 5]
     target: np.ndarray  # int64 [n]
     is_warm: np.ndarray  # bool [n]
+    user_id: np.ndarray | None = None  # int64 [n]
+    activity: np.ndarray | None = None  # int64 [n]
+    timestamp: np.ndarray | None = None  # int64 [n], seconds since the epoch
+    # every game the user reviewed (any polarity) strictly before the row: excluded from its
+    # candidates, so a heavy user's top K isn't spent on games they already reviewed
+    reviewed: Ragged | None = None
 
     def __len__(self) -> int:
         return len(self.target)
+
+    def take(self, index: np.ndarray) -> EvalRows:
+        def pick(value):
+            if value is None:
+                return None
+            return value.take(index) if isinstance(value, Ragged) else value[index]
+
+        return EvalRows(**{name: pick(getattr(self, name)) for name in _fields(self)})
 
     def sample(self, max_rows: int, seed: int = 0) -> EvalRows:
         if len(self) <= max_rows:
             return self
         index = np.sort(np.random.default_rng(seed).choice(len(self), max_rows, replace=False))
-        return EvalRows(self.history[index], self.target[index], self.is_warm[index])
+        return self.take(index)
 
 
 @dataclass(frozen=True)
@@ -314,13 +349,17 @@ def load_training_data(
     cold_row_fraction: float,
     eval_max_rows: int,
     seed: int,
+    test_fraction: float = 0.0,
+    fit_on: str = "train",
     cutoff: datetime | None = None,
     with_train_rows: bool = True,
     with_tags: bool = False,
 ) -> TrainingData:
-    """Stream the marts (see module docstring). `cutoff` given: split there (promotion) instead
-    of at the `validation_fraction` quantile. `with_tags`: read `lkp_tags` / `game_tags` (the
-    vocabulary gets `tags`, the catalog each game's tags)."""
+    """Stream the marts (see module docstring). The timeline is split by row share into
+    [train | validation | test] (`split_window`); `fit_on` picks what is trained on and what is
+    evaluated. `cutoff` given: train before it and evaluate on everything after (promotion).
+    `with_tags`: read `lkp_tags` / `game_tags` (the vocabulary gets `tags`, the catalog each
+    game's tags)."""
     lookups = {**LOOKUPS, **(TAG_LOOKUPS if with_tags else {})}
     tables = [*lookups, "interactions", "game_features", *(["game_tags"] if with_tags else [])]
     snapshots = {table: source.snapshot_id(table) for table in tables}
@@ -336,21 +375,29 @@ def load_training_data(
     all_ts = np.concatenate(timestamps) if timestamps else np.array([], dtype="datetime64[us]")
     all_positive = np.concatenate(positive) if positive else np.array([], dtype=bool)
     if cutoff is None:
-        cutoff = temporal_cutoff(all_ts, validation_fraction)
+        cutoff, end, evaluation = split_window(all_ts, validation_fraction, test_fraction, fit_on)
+    else:
+        end, evaluation = None, "validation"
     is_validation = all_ts >= np.datetime64(cutoff, "us")
+    if end is not None:
+        is_validation &= all_ts < np.datetime64(end, "us")
     validation_positives = int((is_validation & all_positive).sum())
     eval_rate = min(1.0, eval_max_rows / max(validation_positives, 1))
     split = SplitInfo(
         cutoff=cutoff,
-        train_rows=int((~is_validation).sum()),
+        train_rows=int((all_ts < np.datetime64(cutoff, "us")).sum()),
         validation_rows=int(is_validation.sum()),
+        end=end,
+        evaluation=evaluation,
     )
     del timestamps, positive, all_ts, all_positive, is_validation
     log.info(
-        "split at %s: %d train / %d validation rows (%d validation positives, eval rate %.3f)",
+        "split at %s%s: %d train / %d %s rows (%d positives, eval rate %.3f)",
         cutoff,
+        f" until {end}" if end is not None else "",
         split.train_rows,
         split.validation_rows,
+        evaluation,
         validation_positives,
         eval_rate,
     )
@@ -358,6 +405,8 @@ def load_training_data(
     # pass 2: filter + sample batch by batch
     rng = np.random.default_rng(seed)
     cutoff_us = np.datetime64(cutoff, "us")
+    # rows at or after `end` (a held-out test window) are never read
+    end_us = np.datetime64(end, "us") if end is not None else np.datetime64("9999-12-31", "us")
     counts = np.zeros(vocab.games, dtype=np.int64)
     train_parts: list[TrainRows] = []
     negative_parts: list[NegativeRows] = []
@@ -366,19 +415,30 @@ def load_training_data(
         game = _int64(pc.fill_null(batch["game_idx"], -1))
         known = (game >= 0) & (game < vocab.games)
         is_positive = _bool(batch["is_positive"]) & known
-        is_val = _timestamps(batch["timestamp"]) >= cutoff_us
+        ts = _timestamps(batch["timestamp"])
+        is_val = ts >= cutoff_us
+        in_window = is_val & (ts < end_us)
         history = pad_history(Ragged.from_arrow(batch["games_reviewed_positive"]))
         warm = history[:, 0] != PADDING_ID
         counts += np.bincount(game[is_positive & ~is_val], minlength=vocab.games)
 
-        keep_eval = np.flatnonzero(is_positive & is_val & (rng.random(len(game)) < eval_rate))
-        eval_parts.append(EvalRows(history[keep_eval], game[keep_eval], warm[keep_eval]))
+        user_id = _int64(batch["user_id"])
+        keep_eval = np.flatnonzero(is_positive & in_window & (rng.random(len(game)) < eval_rate))
+        eval_parts.append(
+            EvalRows(
+                history[keep_eval],
+                game[keep_eval],
+                warm[keep_eval],
+                user_id=user_id[keep_eval],
+                activity=np.zeros(len(keep_eval), dtype=np.int64),
+                timestamp=_seconds(ts[keep_eval]),
+            )
+        )
         if not with_train_rows:
             continue
         sampled = warm | (rng.random(len(game)) < cold_row_fraction)
         keep_train = np.flatnonzero(is_positive & ~is_val & sampled)
         is_free, is_free_known, reviews_ratio = _numeric_features(batch)
-        user_id = _int64(batch["user_id"])
         train_parts.append(
             TrainRows(
                 user_id=user_id[keep_train],
@@ -406,12 +466,23 @@ def load_training_data(
     if train is not None:
         # targets always have a catalog row (1970-01-01 game_features row); guard anyway
         train = train.take(np.flatnonzero(catalog.rows(train.target) >= 0))
+    validation = _concat(EvalRows, eval_parts)
+    # pass 4: the validation users' reviews -> activity (before the cutoff) and each row's
+    # reviewed games (before the row)
+    validation = _with_user_history(
+        validation,
+        source.batches(
+            "interactions", ["timestamp", "user_id", "game_idx"], snapshots["interactions"]
+        ),
+        cutoff_us,
+        end_us,
+    )
     data = TrainingData(
         split=split,
         vocab=vocab,
         snapshots=snapshots,
         catalog=catalog,
-        validation=_concat(EvalRows, eval_parts),
+        validation=validation,
         train_positive_counts=counts,
         train=train,
         negatives=_concat(NegativeRows, negative_parts) if with_train_rows else None,
@@ -427,6 +498,25 @@ def load_training_data(
 
 
 # ---- split + catalog -----------------------------------------------------------------------
+
+
+def split_window(
+    timestamps: np.ndarray, validation_fraction: float, test_fraction: float, fit_on: str
+) -> tuple[datetime, datetime | None, str]:
+    """(training cutoff, evaluation end, evaluation name) of the timeline split by row share
+    into [train | validation | test]."""
+    test_start = temporal_cutoff(timestamps, test_fraction) if test_fraction > 0 else None
+    if fit_on == "train":
+        return (
+            temporal_cutoff(timestamps, validation_fraction + test_fraction),
+            test_start,
+            ("validation"),
+        )
+    if fit_on == "train+validation":
+        if test_start is None:
+            raise ValueError("fit_on=train+validation needs test_fraction > 0")
+        return test_start, None, "test"
+    raise ValueError(f"unknown fit_on {fit_on!r}")
 
 
 def temporal_cutoff(timestamps: np.ndarray, validation_fraction: float) -> datetime:
@@ -571,15 +661,88 @@ def _weighted_tags(table: pa.Table | pa.RecordBatch) -> Ragged:
     return Ragged(tags.values, tags.offsets, weights.astype(np.float32))
 
 
+def _seconds(ts: np.ndarray) -> np.ndarray:
+    return ts.astype("datetime64[s]").astype(np.int64)
+
+
+def _with_user_history(
+    rows: EvalRows, batches, cutoff_us: np.datetime64, end_us: np.datetime64
+) -> EvalRows:
+    """`rows` with `activity` (reviews of the row's user before the cutoff) and `reviewed`
+    (games the user reviewed strictly before the row, the target itself left out). Only the
+    validation users' reviews are kept (a sorted id set), and nothing at or after `end`."""
+    if rows.user_id is None or rows.timestamp is None or len(rows) == 0:
+        return rows
+    users = np.unique(rows.user_id)
+    counts = np.zeros(len(users), dtype=np.int64)
+    user_parts, time_parts, game_parts = [], [], []
+    for batch in batches:
+        ts = _timestamps(batch["timestamp"])
+        ids = _int64(pc.fill_null(batch["user_id"], -1))
+        position = np.searchsorted(users, ids)
+        position[position >= len(users)] = 0  # ids above every user: not found below
+        found = users[position] == ids
+        counts += np.bincount(position[found & (ts < cutoff_us)], minlength=len(users))
+        game = _int64(pc.fill_null(batch["game_idx"], -1))
+        keep = found & (ts < end_us) & (game >= 0)
+        user_parts.append(position[keep])
+        time_parts.append(_seconds(ts[keep]))
+        game_parts.append(game[keep])
+    row_user = np.searchsorted(users, rows.user_id)
+    reviewed = reviewed_before(
+        np.concatenate(user_parts) if user_parts else np.zeros(0, np.int64),
+        np.concatenate(time_parts) if time_parts else np.zeros(0, np.int64),
+        np.concatenate(game_parts) if game_parts else np.zeros(0, np.int64),
+        row_user,
+        rows.timestamp,
+        rows.target,
+    )
+    return replace(rows, activity=counts[row_user], reviewed=reviewed)
+
+
+def reviewed_before(
+    user: np.ndarray,
+    timestamp: np.ndarray,
+    game: np.ndarray,
+    row_user: np.ndarray,
+    row_timestamp: np.ndarray,
+    row_target: np.ndarray,
+) -> Ragged:
+    """Per row, the games of `row_user` with timestamp < `row_timestamp` (seconds), minus the
+    row's target. (user, timestamp, game) are one user's reviews each, users as dense ids."""
+    key = (user.astype(np.int64) << 32) | timestamp.astype(np.int64)
+    order = np.argsort(key, kind="stable")
+    key, game = key[order], game[order]
+    row_base = row_user.astype(np.int64) << 32
+    lo = np.searchsorted(key, row_base, side="left")
+    hi = np.searchsorted(key, row_base | row_timestamp.astype(np.int64), side="left")
+    lengths = hi - lo
+    offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
+    np.cumsum(lengths, out=offsets[1:])
+    within = np.arange(offsets[-1], dtype=np.int64) - np.repeat(offsets[:-1], lengths)
+    values = game[np.repeat(lo, lengths) + within]
+    # a target is never excluded from its own row (defensive: one review per user and game)
+    keep = values != np.repeat(row_target, lengths)
+    kept = np.bincount(np.repeat(np.arange(len(lengths)), lengths)[keep], minlength=len(lengths))
+    offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
+    np.cumsum(kept, out=offsets[1:])
+    return Ragged(values[keep], offsets)
+
+
 def _fields(obj) -> list[str]:
     return list(obj.__dataclass_fields__)
 
 
 def _concat[T](cls: type[T], parts: list[T]) -> T:
+    """Concatenate array fields; a field that is None in every part stays None."""
     names = list(cls.__dataclass_fields__)
     if not parts:
         raise ValueError(f"no {cls.__name__} rows")
-    return cls(**{name: np.concatenate([getattr(p, name) for p in parts]) for name in names})
+    out = {}
+    for name in names:
+        values = [getattr(p, name) for p in parts]
+        out[name] = None if all(v is None for v in values) else np.concatenate(values)
+    return cls(**out)
 
 
 def _int64(column: pa.ChunkedArray | pa.Array) -> np.ndarray:

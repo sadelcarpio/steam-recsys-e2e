@@ -2,6 +2,7 @@
 
 S3 layout (bucket `model-artifacts-<acct>`):
     models/<model_id>/user_tower.pt, item_tower.pt   state dicts (load with `artifacts.load_model`)
+    models/<model_id>/tracking.json                  TrackingRecord (experiment tracking, spec 18)
     models/<model_id>/metadata.json                  ModelMetadata
     evaluation/<model_id>/metrics.json               EvaluationReport (promotion job)
     models/champion/..., evaluation/champion/...     copies of the promoted model
@@ -10,7 +11,7 @@ S3 layout (bucket `model-artifacts-<acct>`):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -50,14 +51,22 @@ class ModelConfig(_Frozen):
     hidden_dim: int
     output_dim: int
     temperature: float
+    # A4 (spec 17): tag profile of the history in the user tower; False for older models
+    user_tag_profile: bool = False
 
 
 class SplitInfo(_Frozen):
-    """Temporal split: train = timestamp < cutoff, validation = timestamp >= cutoff."""
+    """Temporal split: the model trains on timestamp < cutoff and is evaluated on
+    cutoff <= timestamp < end (`end` None = no upper bound). `evaluation` names that window:
+    `validation` (FIT_ON=train; a held-out test window, if any, starts at `end` and is never
+    read) or `test` (FIT_ON=train+validation: trained through the validation window)."""
 
     cutoff: datetime
     train_rows: int = Field(ge=0)
+    # rows of the evaluation window (named validation_rows for older metadata)
     validation_rows: int = Field(ge=0)
+    end: datetime | None = None
+    evaluation: Literal["validation", "test"] = "validation"
 
 
 class SegmentRecall(_Frozen):
@@ -108,3 +117,73 @@ class EvaluationReport(_Frozen):
 
     def primary(self, metrics: RecallMetrics) -> float:
         return metrics.warm.recall[self.primary_k]
+
+
+# ---- experiment tracking (spec 18) ----
+
+
+class ActivityBucket(_Frozen):
+    """Recall of the validation rows whose user had `min_activity`..`max_activity` reviews
+    before the cutoff (`new`: none). Buckets are percentiles of the validation users."""
+
+    name: str
+    min_activity: int = Field(ge=0)
+    max_activity: int = Field(ge=0)
+    rows: int = Field(ge=0)
+    users: int = Field(ge=0)
+    recall: dict[int, Recall]
+
+
+class RetrievalDiagnostics(_Frozen):
+    """Every offline metric of one model (or the popularity baseline) on the validation rows."""
+
+    recall: RecallMetrics
+    # users with at least one validation target in their top K (per row, recall = hit rate)
+    user_hit_rate: dict[int, Recall]
+    # mean over users of their rows' recall (each user weighs the same)
+    user_recall: dict[int, Recall]
+    users: int = Field(ge=0)
+    by_activity: list[ActivityBucket]
+    # share of the catalog retrieved in the top K of at least one row
+    coverage: dict[int, Recall]
+    # Gini of how often each catalog game is retrieved in the top max(K) (1 = all on one game)
+    exposure_gini: float = Field(ge=0, le=1)
+
+
+class EmbeddingHealth(_Frozen):
+    """Collapse checks: random vectors have mean cosine ~0 and an effective rank near `dim`;
+    collapsed ones have mean cosine near 1 and an effective rank near 1."""
+
+    rows: int = Field(ge=0)
+    dim: int = Field(ge=1)
+    mean_cosine: float
+    effective_rank: float = Field(ge=0)
+    effective_rank_ratio: float = Field(ge=0, le=1)
+
+
+class EpochMetrics(_Frozen):
+    epoch: int = Field(ge=1)
+    loss: float
+    monitor_warm_recall: float | None = None  # at primary_k, EPOCH_EVAL_ROWS rows
+    seconds: float | None = None  # None for epochs restored from a checkpoint
+
+
+class TrackingRecord(_Frozen):
+    """models/<model_id>/tracking.json: one training run, everything experiment tracking needs.
+    Live runs mirror it into MLflow while training; `python -m steam_training track` replays it
+    (SageMaker jobs, or runs without a tracking server)."""
+
+    model_id: str
+    started_at: datetime
+    ended_at: datetime
+    primary_k: int
+    # which window `model` / `popularity` were measured on (MLflow prefix `validation/`, `test/`)
+    evaluation: Literal["validation", "test"] = "validation"
+    # lineage (git commit, snapshot ids, cutoff, feature signature, ...)
+    tags: dict[str, str]
+    params: dict[str, str]
+    epochs: list[EpochMetrics]
+    model: RetrievalDiagnostics
+    popularity: RetrievalDiagnostics
+    item_embeddings: EmbeddingHealth
+    user_embeddings: EmbeddingHealth

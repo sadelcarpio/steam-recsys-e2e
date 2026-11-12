@@ -1,0 +1,34 @@
+# Local MLflow tracking server for training experiments (spec 18).
+#   docker compose -f training/mlflow/compose.yaml up -d   →  http://localhost:5000
+# State (runs, metrics, registry, artifacts) lives in the `mlflow-data` volume and survives
+# `down` / restarts; `down -v` deletes it. Backup: see training/README.md.
+services:
+  mlflow:
+    # keep the tag equal to the client version in training/uv.lock (mlflow-skinny)
+    image: ghcr.io/mlflow/mlflow:v3.18.0
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=sqlite:////mlflow/mlflow.db
+      # clients upload artifacts through the server (no shared filesystem or S3 credentials)
+      - --serve-artifacts
+      - --artifacts-destination=/mlflow/artifacts
+      - --workers=2
+    environment:
+      MLFLOW_DISABLE_TELEMETRY: "true"
+    ports:
+      # localhost only: the server has no authentication
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  mlflow-data:

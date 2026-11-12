@@ -13,6 +13,7 @@ from steam_training.data import (
     attach_game_tags,
     catalog_at,
     load_training_data,
+    split_window,
     temporal_cutoff,
 )
 from tests.conftest import FIRST_GAME, N_GAMES, FakeSource
@@ -47,6 +48,39 @@ def test_temporal_cutoff_leaves_about_the_fraction_for_validation():
     cutoff = temporal_cutoff(np.random.default_rng(0).permutation(ts), 0.1)
     assert cutoff == datetime(2024, 3, 31)  # day 90 (leap year)
     assert (ts >= np.datetime64(cutoff)).sum() == 10
+
+
+def test_split_window_train_validation_test():
+    ts = np.array([np.datetime64("2024-01-01") + np.timedelta64(i, "D") for i in range(100)])
+    ts = ts.astype("datetime64[us]")
+    # [80 train | 10 validation | 10 test]
+    assert split_window(ts, 0.1, 0.1, "train") == (
+        datetime(2024, 3, 21),
+        datetime(2024, 3, 31),
+        "validation",
+    )
+    assert split_window(ts, 0.1, 0.1, "train+validation") == (datetime(2024, 3, 31), None, "test")
+    assert split_window(ts, 0.1, 0.0, "train") == (datetime(2024, 3, 31), None, "validation")
+    with pytest.raises(ValueError):
+        split_window(ts, 0.1, 0.0, "train+validation")
+
+
+def test_test_window_is_never_read_when_fitting_on_train(marts, source):
+    table = marts["interactions"]
+    ts = table["timestamp"].to_numpy()
+    data = load(source, validation_fraction=0.15, test_fraction=0.1)
+    split = data.split
+    assert split.evaluation == "validation" and split.end is not None
+    in_window = (ts >= np.datetime64(split.cutoff)) & (ts < np.datetime64(split.end))
+    assert split.validation_rows == int(in_window.sum())
+    positives = table["is_positive"].to_numpy(zero_copy_only=False)
+    assert len(data.validation) == int((in_window & positives).sum())
+    # refit through validation: evaluated on the test window, trained on more rows
+    refit = load(source, validation_fraction=0.15, test_fraction=0.1, fit_on="train+validation")
+    assert refit.split.evaluation == "test" and refit.split.cutoff == split.end
+    assert refit.split.end is None
+    assert len(refit.train) > len(data.train)
+    assert len(refit.validation) == int(((ts >= np.datetime64(split.end)) & positives).sum())
 
 
 def test_temporal_cutoff_rejects_empty():

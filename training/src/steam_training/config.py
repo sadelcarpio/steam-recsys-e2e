@@ -82,8 +82,13 @@ class TrainingSettings(_SsmSettings):
     aws_region: str = "us-east-1"
 
     # ---- data ----
-    # Last ~10% of the interactions (by time) are the validation split.
+    # Temporal split by row share: [train | validation | test], test = the newest rows.
+    # FIT_ON=train trains on train and evaluates on validation (test is never read: model
+    # selection). FIT_ON=train+validation trains through validation and evaluates on test (the
+    # final check of a chosen recipe). TEST_FRACTION=0: no test window (validation = the rest).
     validation_fraction: float = Field(0.1, gt=0, lt=0.5)
+    test_fraction: float = Field(0.0, ge=0, lt=0.5)
+    fit_on: Literal["train", "train+validation"] = "train"
     # Share of empty-history (first positive review) rows kept for training. Inference never
     # sees an empty history; a few of them teach the model a "no history" fallback query.
     cold_row_fraction: float = Field(0.1, ge=0, le=1)
@@ -94,6 +99,8 @@ class TrainingSettings(_SsmSettings):
     item_id_dropout: float = Field(0.1, ge=0, le=1)
     # Steam user tags as an item feature (marts `game_tags` + `lkp_tags`, spec 8).
     use_game_tags: bool = True
+    # A4 (spec 17): the user tower also reads a tag profile of the history (needs the tags)
+    user_tag_profile: bool = False
 
     # ---- model ----
     game_embedding_dim: int = Field(64, ge=4)
@@ -144,6 +151,14 @@ class TrainingSettings(_SsmSettings):
     # why it would have been rejected). For deliberate swaps, e.g. a first full-data model.
     force_promotion: bool = False
 
+    # ---- experiment tracking (spec 18) ----
+    # MLflow server to log the run to while it trains (e.g. http://localhost:5000); unset = only
+    # models/<model_id>/tracking.json is written (replay it with `python -m steam_training track`)
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment: str = "steam-two-tower"
+    # lineage tag; unset = `git rev-parse HEAD` of the working directory, when it is a checkout
+    git_commit: str | None = None
+
     log_level: str = "INFO"
 
     @model_validator(mode="after")
@@ -152,6 +167,12 @@ class TrainingSettings(_SsmSettings):
             raise ValueError(f"primary_k={self.primary_k} must be one of recall_ks")
         if self.model_id == CHAMPION:
             raise ValueError(f"model_id '{CHAMPION}' is reserved")
+        if self.validation_fraction + self.test_fraction >= 0.5:
+            raise ValueError("validation_fraction + test_fraction must be < 0.5")
+        if self.user_tag_profile and not self.use_game_tags:
+            raise ValueError("USER_TAG_PROFILE needs USE_GAME_TAGS")
+        if self.fit_on == "train+validation" and self.test_fraction == 0:
+            raise ValueError("FIT_ON=train+validation needs TEST_FRACTION > 0 to evaluate on")
         return self
 
 
@@ -172,6 +193,9 @@ NOT_FINGERPRINTED = {
     "eval_max_rows",
     "min_improvement",
     "force_promotion",
+    "mlflow_tracking_uri",
+    "mlflow_experiment",
+    "git_commit",
     "log_level",
 }
 
@@ -196,11 +220,20 @@ class ExportSettings(_SsmSettings):
     log_level: str = "INFO"
 
 
+class TrackSettings(_SsmSettings):
+    """Settings of `python -m steam_training track` (replay a run into MLflow, set aliases)."""
+
+    model_artifacts_bucket: str = Field(pattern=BUCKET_PATTERN)
+    mlflow_tracking_uri: str
+    mlflow_experiment: str = "steam-two-tower"
+    log_level: str = "INFO"
+
+
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=level.upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         force=True,
     )
-    for noisy in ("botocore", "boto3", "urllib3", "pyiceberg"):
+    for noisy in ("botocore", "boto3", "urllib3", "pyiceberg", "mlflow"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
