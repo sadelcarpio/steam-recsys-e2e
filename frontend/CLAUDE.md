@@ -15,7 +15,9 @@ Human docs: `README.md`.
   - `src/cards.ts`: DOM rendering (`h` helper, cards with the explanation's model, the liked
     games strip of `/u/<n>`, details dialog, summaries)
   - `src/liked.ts`: picked games, most recent first, at most `MAX_LIKED_GAMES`, in
-    localStorage (best effort)
+    localStorage (best effort); `move` reorders them. The discover page numbers the chips
+    1..n in this order (the user tower's history order, slot 0 = most recent, sent as is) and
+    reorders them by pointer drag (mouse and touch) or arrow keys
   - `src/router.ts`: `/` and `/u/<user number>` (history API; CloudFront serves index.html for
     extensionless paths), `neighbours` (user page ← / → links)
   - `src/main.ts`: app shell and pages

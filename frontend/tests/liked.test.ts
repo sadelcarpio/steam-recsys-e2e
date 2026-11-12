@@ -39,6 +39,21 @@ describe("liked games", () => {
     expect(liked.add({ game_id: 6, name: "G6" })).toBe(true);
   });
 
+  it("moves a game to another position, shifting the others, and remembers it", () => {
+    const liked = new LikedGames(localStorage);
+    liked.clear();
+    for (let i = 1; i <= 4; i++) liked.add({ game_id: i, name: `G${i}` }); // [4, 3, 2, 1]
+    liked.move(3, 0); // the oldest becomes the most recent
+    expect(liked.games.map((g) => g.game_id)).toEqual([1, 4, 3, 2]);
+    liked.move(0, 2);
+    expect(liked.games.map((g) => g.game_id)).toEqual([4, 3, 1, 2]);
+    liked.move(1, 9); // clamped to the end
+    expect(liked.games.map((g) => g.game_id)).toEqual([4, 1, 2, 3]);
+    liked.move(7, 0); // no such position: nothing changes
+    liked.move(2, 2);
+    expect(new LikedGames(localStorage).games.map((g) => g.game_id)).toEqual([4, 1, 2, 3]);
+  });
+
   it("trims a longer stored list", () => {
     const stored = Array.from({ length: 8 }, (_, i) => ({ game_id: i, name: `G${i}` }));
     localStorage.setItem("recsys.liked", JSON.stringify(stored));

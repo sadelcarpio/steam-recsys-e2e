@@ -33,6 +33,9 @@ export const t = {
   searchUnavailable: "La búsqueda no está disponible",
   noResults: "Sin resultados",
   picked: (n: number, max: number) => `${n} de ${max} juegos elegidos`,
+  // shown once there are 2+ picks: the chips' numbers are the model's history order
+  pickOrder: " · 1 = el más reciente. Arrástralos (o usa las flechas) para cambiar el orden.",
+  pickLabel: (position: number, name: string) => `${position}.º ${name}`,
   noneChosen: "Aún no elegiste ningún juego.",
   remove: (name: string) => `Quitar ${name}`,
   recommend: "Recomendar",
