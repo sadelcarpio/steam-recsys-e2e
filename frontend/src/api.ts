@@ -60,9 +60,10 @@ export interface SearchIndex {
 
 export const SEARCH_INDEX_FORMAT = 1;
 export const LIMIT = 30; // serving MAX_LIMIT (inference writes 30 per user)
-// The user tower reads the last 5 liked games (training USER_HISTORY_LENGTH): more would be
-// ignored. Serving accepts up to 100.
-export const MAX_LIKED_GAMES = 5;
+// The champion's user tower reads the last 20 liked games (its training HISTORY_LENGTH, A3
+// len20-attn): more would be ignored. Follow the champion's history length. Serving accepts up
+// to 100.
+export const MAX_LIKED_GAMES = 20;
 // Demo user number (spec 13): 1 = the most active user. Never a Steam id; user_id in responses is
 // a pseudonymous id, kept as a string (it exceeds JavaScript's safe integers).
 export const USER_IDX_PATTERN = /^[1-9][0-9]{0,9}$/;
