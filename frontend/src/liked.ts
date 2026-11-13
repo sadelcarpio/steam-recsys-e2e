@@ -36,6 +36,19 @@ export class LikedGames {
     return true;
   }
 
+  /** Moves the game at position `from` to position `to` (0 = most recent); the others shift. */
+  move(from: number, to: number): void {
+    const last = this.games.length - 1;
+    if (from < 0 || from > last) return;
+    to = Math.min(Math.max(to, 0), last);
+    if (from === to) return;
+    const games = [...this.games];
+    const [game] = games.splice(from, 1);
+    games.splice(to, 0, game);
+    this.games = games;
+    this.save();
+  }
+
   remove(gameId: number): void {
     this.games = this.games.filter((g) => g.game_id !== gameId);
     this.save();

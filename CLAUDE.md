@@ -26,7 +26,8 @@ component, described below:
   whose `ci-passed` job is the required check on `main`). CD runs on every merge to `main`
   (`cd.yml`: pipeline guard → infrastructure plan/apply → changed components), separated by
   component, every deploy job in the `prod` GitHub environment (required reviewer); CI jobs that
-  use AWS run in `dev`. Training / promotion / inference `run_now` stay manual.
+  use AWS run in `dev`. Training / promotion / inference `run_now` stay manual (a training code change only pushes the
+  CPU image `training:<sha>`, `training-image-cd.yml`, so locally trained models can be promoted).
 - All sensitive information such as API Keys or username / passwords must live in AWS Secrets Manager, env variables
   under AWS Parameter Store, with the convention following the directory name (kebab-case) and the env variable name.
   Each component

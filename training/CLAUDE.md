@@ -144,4 +144,5 @@ Add deps only with `uv add` (never edit the lock). torch is routed per extra to 
 `uv remove torch` deletes that routing, so restore it before re-adding torch.
 
 Infra for this component: `infrastructure/training.tf`. Workflows: `training-ci.yml`,
-`training-cd.yml`, `training-promote.yml`.
+`training-cd.yml`, `training-promote.yml`, `training-image-cd.yml` (CPU image on merges, via
+`cd.yml`; no training job).

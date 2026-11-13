@@ -6,7 +6,9 @@ name: CD
 # Every `prod` job waits for the environment's required reviewer: one review for the
 # infrastructure apply (after its plan is in the summary), one for the component deploys (they
 # wait together). Training and promotion stay manual (training CD, training promote); so does an
-# inference run_now. A failed guard: re-run the failed jobs once the pipeline finishes.
+# inference run_now. Training code changes only build and push the CPU image `training:<sha>`
+# (training-image-cd.yml), so locally trained models can be promoted with that image.
+# A failed guard: re-run the failed jobs once the pipeline finishes.
 on:
   push:
     branches: [main]
@@ -27,6 +29,7 @@ jobs:
       data-ingestion: ${{ steps.diff.outputs.data-ingestion }}
       etl: ${{ steps.diff.outputs.etl }}
       inference: ${{ steps.diff.outputs.inference }}
+      training-image: ${{ steps.diff.outputs.training-image }}
       serving: ${{ steps.diff.outputs.serving }}
       frontend: ${{ steps.diff.outputs.frontend }}
       infrastructure: ${{ steps.diff.outputs.infrastructure }}
@@ -34,8 +37,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Same patterns as ci.yml (minus training). A change to this file or to the pipeline
-      # guard, or a manual run, deploys everything.
+      # Same patterns as ci.yml (training: the image only, no training job). A change to this
+      # file or to the pipeline guard, or a manual run, deploys everything.
       - id: diff
         env:
           BEFORE: ${{ github.event.before }}
@@ -54,6 +57,7 @@ jobs:
             echo "data-ingestion=$(changed 'data_ingestion/|\.github/workflows/data-ingestion-[^/]*\.yml$')"
             echo "etl=$(changed 'etl/|\.github/workflows/etl-[^/]*\.yml$')"
             echo "inference=$(changed 'inference/|training/src/|training/pyproject\.toml$|serving/src/|serving/pyproject\.toml$|\.github/workflows/inference-[^/]*\.yml$')"
+            echo "training-image=$(changed 'training/src/|training/pyproject\.toml$|training/uv\.lock$|training/Dockerfile$|\.github/workflows/training-image-[^/]*\.yml$')"
             echo "serving=$(changed 'serving/|\.github/workflows/serving-[^/]*\.yml$')"
             echo "frontend=$(changed 'frontend/|infrastructure/cloudfront/|\.github/workflows/frontend-[^/]*\.yml$')"
             echo "infrastructure=$(changed 'infrastructure/|\.github/workflows/infrastructure-[^/]*\.yml$')"
@@ -114,6 +118,16 @@ jobs:
       !cancelled() && needs.guard.result == 'success' && needs.changes.outputs.inference == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
     uses: ./.github/workflows/inference-cd.yml
+    permissions:
+      id-token: write
+      contents: read
+
+  training-image:
+    needs: [changes, guard, infrastructure]
+    if: >-
+      !cancelled() && needs.guard.result == 'success' && needs.changes.outputs.training-image == 'true'
+      && contains(fromJSON('["success", "skipped"]'), needs.infrastructure.result)
+    uses: ./.github/workflows/training-image-cd.yml
     permissions:
       id-token: write
       contents: read
