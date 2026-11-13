@@ -211,6 +211,24 @@ def backfill_budget(stored: int | None, per_run: int, max_stored: int) -> int:
     return per_run
 
 
+# Reviews Steam counts but never returns (deleted, hidden, counted late): a walk this close to
+# Steam's count still ran out of reviews.
+UNFETCHED_SLACK = 100
+UNFETCHED_SLACK_RATIO = 0.01
+
+
+def unfetched_slack(steam_total: int) -> int:
+    return max(UNFETCHED_SLACK, int(steam_total * UNFETCHED_SLACK_RATIO))
+
+
+def walk_exhausted(fetched: int, steam_total: int | None) -> bool:
+    """A walk that stopped short of its budget really ran out of reviews: it fetched what Steam
+    says there is (`total_reviews` of its first page), up to `unfetched_slack`. Paging can end
+    early (an empty page, a repeated or missing cursor), so a short walk alone proves nothing.
+    An unknown total trusts the walk."""
+    return steam_total is None or steam_total - fetched <= unfetched_slack(steam_total)
+
+
 class ReviewsCursorState:
     def __init__(self, table: Any, resource: Any) -> None:
         self._table = table
@@ -265,6 +283,29 @@ class ReviewsCursorState:
                 ConditionExpression="attribute_exists(appid) "
                 "AND attribute_not_exists(stored_reviews)",
                 ExpressionAttributeValues={":s": stored_reviews, ":t": _now()},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
+    def reopen_backfill(self, appid: int, stored_reviews: int) -> bool:
+        """Mark a complete backfill pending again (it was completed by a walk that ended early),
+        seeding `stored_reviews` when it has none. False when the cursor is missing, has no
+        `oldest_review_ts` or is not complete, so reopening is idempotent."""
+        try:
+            self._table.update_item(
+                Key={"appid": appid},
+                UpdateExpression="SET backfill_complete = :f, updated_at = :t, "
+                "stored_reviews = if_not_exists(stored_reviews, :s)",
+                ConditionExpression="attribute_exists(oldest_review_ts) AND backfill_complete = :c",
+                ExpressionAttributeValues={
+                    ":f": False,
+                    ":c": True,
+                    ":s": stored_reviews,
+                    ":t": _now(),
+                },
             )
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":

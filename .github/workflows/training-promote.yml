@@ -1,19 +1,27 @@
 name: training promote
 
-# Manual: evaluates a trained model (default: this commit's) against the current champion on
-# the same validation rows (after both training cutoffs) in a SageMaker job running the model's
-# own image `training:<model_id>` (or `image_tag`, e.g. for a model trained locally). Writes evaluation/<model_id>/metrics.json; when the candidate
-# beats the champion (and the popularity baseline) on warm recall@PRIMARY_K, copies it to
-# models/champion/ and evaluation/champion/metrics.json.
+# Manual: evaluates a trained model against the current champion on the same validation rows
+# (after both training cutoffs) in a SageMaker job, then writes evaluation/<model_id>/metrics.json;
+# when the candidate beats the champion (and the popularity baseline) on warm recall@PRIMARY_K,
+# copies it to models/champion/ and evaluation/champion/metrics.json.
+#
+# Two ids, often but not always the same string:
+#   model_id  = the model's folder, s3://model-artifacts-<acct>/models/<model_id>/
+#   image_tag = the code that evaluates it, ECR training:<image_tag>
+# A model from *training CD* is named after its commit sha, and that commit's image has the
+# same tag, so both inputs can stay empty (= the commit this workflow runs on) or be that sha.
+# A model trained locally is named local-<short sha>-<suffix> and has no image of its own:
+# set image_tag to a pushed image that can load it, e.g. the merge commit sha that contains
+# its code (*training image CD* pushes training:<merge sha>).
 on:
   workflow_dispatch:
     inputs:
       model_id:
-        description: "Commit sha of a model trained by *training CD* (empty = this commit)"
+        description: "Model id = folder models/<model_id>/ in the bucket: the commit sha for training CD models, local-<sha>-<suffix> for local ones (empty = this commit's sha)"
         type: string
         default: ""
       image_tag:
-        description: "Image to evaluate with (empty = training:<model_id>; a pushed sha for a model trained locally)"
+        description: "Image tag in ECR training:<tag> that runs the evaluation (empty = model_id, right for training CD models; for local-… models: a merge commit sha that has an image)"
         type: string
         default: ""
       env_overrides:

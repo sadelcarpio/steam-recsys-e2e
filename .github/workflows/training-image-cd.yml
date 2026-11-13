@@ -1,0 +1,56 @@
+name: training image CD
+
+# Build and push of the CPU training image `training:<sha>` (+ `:latest`) on merges to main that
+# change the training code (through cd.yml), or manual. No SageMaker job: training and
+# promotion stay manual (*training CD*, *training promote*). It gives every merged commit an
+# image, so a model trained locally (`local-…`) is promoted with `image_tag=<merge sha>`
+# (promotion runs on the CPU instance of SSM /training/INSTANCE_TYPE). The GPU image
+# (`<sha>-cu128`) is still built by *training CD* only. ECR keeps the last 30 images
+# (`infrastructure/training.tf`).
+on:
+  workflow_dispatch:
+  workflow_call: # cd.yml, on merges to main
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: training-image-cd
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: training
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: training/uv.lock
+      - run: uv sync --frozen --extra cpu && uv run pytest -q
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Same build as *training CD* (cpu): the tag promote and later runs use
+      - name: Build and push training image
+        env:
+          REPO: ${{ steps.ecr.outputs.registry }}/training
+        run: |
+          docker build --build-arg TORCH_VARIANT=cpu -t "$REPO:${GITHUB_SHA}" -t "$REPO:latest" .
+          docker push "$REPO:${GITHUB_SHA}"
+          docker push "$REPO:latest"
+          echo "Pushed \`training:${GITHUB_SHA}\` (promote a local model with this \`image_tag\`)" \
+            >> "$GITHUB_STEP_SUMMARY"

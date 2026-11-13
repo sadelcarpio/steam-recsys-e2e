@@ -89,8 +89,11 @@ each later run every review since the last one. Games whose first scrape was cap
 load ran with a 2000 cap) get the rest from the backfill: each run fetches up to `BACKFILL_REVIEWS_PER_RUN` **older** reviews per game with the GetAppReviews
 `date_range_start: 1, date_range_end: <oldest_review_ts>` range (newest-first inside
 the range, the end inclusive), and moves the cursor's `oldest_review_ts` back. When the range
-runs out (Steam stops returning pages, for the biggest games after a few hundred thousand
-reviews) the cursor gets `backfill_complete`. It also gets it once the game has
+runs out the cursor gets `backfill_complete`: the walk ended before its budget **and** fetched
+what Steam counts in the range (the first page's `total_reviews`, minus a slack of
+max(100, 1%) for reviews Steam counts but never returns), or only the boundary second came back.
+A walk that just stops early (an empty page, a repeated cursor) stays pending and continues next
+run; the scraper logs it as `backfill ended early`. It also gets it once the game has
 `BACKFILL_MAX_REVIEWS_PER_GAME` reviews stored (cursor `stored_reviews`): huge games such as
 CS2 (~10M) keep their newest 500k and every new review. Each game backfills at most once per run
 (cursor `backfill_run_id`), so a Spot retry of a task does not spend the budget twice. A review outside the range means Steam ignored it:
@@ -105,6 +108,19 @@ pipeline execution is running):
 ```bash
 AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_backfill --dry-run   # counts only
 AWS_PROFILE=<admin> uv run python -m steam_ingestion.seed_backfill
+```
+
+Before that check, a short walk alone marked the game complete: on 2026-09-28/29 (the old
+`appreviews` endpoint) hundreds of big games stopped far short (Rust 48k of 1.4M reviews,
+ETS2 1.7k of 950k). `reopen_backfills` marks pending again every complete cursor under the cap
+whose raw reviews (Athena) miss more than the slack of its Steam `total_reviews`, seeding
+`stored_reviews` (conditional writes, safe to re-run). Run it once the scraper with the check is
+deployed (an older one would complete them again) and while no pipeline execution is running;
+the next runs backfill them with full ETL refreshes:
+
+```bash
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.reopen_backfills --dry-run   # lists them
+AWS_PROFILE=<admin> uv run python -m steam_ingestion.reopen_backfills
 ```
 
 ## Configuration

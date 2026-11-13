@@ -14,7 +14,12 @@ from steam_ingestion.models import PartitionFile
 from steam_ingestion.reviews_scraping.scraper import build_review_record, scrape_partition
 from steam_ingestion.schemas import REVIEWS_SCHEMA
 from steam_ingestion.shutdown import Shutdown, ShutdownRequested
-from steam_ingestion.state import ReviewCursor, ReviewsCursorState, backfill_budget
+from steam_ingestion.state import (
+    ReviewCursor,
+    ReviewsCursorState,
+    backfill_budget,
+    walk_exhausted,
+)
 from steam_ingestion.steam_api import SteamClient
 from steam_ingestion.storage import list_keys, write_partition
 
@@ -447,6 +452,117 @@ def test_backfill_budget_is_capped_by_the_stored_reviews() -> None:
     assert pending.backfill_budget(100, 500) == 50
     done = ReviewCursor(10, 5, oldest_review_ts=3, backfill_complete=True, stored_reviews=1)
     assert done.backfill_budget(100, 500) == 0
+
+
+@responses.activate
+def test_backfill_that_ends_before_steams_count_stays_pending(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    """Steam's paging can end early (here an empty page): a short walk alone is not the end of
+    the history when Steam counts many more reviews in the range (Rust, 2026-09-28: 48k of
+    1.4M)."""
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=1000, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(6, 600)]], total=1000)
+    _mock_reviews(10, [[_review(3, 300), _review(2, 200)], []], total=900, until=300)
+
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [2, 3, 6]
+    cursor = _cursor(aws, 10)
+    assert _backfill_state(cursor) == (200, False)  # moved back, the rest is next run's
+    assert cursor["backfill_run_id"] == "run-1"
+
+
+@responses.activate
+def test_backfill_within_the_slack_of_steams_count_completes(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    """Steam counts reviews it never returns (deleted, hidden): a walk that fetched all but a
+    few of them ran out of reviews."""
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=100, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(6, 600)]], total=100)
+    _mock_reviews(10, [[_review(3, 300), _review(2, 200)]], total=90, until=300)
+
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
+
+    assert _backfill_state(_cursor(aws, 10)) == (200, True)
+
+
+@responses.activate
+def test_first_scrape_that_ends_before_steams_count_backfills(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    """Without a cap, a first scrape that stops short of Steam's count (a repeated cursor here)
+    is not the whole history: the backward pass of the same run continues from its oldest."""
+    _seed(aws, [10])
+    _mock_reviews(10, [[_review(5, 500), _review(4, 400)]], total=1000)
+    _mock_reviews(10, [[_review(4, 400), _review(3, 300)]], total=998, until=400)
+
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
+
+    assert sorted(_rows(aws)["rec_id"].to_list()) == [3, 4, 4, 5]
+    cursor = _cursor(aws, 10)
+    assert _backfill_state(cursor) == (300, False)
+    assert int(cursor["stored_reviews"]) == 4
+
+
+@responses.activate
+def test_backfill_that_gets_nothing_older_completes(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    """Short of Steam's count but only the boundary second came back: Steam will not page
+    further, and a backfill that never moves would stay pending (full ETL refreshes) forever."""
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=1000, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(6, 600)]], total=1000)
+    _mock_reviews(10, [[_review(3, 300)], []], total=900, until=300)
+
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
+
+    assert _backfill_state(_cursor(aws, 10)) == (300, True)
+
+
+@responses.activate
+def test_backfill_that_gets_no_review_stays_pending(
+    aws: SimpleNamespace, settings: IngestionSettings, client
+) -> None:
+    """Not even the boundary review of the inclusive range: a Steam hiccup, retried next run."""
+    _seed(aws, [10])
+    ReviewsCursorState(aws.cursors, aws.dynamodb).save(
+        {10: ReviewCursor(last_review_ts=500, total_reviews=1000, oldest_review_ts=300)}
+    )
+    _mock_reviews(10, [[_review(6, 600)]], total=1000)
+    _mock_reviews(10, [[]], total=900, until=300)
+
+    assert scrape_partition(
+        KEY, settings, client, aws.s3, aws.dynamodb, user_id_key=USER_KEY, today=TODAY
+    )
+
+    assert _backfill_state(_cursor(aws, 10)) == (300, False)
+
+
+def test_walk_exhausted_allows_a_slack() -> None:
+    assert walk_exhausted(5, None)  # unknown count: trust the walk
+    assert walk_exhausted(0, 100)  # within the absolute slack (100)
+    assert not walk_exhausted(0, 101)
+    assert walk_exhausted(990_000, 1_000_000)  # 1% of a big game
+    assert not walk_exhausted(48_418, 1_412_461)  # Rust's early end
 
 
 def _pending(stored: int | None = None, run_id: str | None = None) -> ReviewCursor:

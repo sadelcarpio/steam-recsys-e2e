@@ -74,9 +74,9 @@ variable "max_reviews_per_game" {
 }
 
 variable "backfill_reviews_per_run" {
-  description = "Older reviews backfilled per game per run past the ones already scraped; 0 = off. While any backfill is pending the pipeline's Transform runs dbt with FULL_REFRESH."
+  description = "Older reviews backfilled per game per run past the ones already scraped; 0 = off. While any backfill is pending the pipeline's Transform runs dbt with FULL_REFRESH. 250000 (2026-11): the reopened backfills of reopen_backfills finish in two runs instead of five (~+5 h on the first)."
   type        = number
-  default     = 100000
+  default     = 250000
 }
 
 variable "backfill_max_reviews_per_game" {
