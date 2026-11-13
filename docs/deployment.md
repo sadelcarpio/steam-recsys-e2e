@@ -351,7 +351,7 @@ To swap in a model that loses (e.g. the first one trained on the full backfill),
 
 The pipeline's last step (`Infer`, a SageMaker Processing job on `ml.m5.2xlarge`) runs every week
 once `models/champion/metadata.json` exists: it scores the `MAX_USERS` (SSM, Terraform variable
-`inference_max_users`, default 1000000) most active users of `user_features` against every game, reranks the candidates of the 1000 most active users (>= 6 reviews) with Bedrock and
+`inference_max_users`, default 1000000) most active users of `user_features` against every game, reranks the candidates of the `inference_rerank_max_users` (default 100) most active users (>= 6 reviews) with Bedrock and
 writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`
 (plus the `__popular__` fallback item). It also loads the details of games missing from
 DynamoDB `game-details` (the first run writes the whole catalog, ~176k games on the 2026-09 data;

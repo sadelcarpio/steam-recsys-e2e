@@ -12,7 +12,7 @@ steam_marts (Iceberg, pyiceberg)
   game_features  latest row per game   ─► item tower ─┴► exact top K per user (reviewed games excluded)
   interactions   reviewed games, review counts, recent positives        │
                                                                     ▼
-                           1000 most active users (>= 6 reviews) ─► Bedrock: 1. ranking  2. explanations
+                            100 most active users (>= 6 reviews) ─► Bedrock: 1. ranking  2. explanations
                                                                     │
                                                                     ▼
                               DynamoDB game-explainable-recommendations (one item per user, changed ones only,
@@ -43,7 +43,7 @@ steam_marts (Iceberg, pyiceberg)
    (exact brute force, no ANN), and the top `TOP_K` (30) are kept. Games newer than the model
    are ranked from their content features (their ids map to OOV).
 3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
-   and at most `RERANK_MAX_USERS` (1000), are sent to Bedrock (Converse API) with their last
+   and at most `RERANK_MAX_USERS` (100), are sent to Bedrock (Converse API) with their last
    last 5 liked games (the start of the user tower's history) and their K
    candidates. Each game is one line: name | genres | top 5 Steam tags | developers | free or paid | positive
    review share | Steam short description (mart `game_details`, cut at
@@ -229,7 +229,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `PRUNE_UNSEEN` | false | Also delete the stored users a capped run did not write (one-off: the spec 13 rekey) |
 | `RERANK_ENABLED` | true | |
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
-| `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 1000 | Who gets reranked |
+| `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 100 | Who gets reranked |
 | `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
 | `RERANK_ENABLED_STAGES` | `rank+explain` | Or `explain`: keep the retrieval order, only explain it (Terraform `inference_rerank_stages`) |
 | `RERANK_BLEND_WEIGHT` | 1.0 | Final order = `w * llm_rank + (1 - w) * retrieval_rank` (Terraform `inference_rerank_blend_weight`) |
