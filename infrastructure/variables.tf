@@ -189,9 +189,9 @@ variable "inference_bedrock_model_id" {
 }
 
 variable "inference_max_users" {
-  description = "Users scored per scheduled run (the most active ones); 0 = every user with a positive review (~33M, far beyond the job's max runtime). Users left out keep their previous item or get the popular list."
+  description = "Users scored per scheduled run (the most active ones); 0 = every user with a positive review (~39M, far beyond the job's max runtime). Users left out keep their previous item (until a PRUNE_UNSEEN run deletes it) or get the popular list. 200000 (spec 14): a weekly run rewrites ~60-70% of the scored users, so the cap sets most of the DynamoDB cost."
   type        = number
-  default     = 1000000
+  default     = 200000
 }
 
 variable "inference_rerank_max_users" {

@@ -128,8 +128,9 @@ Sin un modelo promovido, el paso de inferencia se omite. Después corre sola tod
 ### 8. Generar las recomendaciones
 
 Actions → **inference CD** con `run_now` marcado y
-`env_overrides=MAX_USERS=1000000 RERANK_MAX_USERS=2000`. Tarda unas 2,5 h; el límite de
-`MAX_USERS` mantiene el job dentro de su máximo de 4 h (todos los usuarios no alcanzan).
+sin `env_overrides` (usa SSM: `MAX_USERS` = 200k usuarios, 100 rerankeados con el LLM). Tarda
+unos 30-40 min; el límite de `MAX_USERS` mantiene el job dentro de su máximo de 4 h (todos los
+usuarios no alcanzan) y acota el costo de DynamoDB.
 
 ### 9. Probar la API
 
