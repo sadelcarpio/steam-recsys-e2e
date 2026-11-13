@@ -351,7 +351,7 @@ To swap in a model that loses (e.g. the first one trained on the full backfill),
 
 The pipeline's last step (`Infer`, a SageMaker Processing job on `ml.m5.2xlarge`) runs every week
 once `models/champion/metadata.json` exists: it scores the `MAX_USERS` (SSM, Terraform variable
-`inference_max_users`, default 1000000) most active users of `user_features` against every game, reranks the candidates of the `inference_rerank_max_users` (default 100) most active users (>= 6 reviews) with Bedrock and
+`inference_max_users`, default 200000) most active users of `interactions` against every game, reranks the candidates of the `inference_rerank_max_users` (default 100) most active users (>= 6 reviews) with Bedrock and
 writes the users whose recommendations changed to DynamoDB `game-explainable-recommendations`
 (plus the `__popular__` fallback item). It also loads the details of games missing from
 DynamoDB `game-details` (the first run writes the whole catalog, ~176k games on the 2026-09 data;
@@ -377,10 +377,15 @@ items; harmless, but wasted Bedrock calls).
 
 **Run time.** The job must finish within `inference_max_runtime_seconds` (4 h). After the reviews
 backfill (~33M users with a positive review, 112M reviews) a full run does not fit, so scheduled
-runs score `MAX_USERS` = 1M users (~1-2 h, mostly the DynamoDB writes of changed users). Users
-left out keep their previous item, or get the popular list. `env_overrides` of a run-now takes
-precedence over SSM (e.g. `MAX_USERS=2000000`); stored users that are gone are only deleted on a
-full run (`MAX_USERS=0`).
+runs score `MAX_USERS` = 200k users (~30-40 min; 1M took ~40-55 min, mostly the DynamoDB writes
+of changed users). Users left out keep their previous item, or get the popular list.
+`env_overrides` of a run-now takes precedence over SSM (e.g. `MAX_USERS=2000000`); stored users that are gone are only deleted on a
+full run (`MAX_USERS=0`) or with `PRUNE_UNSEEN=true`.
+
+**Cost of a run (spec 14).** A weekly run with the same champion rewrites ~60-70% of the scored
+users (each item ~1.8 KB, 2 write units), so `MAX_USERS` sets most of the DynamoDB cost: ~$0.8
+per run at 1M users, ~$0.17 at 200k. A run after a promotion rewrites every scored user. The
+Bedrock cost follows `inference_rerank_max_users` (~$0.7 per run at 100 users with Nova 2 Lite).
 
 **Memory / quota.** The job loads every review of `interactions` (112M rows after the backfill),
 which ran out of the 16 GB of `ml.t3.xlarge` (2026-09-30). The default is `ml.m5.2xlarge` (32 GB,
@@ -516,6 +521,19 @@ this order, because each one needs the previous one live:
    ```sql
    drop table steam_marts.user_features;  -- Iceberg: removes its data too
    ```
+
+**Release with the lower `MAX_USERS` (spec 14, 2026-11):** `inference_max_users` 1000000 →
+200000.
+1. Merge to `main`: *infrastructure CD* `apply` updates SSM `/inference/MAX_USERS`. No image
+   changes; the next `Infer` scores 200k users.
+2. The ~800k stored users past the cap keep their last list (A3, 2026-11-13) until they are
+   deleted. Delete them on the next run-now you'd do anyway (e.g. the inference after the next
+   promotion): *inference CD* with `run_now` and `env_overrides` `PRUNE_UNSEEN=true`. The
+   deletes cost ~$1 of write units and save ~1.5 GB of storage (~$0.4 per month); afterwards
+   those users get the popular list. The table should then hold ~200k items:
+   `aws dynamodb describe-table --table-name game-explainable-recommendations --query 'Table.ItemCount'`
+   (updated every ~6 h).
+   Revert: set the variable back (the next run rewrites the users it scores).
 
 **Release with the reviews backfill (spec 6):** order matters, because the new `Transform` step
 reads `etl_full_refresh` from the Lambda's result:
