@@ -163,8 +163,8 @@ Los usuarios se piden por **número de usuario** (spec 13): 1 es quien más rese
 siguiente, y así hasta `max_user`. No se guarda ningún ID de Steam: el `user_id` de las
 respuestas es un seudónimo (un hash con clave del ID), y la numeración se recalcula en cada
 corrida del pipeline. El modelo usa los últimos 5 juegos con reseña positiva de cada usuario.
-Los más activos (`RERANK_MAX_USERS`, 1.000 por defecto), es decir, aproximadamente los números
-del 1 al 1.000, reciben además el reordenamiento del LLM (`"reranked": true`), con una
+Los más activos (`RERANK_MAX_USERS`, 100 por defecto), es decir, aproximadamente los números
+del 1 al 100, reciben además el reordenamiento del LLM (`"reranked": true`), con una
 explicación para las 5 primeras recomendaciones: cualquier número de ese rango sirve para una
 demo. Un usuario sin lista (solo reseñas negativas, o fuera de los `MAX_USERS` calculados)
 recibe la lista popular (`"source": "popular"`), y un número mayor que `max_user`, un 404. El detalle de cada endpoint
