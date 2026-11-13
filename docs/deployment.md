@@ -523,6 +523,20 @@ aws dynamodb scan --table-name reviews-state-cursor --select COUNT \
   --expression-attribute-values '{":f": {"BOOL": false}}'     # games still backfilling
 ```
 
+**Release with the early-complete backfill fix (2026-11):** a backward walk that ended early
+used to mark the game complete (Rust: 48k of 1.4M reviews), so ~539 big games stopped
+backfilling.
+1. Merge to `main`, with no pipeline execution running: *infrastructure CD* sets
+   `BACKFILL_REVIEWS_PER_RUN` to 250000 and *data-ingestion CD* deploys the scraper that only
+   completes a backfill once it fetched Steam's count (`walk_exhausted`).
+2. Before the next scheduled run, with no execution running, reopen the affected cursors:
+   `cd data_ingestion && AWS_PROFILE=<admin> uv run python -m steam_ingestion.reopen_backfills`
+   (`--dry-run` first lists them). Never before step 1: the old scraper would complete them
+   again on the next short walk.
+3. The next two runs are ~5 h and ~1 h longer (about 25M + 3.5M reviews) and do full
+   refreshes; check the progress with the scan above. The scraper logs `backfill ended early`
+   for walks that stay pending.
+
 **Release with Steam user tags (spec 8):**
 1. Merge to `main`.
 2. *infrastructure CD* `apply`: task definition `tags-scraping`, the `Scrape` branch, `Scan` on

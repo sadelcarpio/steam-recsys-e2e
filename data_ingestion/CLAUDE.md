@@ -46,6 +46,8 @@ ids). Human docs: `README.md`.
     (`run_query`: Athena rows as strings)
   - `seed_stored_reviews.py`: one-off, seeds `stored_reviews` of the pending backfills
     (reuses `seed_backfill.query_scraped`)
+  - `reopen_backfills.py`: one-off, marks pending again the complete backfills whose raw
+    reviews fall short of Steam's `total_reviews` (completed by a walk that ended early)
   - `seed_coming_soon.py`: one-off, seeds `coming_soon` of games scraped before spec 10 and
     re-queues the ones that already look released
 - `scraping.Dockerfile`: one image for both ECS tasks
@@ -63,7 +65,9 @@ ids). Human docs: `README.md`.
 - Review cursors are committed only for games whose rows are fully flushed. A game that was
   split across a flush keeps its old cursor (duplicates are possible, gaps are not).
 - Backfill: `oldest_review_ts` only moves back to reviews that are buffered (so written with the
-  cursor); `backfill_complete` only when a range walk ended before the budget, or once
+  cursor); `backfill_complete` only when a range walk ended before the budget *and* fetched
+  Steam's count for the range (`state.walk_exhausted`, with a slack) or got nothing older than
+  the boundary second (a game's first scrape also needs `walk_exhausted`), or once
   `stored_reviews` reaches `BACKFILL_MAX_REVIEWS_PER_GAME` (the forward pass is never capped by
   it). `stored_reviews` grows only with rows committed with the cursor. A failed backfill never
   fails the game. A game backfills at most once per run id (`backfill_run_id`, set when a

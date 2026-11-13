@@ -5,10 +5,13 @@ stored in `reviews-state-cursor` (forward pass, capped by `max_reviews_per_game`
 older reviews are pending, it pages the range `[1, oldest_review_ts]` newest-first for up to
 `backfill_reviews_per_run` reviews and moves `oldest_review_ts` back (backward pass); an
 exhausted range, or `backfill_max_reviews_per_game` reviews stored (`stored_reviews`), marks the
-game `backfill_complete`. Each game backfills at most once per run (`backfill_run_id`): a retried
-task only fetches new reviews of the games its first attempt already backfilled. Rows are
-buffered and flushed to `s3://raw-steam-data-*/reviews/<scrape-date>-<worker-id>-<part>.parquet`;
-after each flush the cursors of games whose reviews are *fully* written are committed. A game
+game `backfill_complete`. A walk that ends before its budget exhausted the range only when it
+fetched what Steam counts in it (`walk_exhausted`), or when only the boundary second came back
+(Steam will not page further): paging can end early, and any other short walk stays pending.
+Each game backfills at most once per run (`backfill_run_id`): a retried task only fetches new
+reviews of the games its first attempt already backfilled. Rows are buffered and flushed to
+`s3://raw-steam-data-*/reviews/<scrape-date>-<worker-id>-<part>.parquet`; after each flush the
+cursors of games whose reviews are *fully* written are committed. A game
 split across a flush keeps its old cursor, so a crash can only re-emit rows (dedupe on `rec_id`
 downstream), never skip them. On SIGTERM (Spot interruption) it stops at the next page,
 flushes, commits the finished games (and the one in its backward pass, as far as it got) and
@@ -31,7 +34,12 @@ from steam_ingestion.config import IngestionSettings, ScrapeTaskSettings, config
 from steam_ingestion.models import REVIEWS_PARTITION_RE, ReviewRecord
 from steam_ingestion.schemas import REVIEWS_SCHEMA
 from steam_ingestion.shutdown import EXIT_CODE, Shutdown, ShutdownRequested
-from steam_ingestion.state import ReviewCursor, ReviewsCursorState, backfill_budget
+from steam_ingestion.state import (
+    ReviewCursor,
+    ReviewsCursorState,
+    backfill_budget,
+    walk_exhausted,
+)
 from steam_ingestion.steam_api import ReviewPage, SteamApiError, SteamClient
 from steam_ingestion.storage import next_part_number, put_parquet, read_partition
 
@@ -127,7 +135,8 @@ def scrape_partition(
 
     buffer: list[ReviewRecord] = []
     completed: dict[int, ReviewCursor] = {}  # finished games whose rows are all in `buffer`/S3
-    failures = backfill_failures = backfill_rows = backfill_skipped = total_rows = 0
+    failures = backfill_failures = backfill_rows = backfill_skipped = backfill_short = 0
+    total_rows = 0
     stopped = False
 
     def flush() -> None:
@@ -190,8 +199,12 @@ def scrape_partition(
             if stored is not None:
                 stored += forward.count
             if previous is None:
-                # first scrape: the whole history unless the cap truncated the walk
-                oldest, complete = forward.oldest, not (cap and forward.count >= cap)
+                # first scrape: the whole history unless the cap truncated the walk or paging
+                # ended before Steam's count (the backward pass below fetches the rest)
+                oldest = forward.oldest
+                complete = not (cap and forward.count >= cap) and walk_exhausted(
+                    forward.count, forward.total
+                )
             complete = complete or _capped(stored, max_stored)
 
             # backward pass: reviews older than the oldest one written (the range end is
@@ -204,7 +217,23 @@ def scrape_partition(
                 backfill_run = run_id
                 try:
                     collect(appid, client.iter_review_pages(appid, 0, budget, oldest), backward)
-                    complete = backward.count < budget  # the range ran out before the budget
+                    if backward.count < budget:  # the walk ended before the budget
+                        complete = walk_exhausted(backward.count, backward.total)
+                        # only the boundary second came back (an empty walk is a Steam hiccup:
+                        # the inclusive range always holds the boundary review)
+                        stalled = backward.oldest is not None and backward.oldest >= oldest
+                        if not complete:
+                            backfill_short += 1
+                            logger.warning(
+                                "appid %d backfill ended early: %d of %s reviews in range%s",
+                                appid,
+                                backward.count,
+                                backward.total,
+                                ", none older: complete" if stalled else "",
+                            )
+                        # nothing older came back: Steam will not page further, and a pending
+                        # backfill that never moves would keep the ETL on full refreshes
+                        complete = complete or stalled
                 except ShutdownRequested:
                     stopped = True  # keep what was buffered, like a failed backfill
                 except SteamApiError as exc:
@@ -242,12 +271,13 @@ def scrape_partition(
 
     logger.info(
         "%s: %d reviews (%d backfilled), %d failed games, %d failed backfills, "
-        "%d backfills already done this run, of %d",
+        "%d backfills ended early, %d backfills already done this run, of %d",
         "stopped" if stopped else "done",
         total_rows,
         backfill_rows,
         failures,
         backfill_failures,
+        backfill_short,
         backfill_skipped,
         len(appids),
     )
