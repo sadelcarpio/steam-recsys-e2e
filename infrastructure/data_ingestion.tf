@@ -97,9 +97,10 @@ resource "aws_ecr_lifecycle_policy" "data_ingestion" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep the 20 most recent images"
-      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 20 }
-      action       = { type = "expire" }
+      # Each deploy pushes 3 images (spec 14): <sha>-amd64, <sha>-arm64 and the index <sha>/latest.
+      description = "Keep the 20 most recent deploys (3 images each)"
+      selection   = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 60 }
+      action      = { type = "expire" }
     }]
   })
 }

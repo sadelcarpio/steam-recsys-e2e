@@ -50,7 +50,10 @@ ids). Human docs: `README.md`.
     reviews fall short of Steam's `total_reviews` (completed by a walk that ended early)
   - `seed_coming_soon.py`: one-off, seeds `coming_soon` of games scraped before spec 10 and
     re-queues the ones that already look released
-- `scraping.Dockerfile`: one image for both ECS tasks
+- `scraping.Dockerfile`: one image for the scraping tasks, multi-arch (linux/amd64 +
+  linux/arm64, spec 14: the CD builds each natively and pushes an index as `<sha>` / `latest`).
+  Every dependency of the `scraping` extra must keep a `manylinux_*_aarch64` wheel; CI builds
+  and smoke-imports the image on both architectures.
 - `scripts/build_lambda.sh`: Lambda zip with base deps only (no `scraping` extra)
 
 ## Invariants (keep them when changing code)

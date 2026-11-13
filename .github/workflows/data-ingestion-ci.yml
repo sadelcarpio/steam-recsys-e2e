@@ -26,12 +26,23 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pytest -q
 
+  # The scraping image is multi-arch (spec 14: ARM64 Fargate tasks): build and smoke-test it
+  # natively on both architectures, as the CD does.
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Build scraping image
         run: docker build -f scraping.Dockerfile -t data-ingestion:ci .
+      - name: Import the scrapers in the image
+        run: >-
+          docker run --rm data-ingestion:ci python -c
+          "import platform, steam_ingestion.games_scraping, steam_ingestion.reviews_scraping,
+          steam_ingestion.tags_scraping; print(platform.machine())"
       - name: Build Lambda zip
+        if: matrix.runner == 'ubuntu-latest'
         run: scripts/build_lambda.sh
