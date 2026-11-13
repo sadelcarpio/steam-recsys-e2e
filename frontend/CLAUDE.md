@@ -33,8 +33,8 @@ Human docs: `README.md`.
 - API text (names, descriptions, LLM explanations) is set with `textContent`, never as HTML.
 - The UI is Spanish: no user-visible string outside `src/i18n.ts`. API errors reach the page
   as Spanish messages by status (`ApiError.message`); the server's text is only in `detail`.
-- `LIMIT` (30) mirrors serving's `MAX_LIMIT`. `MAX_LIKED_GAMES` (5) is the user tower's
-  history length (training `USER_HISTORY_LENGTH`), enforced by `LikedGames`; serving accepts
+- `LIMIT` (30) mirrors serving's `MAX_LIMIT`. `MAX_LIKED_GAMES` (20) is the champion user tower's
+  history length (training `HISTORY_LENGTH`; A3 len20-attn), enforced by `LikedGames`; serving accepts
   up to 100.
 - `SEARCH_INDEX_FORMAT` must match inference's `SEARCH_INDEX_FORMAT`: change both together.
 - Users are addressed by demo user number (`USER_IDX_PATTERN`, serving's
