@@ -2,6 +2,12 @@ name: data-ingestion CD
 
 # Deploy (on merges to main through cd.yml, or manual) of the scraping image (ECR `data-ingestion`) and the
 # `list-partition-game-ids` Lambda code. Infrastructure must be applied first.
+#
+# The scraping image is multi-arch (linux/amd64 + linux/arm64, spec 14): each architecture is
+# built natively on its own runner (no QEMU) by the ungated `build` jobs and handed over as an
+# artifact, so `deploy` is the only job in `prod` (one approval). It pushes `<sha>-amd64` and
+# `<sha>-arm64`, then the index `<sha>` + `latest` over both: task definitions of either
+# architecture pull the same tag.
 on:
   workflow_dispatch:
     inputs:
@@ -29,13 +35,49 @@ defaults:
     working-directory: data_ingestion
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --extra scraping && uv run pytest -q
+
+  build:
+    needs: test
+    if: inputs.target != 'lambda'
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build scraping image (${{ matrix.arch }})
+        run: |
+          docker build -f scraping.Dockerfile -t "data-ingestion:${{ matrix.arch }}" .
+          docker run --rm "data-ingestion:${{ matrix.arch }}" python -c \
+            "import platform, steam_ingestion.games_scraping, steam_ingestion.reviews_scraping, steam_ingestion.tags_scraping; print(platform.machine())"
+          docker save -o "${RUNNER_TEMP}/image-${{ matrix.arch }}.tar" "data-ingestion:${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scraping-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
+          retention-days: 1
+
   deploy:
+    needs: [test, build]
+    # build is skipped for target=lambda
+    if: >-
+      !cancelled() && needs.test.result == 'success'
+      && contains(fromJSON('["success", "skipped"]'), needs.build.result)
     runs-on: ubuntu-latest
     environment: prod
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync --frozen --extra scraping && uv run pytest -q
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -49,14 +91,26 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push scraping image
+      - uses: actions/download-artifact@v4
+        if: inputs.target != 'lambda'
+        with:
+          pattern: scraping-image-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+
+      - name: Push the multi-arch scraping image
         if: inputs.target != 'lambda'
         env:
           REPO: ${{ steps.ecr.outputs.registry }}/data-ingestion
         run: |
-          docker build -f scraping.Dockerfile -t "$REPO:${GITHUB_SHA}" -t "$REPO:latest" .
-          docker push "$REPO:${GITHUB_SHA}"
-          docker push "$REPO:latest"
+          for arch in amd64 arm64; do
+            docker load -i "${RUNNER_TEMP}/images/image-${arch}.tar"
+            docker tag "data-ingestion:${arch}" "$REPO:${GITHUB_SHA}-${arch}"
+            docker push "$REPO:${GITHUB_SHA}-${arch}"
+          done
+          docker buildx imagetools create -t "$REPO:${GITHUB_SHA}" -t "$REPO:latest" \
+            "$REPO:${GITHUB_SHA}-amd64" "$REPO:${GITHUB_SHA}-arm64"
+          docker buildx imagetools inspect "$REPO:latest"
 
       - name: Deploy Lambda code
         if: inputs.target != 'scraping-image'

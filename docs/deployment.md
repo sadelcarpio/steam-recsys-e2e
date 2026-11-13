@@ -517,6 +517,25 @@ this order, because each one needs the previous one live:
    drop table steam_marts.user_features;  -- Iceberg: removes its data too
    ```
 
+**Release with ARM scrapers (spec 14, 2026-11):** the scraping tasks move to Fargate Graviton
+(ARM64, ~20% cheaper, also on Spot), in two PRs merged in this order. The task definitions run
+`:latest`, so the image has to cover both architectures before any task definition switches.
+1. `feature/arm-scrapers-image`: *data-ingestion CD* builds the image natively on an amd64 and an
+   arm64 runner and pushes a multi-arch `:<sha>` / `:latest` (*infrastructure CD* first only
+   raises the ECR retention to 60 images: 3 per deploy). The x86 task definitions keep working.
+   Check: `aws ecr describe-images --repository-name data-ingestion --image-ids imageTag=latest
+   --query 'imageDetails[0].imageManifestMediaType'` is an image index / manifest list.
+2. `feature/arm-scrapers-tasks`: *infrastructure CD* `apply` sets `cpu_architecture = "ARM64"`
+   on the scraping task definitions (games, reviews, tags) and `anonymize-raw-reviews`. Merge it
+   between two scheduled runs, with no execution running; not while a reviews backfill is in
+   its big runs (2026-11-19 / 11-26), so a surprise doesn't cost a backfill week.
+3. Check: `aws ecs describe-task-definition --task-definition reviews-scraping --query
+   'taskDefinition.runtimePlatform'` says `ARM64`. On the next run the scraping tasks start and
+   finish as before (the per-IP rate limit sets the run time).
+
+Rollback: revert step 2 (the image still has amd64). Task size stays 0.5 vCPU / 2 GB; spec 14's
+downsizing to 0.25 vCPU / 1 GB waits for a measured week of peak memory (Container Insights).
+
 **Release with the reviews backfill (spec 6):** order matters, because the new `Transform` step
 reads `etl_full_refresh` from the Lambda's result:
 1. Merge to `main`.

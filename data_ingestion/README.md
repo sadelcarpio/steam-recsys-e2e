@@ -168,10 +168,12 @@ PARTITION_KEY=reviews/local-1/part-000.json uv run python -m steam_ingestion.rev
 
 ## Build & deploy
 
-- Image: `docker build -f scraping.Dockerfile -t data-ingestion .` (both ECS tasks; the task
-  definition picks the module).
+- Image: `docker build -f scraping.Dockerfile -t data-ingestion .` (all scraping tasks; the
+  task definition picks the module). Multi-arch in ECR (linux/amd64 + linux/arm64, spec 14):
+  the tasks can run on Fargate Graviton (ARM64, ~20% cheaper) or x86 with the same tag.
 - Lambda zip: `scripts/build_lambda.sh` → `build/list-partition-game-ids.zip` (no polars).
 - CI: `.github/workflows/data-ingestion-ci.yml` (lint, tests, image + zip build) on changes
   under `data_ingestion/`.
-- CD: run **data-ingestion CD** manually (pushes `data-ingestion:<sha>` + `:latest` to ECR and
-  updates the Lambda code). Requires the infrastructure to be applied first.
+- CD: run **data-ingestion CD** manually (builds the image on an amd64 and an arm64 runner,
+  pushes `data-ingestion:<sha>-amd64` / `<sha>-arm64` and the multi-arch `<sha>` + `:latest` to
+  ECR, and updates the Lambda code). Requires the infrastructure to be applied first.
