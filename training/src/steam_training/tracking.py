@@ -24,7 +24,6 @@ from pathlib import Path
 
 from steam_training.contracts import (
     ARCHITECTURE_VERSION,
-    USER_HISTORY_LENGTH,
     EpochMetrics,
     ModelConfig,
     RetrievalDiagnostics,
@@ -49,7 +48,9 @@ def features(config: ModelConfig) -> dict[str, list[str]]:
     if config.vocab.tags is not None:
         item.append("tags")
     item += ["is_free", "is_free_known", "reviews_ratio"]
-    user = [f"games_reviewed_positive[{USER_HISTORY_LENGTH}]", "history_length"]
+    user = [f"games_reviewed_positive[{config.history_length}]", "history_length"]
+    if config.history_encoder == "attention":
+        user.append(f"history_attention[{config.attention_layers}x{config.attention_heads}]")
     if config.user_tag_profile:
         user.append("history_tag_profile")
     return {"user": user, "item": item}

@@ -109,9 +109,10 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
 }
 ```
 
-- `liked_game_ids`: Steam appids, **most recent first**, 1 to 100 of them. The first 5 that
-  are in the catalog form the model's history (`used_game_ids`), which is the same input as
-  batch `games_reviewed_positive`. Games outside the catalog are listed in
+- `liked_game_ids`: Steam appids, **most recent first**, 1 to 100 of them. The first
+  `history_length` that are in the catalog (5, or the A3 model's 20 / 50) form the model's
+  history (`used_game_ids`), the same input as batch inference's history of the user's last
+  positive reviews. Games outside the catalog are listed in
   `ignored_game_ids`. Every liked game is excluded from the results.
 - If none of the liked games is known, the response is the popular list minus the liked games
   (`source: "popular"`).
@@ -120,7 +121,10 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
   - **User tower:** `models/<model_id>/user_tower.npz`, written by training with each model
     (frozen game table, `seen_games`, 2 MLP layers; ~45 MB on the 186k-game catalog). Format
     2 adds the A4 tag profile (game -> tags lookup, tag table, per-position weights; ~67 MB).
-    Serving reads formats 1 and 2.
+    Format 3 adds the A3 self-attention encoder over the history (a few hundred KB of weights;
+    the tag profile arrays when the model has it); one embedding takes ~0.7 ms for a 50-game
+    history. Serving reads formats 1, 2 and 3: deploy serving before promoting a model of a
+    newer format.
   - **Catalog:** `serving/online/catalog.npz`, written by the inference job every run (item
     embeddings, plus the `game_id`, `game_idx` and name of each catalog row; about 14 MB).
   

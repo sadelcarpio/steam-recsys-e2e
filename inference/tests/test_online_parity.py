@@ -17,13 +17,18 @@ from steam_inference.online import LocalBundleStore, build_catalog, encode_catal
 from steam_inference.retrieval import retrieve
 
 
-@pytest.fixture
-def setup(source, tmp_path):
-    model = make_model(seed=4)
+@pytest.fixture(params=["plain", "a3"])
+def setup(request, source, tmp_path):
+    # a3: 6-game history + attention (numpy format 3)
+    model = (
+        make_model(seed=4)
+        if request.param == "plain"
+        else make_model(seed=4, history_length=6, attention_layers=1)
+    )
     seen = torch.ones(model.config.vocab.games, dtype=torch.bool)
     seen[[5, 9]] = False  # games without training interactions map to OOV
     model.set_seen_games(seen)
-    data = load_inference_data(source)
+    data = load_inference_data(source, history_length=model.config.history_length)
     candidates = retrieve(
         model, data.games, data.users, data.reviews, k=5, user_batch_size=2, item_batch_size=7
     )
@@ -52,9 +57,11 @@ HISTORIES = [
 @pytest.mark.parametrize("history", HISTORIES)
 def test_user_embedding_matches_torch(setup, history):
     model, _, _, online = setup
+    length = model.config.history_length
+    history = (history + [0] * length)[:length]
     with torch.no_grad():
         expected = model.user_tower(torch.tensor([history])).numpy()[0]
-    np.testing.assert_allclose(online.user_tower.embed(np.array(history)), expected, atol=1e-6)
+    np.testing.assert_allclose(online.user_tower.embed(np.array(history)), expected, atol=1e-5)
 
 
 def test_names_and_ids(setup):
@@ -66,8 +73,10 @@ def test_names_and_ids(setup):
 def test_same_top_k_as_batch_retrieval(setup):
     """Sending a user's history (most recent first) followed by the rest of their reviewed
     games gives exactly their batch candidates: same history, same exclusions."""
-    _, data, candidates, online = setup
-    u = data.users.user_id.tolist().index(102)  # 6 positive reviews: history = the last 5
+    model, data, candidates, online = setup
+    # a user whose history is full (more positives than the model reads)
+    full = (data.users.history != 0).sum(axis=1) == model.config.history_length
+    u = int(np.flatnonzero(full)[0])
     history_rows = data.games.catalog.rows(data.users.history[u][data.users.history[u] != 0])
     liked_ids = [int(data.games.game_id[r]) for r in history_rows]
     reviewed = data.reviews.of(data.users.take(np.array([u]))).row(0)
@@ -102,3 +111,29 @@ def test_tag_profile_user_embedding_matches_torch(history):
     with torch.no_grad():
         expected = model.user_tower(torch.tensor([history])).numpy()[0]
     np.testing.assert_allclose(tower.embed(np.array(history)), expected, atol=1e-6)
+
+
+LONG_HISTORIES = [
+    [7, 6, 5, 3, 2, 4, 10],  # full, 5 unseen
+    [2, 0, 0, 0, 0, 0, 0],
+    [21, 9, 4, 8, 0, 0, 0],  # beyond the vocabulary, unseen, a tag beyond the table
+    [0, 0, 0, 0, 0, 0, 0],  # empty: the summary token attends to itself only
+]
+
+
+@pytest.mark.parametrize("tag_profile", [False, True])
+@pytest.mark.parametrize("history", LONG_HISTORIES)
+def test_attention_user_embedding_matches_torch(history, tag_profile):
+    """A3 (numpy format 3): 2 attention blocks over a 7-game history (+ the tag profile)."""
+    model = make_model(
+        seed=3, tags=6, tag_profile=tag_profile, history_length=7, attention_layers=2
+    )
+    seen = torch.ones(model.config.vocab.games, dtype=torch.bool)
+    seen[[5, 9]] = False
+    model.set_seen_games(seen)
+    tower = UserTower.from_bytes(encode_user_tower(model, "a3"))
+    assert tower.attention is not None and tower.attention.layers == 2
+    assert (tower.tag_table is not None) == tag_profile
+    with torch.no_grad():
+        expected = model.user_tower(torch.tensor([history])).numpy()[0]
+    np.testing.assert_allclose(tower.embed(np.array(history)), expected, atol=1e-5)

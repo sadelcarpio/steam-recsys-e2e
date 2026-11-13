@@ -49,6 +49,10 @@ def model_config(settings: TrainingSettings, vocab: VocabSizes) -> ModelConfig:
         output_dim=settings.output_dim,
         temperature=settings.temperature,
         user_tag_profile=settings.user_tag_profile,
+        history_length=settings.history_length,
+        history_encoder=settings.history_encoder,
+        attention_heads=settings.attention_heads,
+        attention_layers=settings.attention_layers,
     )
 
 
@@ -60,7 +64,10 @@ def retrieval_loss(model: TwoTowerModel, batch: Batch, logq_correction: bool) ->
         logits = logits - batch.target_log_prob[None, :]
     target = batch.target
     collision = target[None, :] == target[:, None]
-    in_history = (batch.history[:, :, None] == target[None, None, :]).any(dim=1)
+    # one history slot at a time: [B, B] instead of [B, history_length, B] (A3: 50+ slots)
+    in_history = torch.zeros_like(collision)
+    for slot in range(batch.history.shape[1]):
+        in_history |= batch.history[:, slot, None] == target[None, :]
     diagonal = torch.eye(len(batch), dtype=torch.bool, device=logits.device)
     logits = logits.masked_fill((collision | in_history) & ~diagonal, float("-inf"))
 
@@ -168,7 +175,7 @@ def train_model(
     resume (the best weights are in the checkpoint)."""
     device = device or torch.device("cpu")
     torch.manual_seed(settings.seed)
-    model = TwoTowerModel(model_config(settings, vocab))
+    model = TwoTowerModel(model_config(settings, vocab), settings.attention_dropout)
     seen = torch.zeros(vocab.games, dtype=torch.bool)
     seen[torch.from_numpy(examples.target)] = True
     model.set_seen_games(seen)

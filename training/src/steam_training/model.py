@@ -9,6 +9,9 @@ User tower: mean-pooled `games_reviewed_positive` over a *frozen copy* of the it
             (tag weight x a learned weight per history position, normalized per user) over
             the user tower's own tag embeddings. It reads the raw game ids, so games without
             training interactions (OOV in the game table) still contribute their tags.
+            A3: `history_length` games (5 = the mart's history); with `history_encoder =
+            "attention"` a self-attention summary of the history (`HistoryAttention`) is
+            appended to the mean (which stays, so attention only adds to the baseline).
 
 The copy (`UserTower.game_table`) is re-synced from the item tower once per epoch
 (`TwoTowerModel.sync_user_table`): the user tower chases a target that only moves between
@@ -20,13 +23,14 @@ OOV, so new games are represented by the OOV row plus their content features.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from steam_training.contracts import OOV_ID, PADDING_ID, USER_HISTORY_LENGTH, ModelConfig
+from steam_training.contracts import OOV_ID, PADDING_ID, ModelConfig
 
 NUM_NUMERIC_FEATURES = 3
 ATTRIBUTES = ("developers", "publishers", "genres", "categories")
@@ -143,15 +147,80 @@ class ItemTower(nn.Module):
 _TAG_BUFFERS = ("game_tag_values", "game_tag_offsets", "game_tag_weights")
 
 
+class _AttentionBlock(nn.Module):
+    """Pre-LN transformer block: x + MHA(LN(x)), then x + FFN(LN(x)) (ReLU, width 2 x dim).
+    Written out (not nn.TransformerEncoderLayer) so a numpy port can mirror it exactly."""
+
+    def __init__(self, dim: int, heads: int, dropout: float) -> None:
+        super().__init__()
+        self.heads = heads
+        self.attention_norm = nn.LayerNorm(dim)
+        self.qkv = nn.Linear(dim, 3 * dim)
+        self.out = nn.Linear(dim, dim)
+        self.ffn_norm = nn.LayerNorm(dim)
+        self.ffn = _mlp(dim, 2 * dim, dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, keep: torch.Tensor) -> torch.Tensor:
+        """x: [rows, tokens, dim]; keep: bool [rows, tokens], the keys that can be attended."""
+        rows, tokens, dim = x.shape
+        q, k, v = self.qkv(self.attention_norm(x)).chunk(3, dim=-1)
+
+        def split(t: torch.Tensor) -> torch.Tensor:
+            return t.reshape(rows, tokens, self.heads, dim // self.heads).transpose(1, 2)
+
+        q, k, v = split(q), split(k), split(v)
+        scores = q @ k.transpose(-2, -1) / math.sqrt(dim // self.heads)
+        scores = scores.masked_fill(~keep[:, None, None, :], float("-inf"))
+        weights = self.dropout(torch.softmax(scores, dim=-1))
+        mixed = (weights @ v).transpose(1, 2).reshape(rows, tokens, dim)
+        x = x + self.dropout(self.out(mixed))
+        return x + self.dropout(self.ffn(self.ffn_norm(x)))
+
+
+class HistoryAttention(nn.Module):
+    """A3: self-attention over [summary token, history games + learned position embeddings]
+    (position 0 = the most recent game). Returns the summary token's final state (LayerNorm),
+    a learned attention pooling of the history. The summary token is always attendable, so an
+    empty history is well defined (it attends to itself only)."""
+
+    def __init__(self, dim: int, length: int, heads: int, layers: int, dropout: float) -> None:
+        super().__init__()
+        self.summary = nn.Parameter(torch.randn(dim) * 0.02)
+        self.position = nn.Parameter(torch.randn(length, dim) * 0.02)
+        self.blocks = nn.ModuleList(_AttentionBlock(dim, heads, dropout) for _ in range(layers))
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, games: torch.Tensor, present: torch.Tensor) -> torch.Tensor:
+        """games: [rows, length, dim] (padding rows are zeros); present: bool [rows, length]."""
+        rows = games.shape[0]
+        x = torch.cat([self.summary.expand(rows, 1, -1), games + self.position], dim=1)
+        keep = torch.cat([present.new_ones(rows, 1), present], dim=1)
+        for block in self.blocks:
+            x = block(x, keep)
+        return self.norm(x[:, 0])
+
+
 class UserTower(nn.Module):
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, attention_dropout: float = 0.0) -> None:
         super().__init__()
         vocab = config.vocab
         self.num_games = vocab.games
+        self.history_length = config.history_length
         self.game_ids = _GameIdMapper(vocab.games)
         # Frozen snapshot of ItemTower.game_embedding, refreshed once per epoch.
         self.register_buffer("game_table", torch.zeros(vocab.games, config.game_embedding_dim))
         in_dim = config.game_embedding_dim + 1
+        self.attention: HistoryAttention | None = None
+        if config.history_encoder == "attention":
+            self.attention = HistoryAttention(
+                config.game_embedding_dim,
+                config.history_length,
+                config.attention_heads,
+                config.attention_layers,
+                attention_dropout,
+            )
+            in_dim += config.game_embedding_dim
         self.tag_profile: nn.EmbeddingBag | None = None
         if config.user_tag_profile:
             if vocab.tags is None:
@@ -164,7 +233,7 @@ class UserTower(nn.Module):
             )
             self.register_buffer("game_tag_weights", torch.zeros(0))
             # learned weight of each history position (exp, so positive; starts equal)
-            self.tag_recency = nn.Parameter(torch.zeros(USER_HISTORY_LENGTH))
+            self.tag_recency = nn.Parameter(torch.zeros(config.history_length))
             self.tag_profile = nn.EmbeddingBag(
                 vocab.tags, config.attribute_embedding_dim, mode="sum", padding_idx=PADDING_ID
             )
@@ -213,22 +282,30 @@ class UserTower(nn.Module):
         return self.tag_profile(values, offsets, per_sample_weights=weights)
 
     def forward(self, history: torch.Tensor) -> torch.Tensor:
-        """history: int64 [rows, USER_HISTORY_LENGTH], most recent first, 0 = padding."""
+        """history: int64 [rows, history_length], most recent first, 0 = padding."""
+        if history.shape[1] != self.history_length:
+            raise ValueError(
+                f"history has {history.shape[1]} games, the model reads {self.history_length}"
+            )
         ids = self.game_ids(history)
-        present = (ids != PADDING_ID).unsqueeze(-1).float()
-        lengths = present.sum(dim=1)
-        pooled = (self.game_table[ids] * present).sum(dim=1) / lengths.clamp(min=1)
-        parts = [pooled, lengths / USER_HISTORY_LENGTH]
+        present = ids != PADDING_ID
+        weights = present.unsqueeze(-1).float()
+        lengths = weights.sum(dim=1)
+        games = self.game_table[ids]
+        pooled = (games * weights).sum(dim=1) / lengths.clamp(min=1)
+        parts = [pooled, lengths / self.history_length]
+        if self.attention is not None:
+            parts.append(self.attention(games * weights, present))
         if self.tag_profile is not None:
             parts.append(self._tag_profile(history))
         return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 
 
 class TwoTowerModel(nn.Module):
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, attention_dropout: float = 0.0) -> None:
         super().__init__()
         self.config = config
-        self.user_tower = UserTower(config)
+        self.user_tower = UserTower(config, attention_dropout)
         self.item_tower = ItemTower(config)
 
     @torch.no_grad()

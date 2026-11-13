@@ -8,7 +8,7 @@ Function, after `Transform`. The step is skipped
 ```
 S3 models/champion/  ─► two-tower model (steam_training)
 steam_marts (Iceberg, pyiceberg)
-  user_features  latest row per user   ─► user tower ─┐
+  interactions   last N liked games   ─► user tower ─┐
   game_features  latest row per game   ─► item tower ─┴► exact top K per user (reviewed games excluded)
   interactions   reviewed games, review counts, recent positives        │
                                                                     ▼
@@ -24,15 +24,17 @@ steam_marts (Iceberg, pyiceberg)
   user_index       ─► S3 serving/users/ index.bin + index.json (demo user numbers for serving)
 ```
 
-1. **Features.** The latest `user_features` / `game_features` row is each user's / game's
-   current state, plus each game's Steam user tags (`game_tags` + `lkp_tags`) when those marts
+1. **Features.** The latest `game_features` row is each game's current state. Each user's
+   history is their last `history_length` positive reviews in `interactions`, most recent
+   first (the model's length: 5, or 20 / 50 for A3; the same derivation as training). Games
+   also get their Steam user tags (`game_tags` + `lkp_tags`) when those marts
    exist (required when the model was trained with tags, else only used by the prompt and the
    adult filter). `interactions` supplies each user's reviewed games (excluded from the
    recommendations) and review counts. All reads are
    pinned to the snapshot current at the start of the run. Memory follows the `MAX_USERS`
    kept users, not the size of the marts: `interactions` is read twice (review counts of every
    user, which pick the most active; then only the kept users' reviews plus the popularity
-   counts), and `user_features` keeps only the kept users' latest row as it streams. Marts are
+   counts, from which the histories are built). Marts are
    read batch by batch within each file (`steam_training.data.IcebergSource`; pyiceberg's own
    reader loads every file fully at once). The 2026-09-30 run ran out of 16 GB that way
    (`game_features` 112M rows, `interactions` 112M, `user_features` 95M); now loading 1M users
@@ -42,7 +44,7 @@ steam_marts (Iceberg, pyiceberg)
    are ranked from their content features (their ids map to OOV).
 3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
    and at most `RERANK_MAX_USERS` (1000), are sent to Bedrock (Converse API) with their last
-   `games_reviewed_positive` (the last 5 liked games, the user tower's input) and their K
+   last 5 liked games (the start of the user tower's history) and their K
    candidates. Each game is one line: name | genres | top 5 Steam tags | developers | free or paid | positive
    review share | Steam short description (mart `game_details`, cut at
    `RERANK_DESCRIPTION_CHARS`). Two calls per user (spec 7):
@@ -62,7 +64,7 @@ steam_marts (Iceberg, pyiceberg)
    answer with no usable tool call (e.g. stop reason `malformed_tool_use`) is retried up to
    twice. A user whose calls all fail keeps the retrieval order without explanations. The run
    logs the retries, fallbacks and templates in its summary, and the Bedrock usage per stage.
-4. **Output.** One item per user who has `user_features`. Only the users whose
+4. **Output.** One item per user with a positive review. Only the users whose
    recommendations changed are written. The run first scans the table for each stored
    `content_hash` (reading only `user_id` and `content_hash`). An item is rewritten only when
    the hash of its new content differs: the model, the rerank flag, and the ordered games with
@@ -73,7 +75,7 @@ steam_marts (Iceberg, pyiceberg)
    ids of spec 13: users past the cap then get the popular list until scored again). A new
    champion changes
    `model_id`, so it rewrites every user. The run logs `written` / `unchanged` / `deleted`.
-   Users with only negative reviews have no `user_features` row and get no item.
+   Users with only negative reviews have no history and get no item.
 5. **Popularity fallback.** The reserved item `user_id = "__popular__"` holds the `TOP_K`
    catalog games with the most positive reviews in the last `POPULAR_WINDOW_DAYS` (90) before
    the newest review (`model_id` `popularity`, never reranked). Serving returns it to users

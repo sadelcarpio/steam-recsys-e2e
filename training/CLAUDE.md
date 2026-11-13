@@ -15,7 +15,8 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
     sampled `EvalRows`), `catalog_at` (streamed latest row per game), `Ragged` (CSR lists)
   - `batching.py`: stage 2. `build_examples` (explicit negatives), `Collator` (history / item-id
     dropout, hard negatives, `reseed(epoch)`), `Batch.to(device)`, `make_loader`
-  - `model.py`: `ItemTower`, `UserTower` (frozen `game_table` buffer), `TwoTowerModel`
+  - `model.py`: `ItemTower`, `UserTower` (frozen `game_table` buffer, A3 `HistoryAttention`),
+    `TwoTowerModel`
   - `train.py`: stage 3. `retrieval_loss`, `train_model` (sync table → capped mining → epoch →
     checkpoint), `Checkpoints` protocol, `fingerprint`, `resolve_device`
   - `evaluation.py`: stage 4. Pure-torch scoring loops on `device` (`CatalogIndex`, recall@K,
@@ -95,6 +96,18 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   (`USER_TOWER_TAG_PROFILE_FORMAT`, + `TAG_PROFILE_ARRAYS`); plain models stay format 1, so a
   serving deploy that only reads format 1 keeps working until an A4 model is promoted. Deploy
   serving (reads 1 and 2) before promoting an A4 model.
+- A3 (`ModelConfig.history_length` / `history_encoder`, optional, defaults = the old layout):
+  `history_length` != `USER_HISTORY_LENGTH` (the mart's 5) makes `load_training_data` derive
+  histories from `interactions` (pass 2 keeps every positive before `end`): `TrainRows.history`
+  is then a lazy `data.HistoryIndex` (sorted games + a pointer per row; `index[rows]` gathers a
+  matrix, `take` stays lazy), never a [rows, N] matrix. The derived history must start with the
+  mart's 5 games (`test_derived_histories_extend_the_mart_history`; the load logs the match
+  rate on real data). The attention encoder (`HistoryAttention`) exports as numpy format 3
+  (`USER_TOWER_ATTENTION_FORMAT`, `ATTENTION_ARRAYS`; serving's port, parity in inference's
+  `test_online_parity.py`). Inference derives the same history (`steam_inference.features`,
+  `Reviews.histories`) at the model's `history_length`. Promotion loads the longer history of
+  candidate and champion; `evaluation.model_scores` feeds each model its own prefix (most
+  recent first, so the prefix is that model's history).
 - `DATA_CACHE_DIR` (local runs): `iceberg_batches` reads through `data.CachingFileIO`, which
   copies each remote data / delete file once (`<dir>/<scheme>/<bucket>/<key>`, `.part` +
   rename) and serves it from disk. Safe because Iceberg files are immutable. It relies on

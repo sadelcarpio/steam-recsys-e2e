@@ -1,9 +1,11 @@
 """Stage 1: the current state of every user and game, read from the Iceberg marts.
 
-`game_features` and `user_features` are the source of truth: the latest row per game / user is
-its current state. `interactions` only adds each user's reviewed games (excluded from the
-recommendations), review counts (who gets reranked) and the recent positive reviews per game
-(the popularity fallback served to users without recommendations). Every read of one run is
+`game_features` is the source of truth for games (the latest row per game is its current state).
+Users come from `interactions`: review counts (who is scored, who gets reranked), each user's
+reviewed games (excluded from the recommendations) and history (their last `history_length`
+positive reviews, most recent first: training's derivation, `steam_training.data.HistoryIndex`,
+whose first 5 games are the mart's `user_features` history), and the recent positive reviews
+per game (the popularity fallback served to users without recommendations). Every read of one run is
 pinned to the snapshot current at its start, and marts are streamed in Arrow batches, reduced
 as they arrive.
 
@@ -17,14 +19,13 @@ release status comes from `game_details` (spec 10: unreleased games are never pu
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from pyiceberg.exceptions import NoSuchTableError
-from steam_training.contracts import USER_HISTORY_LENGTH
+from steam_training.contracts import PADDING_ID, USER_HISTORY_LENGTH
 from steam_training.data import (
     GAME_FEATURE_COLUMNS,
     GAME_TAG_COLUMNS,
@@ -34,7 +35,6 @@ from steam_training.data import (
     attach_game_tags,
     catalog_from_table,
     latest_game_rows,
-    pad_history,
 )
 
 from steam_inference.contracts import clean_text
@@ -46,7 +46,6 @@ TABLES = [
     "lkp_genres",
     "lkp_developers",
     "game_features",
-    "user_features",
     "interactions",
 ]
 # Steam user tags (spec 8): used when both exist.
@@ -119,11 +118,12 @@ class Games:
 
 @dataclass(frozen=True)
 class Users:
-    """Latest user_features row per user, sorted by user_id, with their reviews
-    (`review_start` / `review_count` into `Reviews`)."""
+    """Users with a positive review, sorted by user_id, with their reviews (`review_start` /
+    `review_count` into `Reviews`)."""
 
     user_id: np.ndarray  # int64 [n]
-    history: np.ndarray  # int64 [n, 5] last positively reviewed games, most recent first
+    # int64 [n, history_length] last positively reviewed games, most recent first, 0 = padding
+    history: np.ndarray
     review_start: np.ndarray  # int64 [n]
     review_count: np.ndarray  # int64 [n]
 
@@ -144,6 +144,21 @@ class Reviews:
     """Reviewed game of every review, grouped by user (ascending), newest first within a user."""
 
     game_idx: np.ndarray  # int64
+    is_positive: np.ndarray | None = None  # bool, same order
+
+    def histories(self, review_users: np.ndarray, user_id: np.ndarray, length: int) -> np.ndarray:
+        """[len(user_id), length]: each user's last `length` positively reviewed games, most
+        recent first, PADDING_ID-padded (`review_users`: the user of each review)."""
+        assert self.is_positive is not None
+        positive = np.flatnonzero(self.is_positive)
+        owner = review_users[positive]
+        start = np.searchsorted(owner, user_id, side="left")
+        count = np.minimum(np.searchsorted(owner, user_id, side="right") - start, length)
+        column = np.arange(length)
+        out = np.full((len(user_id), length), PADDING_ID, dtype=np.int64)
+        mask = column[None, :] < count[:, None]
+        out[mask] = self.game_idx[positive[(start[:, None] + column[None, :])[mask]]]
+        return out
 
     def of(self, users: Users) -> Ragged:
         """Reviewed games of `users` as CSR rows."""
@@ -173,14 +188,15 @@ def load_inference_data(
     popular_window_days: int = 90,
     description_chars: int = 0,
     require_tags: bool = False,
+    history_length: int = USER_HISTORY_LENGTH,
 ) -> InferenceData:
     """`description_chars` > 0 also loads the games' short descriptions (for the rerank
     prompt), truncated to that many characters. `require_tags`: fail when the tag marts are
-    missing (the model was trained with tags).
+    missing (the model was trained with tags). `history_length`: the model's
+    (`ModelConfig.history_length`).
 
     Memory follows the kept users, not the size of the marts: `interactions` is read twice (the
-    activity of every user, then the reviews of the selected users only) and `user_features`
-    is reduced to the latest row of the selected users as it streams."""
+    activity of every user, then the reviews of the selected users only)."""
     snapshots = {table: source.snapshot_id(table) for table in TABLES}
     snapshots |= _optional_snapshots(source, TAG_TABLES)
     if require_tags and not set(TAG_TABLES) <= set(snapshots):
@@ -192,17 +208,7 @@ def load_inference_data(
     review_users, reviews, popular = collect_reviews(
         source, snapshots["interactions"], selected, popular_since=popular_since
     )
-    users = latest_users(
-        source.batches(
-            "user_features",
-            ["user_id", "timestamp", "games_reviewed_positive"],
-            snapshots["user_features"],
-        ),
-        keep=selected,
-    )
-    start = np.searchsorted(review_users, users.user_id, side="left")
-    count = np.searchsorted(review_users, users.user_id, side="right") - start
-    users = Users(users.user_id, users.history, start, count)
+    users = users_of(review_users, reviews, selected, history_length)
     log.info(
         "loaded %d users (of %d with a positive review), %d of %d reviews, %d catalog games "
         "(snapshots %s)",
@@ -220,6 +226,16 @@ def load_inference_data(
         popular_counts=popular,
         snapshots=snapshots,
     )
+
+
+def users_of(
+    review_users: np.ndarray, reviews: Reviews, user_id: np.ndarray, history_length: int
+) -> Users:
+    """`Users` of `user_id` (sorted) from their reviews (`collect_reviews`)."""
+    start = np.searchsorted(review_users, user_id, side="left")
+    count = np.searchsorted(review_users, user_id, side="right") - start
+    history = reviews.histories(review_users, user_id, history_length)
+    return Users(user_id, history, start, count)
 
 
 def load_games(
@@ -347,7 +363,7 @@ class Activity:
     newest: int  # micros of the newest review (0 without reviews)
 
     def most_active(self, max_users: int = 0) -> np.ndarray:
-        """Sorted ids of the users with a positive review (so a `user_features` row); with
+        """Sorted ids of the users with a positive review (so a history); with
         `max_users`, only that many of the most active (ties: lowest user id)."""
         eligible = np.flatnonzero(self.positives > 0)
         if max_users and len(eligible) > max_users:
@@ -413,7 +429,7 @@ def collect_reviews(
     first within a user, popular counts). Only the reviews of `selected` (sorted user ids) are
     kept; the popular counts (positive reviews per game_idx since `popular_since`) cover every
     user."""
-    users, games, timestamps = [], [], []
+    users, games, timestamps, positives = [], [], [], []
     popular = np.zeros(0, dtype=np.int64)
     for batch in source.batches("interactions", REVIEW_COLUMNS, snapshot_id):
         user, game, ts, positive = review_rows(batch, until)
@@ -427,14 +443,16 @@ def collect_reviews(
         users.append(user[keep])
         games.append(game[keep])
         timestamps.append(ts[keep])
+        positives.append(positive[keep])
     if not users:
         empty = np.zeros(0, dtype=np.int64)
-        return empty, Reviews(empty), popular
+        return empty, Reviews(empty, np.zeros(0, dtype=bool)), popular
     user = np.concatenate(users)
     game = np.concatenate(games)
     ts = np.concatenate(timestamps)
+    positive = np.concatenate(positives)
     order = np.lexsort((-ts, user))
-    return user[order], Reviews(game[order]), popular
+    return user[order], Reviews(game[order], positive[order]), popular
 
 
 def popular_counts(
@@ -445,58 +463,6 @@ def popular_counts(
         return np.zeros(0, dtype=np.int64)
     recent = positive & (micros >= micros.max() - window_days * DAY_MICROS)
     return np.bincount(game_idx[recent], minlength=int(game_idx.max()) + 1).astype(np.int64)
-
-
-def latest_users(
-    batches: Iterable[pa.RecordBatch],
-    *,
-    keep: np.ndarray | None = None,
-    until: int | None = None,
-) -> Users:
-    """Latest row per user (only `keep`, sorted user ids, when given; only rows at or before
-    `until` when given), reduced whenever the buffer outgrows the kept state."""
-    state: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-    buffer: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-    buffered = 0
-    for batch in batches:
-        user = _int64(pc.fill_null(batch["user_id"], -1))
-        ts = _micros(batch["timestamp"])
-        rows = user >= 0
-        if keep is not None:
-            rows &= member(user, keep)
-        if until is not None:
-            rows &= ts <= until
-        if not rows.any():
-            continue
-        history = pad_history(Ragged.from_arrow(batch["games_reviewed_positive"].filter(rows)))
-        buffer.append((user[rows], ts[rows], history))
-        buffered += int(rows.sum())
-        if buffered > max(REDUCE_ROWS, 2 * (len(state[0]) if state else 0)):
-            state = _reduce_latest([state, *buffer] if state else buffer)
-            buffer, buffered = [], 0
-    if buffer or state is None:
-        state = _reduce_latest([state, *buffer] if state else buffer)
-    user, _, history = state
-    zeros = np.zeros(len(user), dtype=np.int64)
-    return Users(user, history, zeros, zeros.copy())
-
-
-def _reduce_latest(parts: list) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if not parts:
-        return (
-            np.zeros(0, dtype=np.int64),
-            np.zeros(0, dtype=np.int64),
-            np.zeros((0, USER_HISTORY_LENGTH), dtype=np.int64),
-        )
-    user = np.concatenate([p[0] for p in parts])
-    ts = np.concatenate([p[1] for p in parts])
-    history = np.concatenate([p[2] for p in parts])
-    order = np.lexsort((ts, user))
-    ordered = user[order]
-    is_last = np.ones(len(order), dtype=bool)
-    is_last[:-1] = ordered[:-1] != ordered[1:]
-    keep = order[is_last]
-    return user[keep], ts[keep], history[keep]
 
 
 def _lookup_names(source: TableSource, table: str, snapshot_id: int | None) -> np.ndarray:

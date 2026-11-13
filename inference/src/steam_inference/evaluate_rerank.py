@@ -4,7 +4,7 @@
 
 For a sample of users active after the model's training cutoff (at least `RERANK_MIN_REVIEWS`
 reviews before it and a positive review at or after it), the history is rebuilt as of the cutoff
-(latest `user_features` row and reviewed games before it), the model retrieves `TOP_K`
+(the last positives and reviewed games before it), the model retrieves `TOP_K`
 candidates, and stage 1 of the rerank orders them. Hit rate@5 / @10 against the games each user
 reviewed positively from the cutoff on is reported for the retrieval order, the LLM order and the
 blends of both. Game features are the current ones (a small leak, the same for every order).
@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 
 import numpy as np
 from steam_training.artifacts import ArtifactStore
+from steam_training.contracts import USER_HISTORY_LENGTH
 from steam_training.data import TableSource
 
 from steam_inference.adult import adult_mask
@@ -34,11 +35,11 @@ from steam_inference.features import (
     Reviews,
     Users,
     collect_reviews,
-    latest_users,
     load_games,
     member,
     review_activity,
     review_rows,
+    users_of,
 )
 from steam_inference.pipeline import rerank_request
 from steam_inference.rerank import BedrockRerankLlm, RerankLlm, blend, llm_ranking
@@ -100,7 +101,11 @@ def sample_cohort(
 
 
 def load_cohort(
-    source: TableSource, snapshots: dict, cohort: np.ndarray, cutoff: int
+    source: TableSource,
+    snapshots: dict,
+    cohort: np.ndarray,
+    cutoff: int,
+    history_length: int = USER_HISTORY_LENGTH,
 ) -> tuple[Users, Reviews, dict[int, set[int]]]:
     """The cohort's users and reviewed games as of the cutoff, and their later positives."""
     review_users, reviews, _ = collect_reviews(
@@ -112,18 +117,8 @@ def load_cohort(
         keep = positive & (ts >= cutoff) & member(user, cohort)
         for u, g in zip(user[keep].tolist(), game[keep].tolist(), strict=True):
             after.setdefault(u, set()).add(g)
-    users = latest_users(
-        source.batches(
-            "user_features",
-            ["user_id", "timestamp", "games_reviewed_positive"],
-            snapshots["user_features"],
-        ),
-        keep=cohort,
-        until=cutoff - 1,
-    )
-    start = np.searchsorted(review_users, users.user_id, side="left")
-    count = np.searchsorted(review_users, users.user_id, side="right") - start
-    return Users(users.user_id, users.history, start, count), reviews, after
+    users = users_of(review_users, reviews, cohort, history_length)
+    return users, reviews, after
 
 
 def evaluate_rerank(
@@ -149,7 +144,9 @@ def evaluate_rerank(
         size=users,
         seed=seed,
     )
-    cohort_users, reviews, after = load_cohort(source, snapshots, cohort, cutoff)
+    cohort_users, reviews, after = load_cohort(
+        source, snapshots, cohort, cutoff, metadata.config.history_length
+    )
     log.info("evaluating %d users active after %s", len(cohort_users), metadata.split.cutoff)
     excluded = adult_mask(games) if settings.exclude_adult else np.zeros(len(games), bool)
     if games.coming_soon is not None:

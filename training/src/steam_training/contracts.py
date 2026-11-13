@@ -19,6 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field
 PADDING_ID = 0
 OOV_ID = 1
 FIRST_ID = 2
+# Length of the mart's history (`games_reviewed_positive`, dbt var `user_history_length`): what
+# inference and serving read today. Longer histories (A3) are derived in training from
+# `interactions` (`data.HistoryIndex`) and set per model (`ModelConfig.history_length`).
 USER_HISTORY_LENGTH = 5
 
 # Bump when the model layout changes so an older champion is not loaded into new code.
@@ -53,6 +56,13 @@ class ModelConfig(_Frozen):
     temperature: float
     # A4 (spec 17): tag profile of the history in the user tower; False for older models
     user_tag_profile: bool = False
+    # A3 (spec 17): games in the user tower's history (most recent first), and how they are
+    # pooled: "mean" (the masked mean) or "attention" (also a pre-LN self-attention block over
+    # the history + a learned summary token). Defaults = every model before A3.
+    history_length: int = Field(USER_HISTORY_LENGTH, ge=1, le=512)
+    history_encoder: Literal["mean", "attention"] = "mean"
+    attention_heads: int = Field(2, ge=1)
+    attention_layers: int = Field(1, ge=1)
 
 
 class SplitInfo(_Frozen):

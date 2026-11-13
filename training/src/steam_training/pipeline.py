@@ -49,6 +49,7 @@ _NOT_HYPERPARAMETERS = {
 
 
 def _load(settings: TrainingSettings, source: TableSource, **kwargs: object) -> TrainingData:
+    kwargs.setdefault("history_length", settings.history_length)
     return load_training_data(
         source,
         validation_fraction=settings.validation_fraction,
@@ -311,7 +312,15 @@ def run_promotion(
     with_tags = any(
         m is not None and m.config.vocab.tags is not None for m in (candidate, champion)
     )
-    data = _load(settings, source, cutoff=max(cutoffs), with_train_rows=False, with_tags=with_tags)
+    data = _load(
+        settings,
+        source,
+        cutoff=max(cutoffs),
+        with_train_rows=False,
+        with_tags=with_tags,
+        # the longest history of the two (each model reads its own prefix, `model_scores`)
+        history_length=max(m.config.history_length for m in (candidate, champion) if m),
+    )
     if len(data.validation) == 0:
         raise ValueError(f"no positive interactions after {max(cutoffs)} to evaluate on")
 
