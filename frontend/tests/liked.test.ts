@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_LIKED_GAMES } from "../src/api";
 import { LikedGames } from "../src/liked";
 
 describe("liked games", () => {
@@ -27,8 +28,8 @@ describe("liked games", () => {
     expect(memory.games).toHaveLength(1);
   });
 
-  it("holds at most 5 games (the user tower's history length)", () => {
-    const liked = new LikedGames(null);
+  it("holds at most 5 games when given 5", () => {
+    const liked = new LikedGames(null, 5);
     for (let i = 1; i <= 5; i++) expect(liked.add({ game_id: i, name: `G${i}` })).toBe(true);
     expect(liked.full).toBe(true);
     expect(liked.add({ game_id: 6, name: "G6" })).toBe(false);
@@ -37,6 +38,15 @@ describe("liked games", () => {
     expect(liked.games.map((g) => g.game_id)).toEqual([3, 5, 4, 2, 1]);
     liked.remove(1);
     expect(liked.add({ game_id: 6, name: "G6" })).toBe(true);
+  });
+
+  it("holds the champion's history length by default (20)", () => {
+    expect(MAX_LIKED_GAMES).toBe(20);
+    const liked = new LikedGames(null);
+    for (let i = 1; i <= MAX_LIKED_GAMES; i++) liked.add({ game_id: i, name: `G${i}` });
+    expect(liked.full).toBe(true);
+    expect(liked.add({ game_id: 99, name: "G99" })).toBe(false);
+    expect(liked.games).toHaveLength(20);
   });
 
   it("moves a game to another position, shifting the others, and remembers it", () => {
@@ -55,8 +65,13 @@ describe("liked games", () => {
   });
 
   it("trims a longer stored list", () => {
-    const stored = Array.from({ length: 8 }, (_, i) => ({ game_id: i, name: `G${i}` }));
+    const stored = Array.from({ length: MAX_LIKED_GAMES + 3 }, (_, i) => ({
+      game_id: i,
+      name: `G${i}`,
+    }));
     localStorage.setItem("recsys.liked", JSON.stringify(stored));
-    expect(new LikedGames(localStorage).games.map((g) => g.game_id)).toEqual([0, 1, 2, 3, 4]);
+    expect(new LikedGames(localStorage).games.map((g) => g.game_id)).toEqual(
+      stored.slice(0, MAX_LIKED_GAMES).map((g) => g.game_id),
+    );
   });
 });
