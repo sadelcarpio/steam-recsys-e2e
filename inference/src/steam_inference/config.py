@@ -98,8 +98,9 @@ class InferenceSettings(BaseSettings):
     bedrock_model_id: str = "us.amazon.nova-2-lite-v1:0"
     # Reranked users: at least this many reviews ("more than 5"), the most active first...
     rerank_min_reviews: int = Field(6, ge=1)
-    # ... and at most this many per run (bounds the LLM cost).
-    rerank_max_users: int = Field(1000, ge=0)
+    # ... and at most this many per run (bounds the LLM cost: every run reranks them again,
+    # changed or not). 100 = the demo pages /u/1-100.
+    rerank_max_users: int = Field(100, ge=0)
     # Short description appended to each game of the prompt, cut to this many characters
     # (~50 tokens each at 200; 0 = none). Gives the LLM what the game is, not only its genres.
     rerank_description_chars: int = Field(200, ge=0)

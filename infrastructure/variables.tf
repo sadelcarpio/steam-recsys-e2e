@@ -195,9 +195,9 @@ variable "inference_max_users" {
 }
 
 variable "inference_rerank_max_users" {
-  description = "Users reranked by the LLM per run (the most active ones); bounds the Bedrock cost."
+  description = "Users reranked by the LLM per run (the most active ones); bounds the Bedrock cost. Every run reranks them again, changed or not. 100 = the demo pages /u/1-100."
   type        = number
-  default     = 1000
+  default     = 100
 }
 
 variable "inference_rerank_stages" {
