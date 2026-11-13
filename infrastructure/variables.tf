@@ -189,7 +189,7 @@ variable "inference_bedrock_model_id" {
 }
 
 variable "inference_max_users" {
-  description = "Users scored per scheduled run (the most active ones); 0 = every user of user_features (~33M, far beyond the job's max runtime). Users left out keep their previous item or get the popular list."
+  description = "Users scored per scheduled run (the most active ones); 0 = every user with a positive review (~33M, far beyond the job's max runtime). Users left out keep their previous item or get the popular list."
   type        = number
   default     = 1000000
 }

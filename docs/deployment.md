@@ -286,7 +286,7 @@ Check the result in the Athena console (workgroup `steam-recsys-etl`):
 ```sql
 select count(*) from steam_marts.interactions;
 select count(*) from steam_intermediate.int_games__deduplicated;
-select * from steam_marts.user_features order by timestamp desc limit 10;
+select * from steam_marts.interactions order by timestamp desc limit 10;
 ```
 
 ## 9. Train and promote a model
@@ -499,6 +499,23 @@ components the release does not touch.
 
 Never start step 8 or `run_now` while a pipeline execution is running (step 8 shows how to
 check).
+
+**Release of the derived user histories (A3, 2026-11):** three PRs, merged and deployed in
+this order, because each one needs the previous one live:
+1. `feature/a3-long-history` (training only): longer histories + attention can be trained.
+2. `feature/a3-serving`: serving reads user tower format 3 (attention) and inference derives
+   each user's history from `interactions` (it stops reading `user_features`). Approve the
+   serving and inference deploys, then promote (step 9) and re-run inference. A
+   format-3 model promoted before serving is deployed breaks `POST /recommendations` until it
+   is (the old code refuses the format; the `/users` path is unaffected).
+3. `feature/etl-drop-user-history`: dbt drops `user_features` from the graph and
+   `games_reviewed_positive` from `interactions` (`on_schema_change: sync_all_columns`: an
+   Iceberg `ALTER TABLE DROP COLUMN` on the next `Transform`, no rebuild). Training reads no
+   history column from this release on. Deploy the etl image only after inference from step 2
+   is live. Afterwards, drop the orphaned table in Athena (dbt never drops a removed model):
+   ```sql
+   drop table steam_marts.user_features;  -- Iceberg: removes its data too
+   ```
 
 **Release with the reviews backfill (spec 6):** order matters, because the new `Transform` step
 reads `etl_full_refresh` from the Lambda's result:

@@ -85,31 +85,10 @@ models:
       - name: game_developers
         description: Names (not ids), cleaned. Same for publishers / genres / categories.
 
-  - name: user_features
-    description: Time-versioned user features. One row per (user_id, second of a positive review).
-    data_tests:
-      - unique_combination:
-          arguments:
-            columns: [user_id, timestamp]
-      - expression_is_true:
-          arguments:
-            expression: cardinality(games_reviewed_positive) = {{ var('user_history_length') }}
-      - expression_is_true:
-          arguments:
-            expression: games_reviewed_positive[1] >= 2
-    columns:
-      - name: user_id
-        description: Pseudonymous user id (keyed hash of the Steam author id, spec 13).
-        data_tests: [not_null]
-      - name: games_reviewed_positive
-        description: Last N positively reviewed game_idx, most recent first, right-padded with 0.
-
   - name: interactions
-    description: One row per review of a kept game with user/game features ASOF strictly before it.
-    data_tests:
-      - expression_is_true:
-          arguments:
-            expression: cardinality(games_reviewed_positive) = {{ var('user_history_length') }}
+    description: >
+      One row per review of a kept game with game features ASOF strictly before it. User
+      histories are derived from these rows by training / inference (no stored history).
     columns:
       - name: review_id
         data_tests: [unique, not_null]

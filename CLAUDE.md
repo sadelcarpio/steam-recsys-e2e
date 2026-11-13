@@ -88,7 +88,7 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - S3 raw parquet (Glue `steam_raw`) → Athena → modeled tables → S3 `processed-steam-data-<account-id>/iceberg/`
   (Glue `steam_staging` / `steam_intermediate` / `steam_marts`)
 - dbt (3) runs its models via Athena (workgroup `steam-recsys-etl`)
-- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `user_features`, `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
+- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
 
 ### Public dataset (spec 16)
 
@@ -104,7 +104,7 @@ Order: EventBridge → 1 → 2 → 3 → 4
 
 ### Batch inference (4)
 
-- S3 (Iceberg `user_features`, `game_features`, `interactions`) → features → SageMaker Inference Pipeline
+- S3 (Iceberg `game_features`, `interactions`; user histories derived from `interactions`) → features → SageMaker Inference Pipeline
 - S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → SageMaker Inference Pipeline
 - SageMaker Inference Pipeline ↔ Bedrock (LLM reranking + explanations for the most active reviewers)
 - SageMaker Inference Pipeline → top-K recs (changed users only) + `__popular__` fallback → DynamoDB

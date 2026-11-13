@@ -113,8 +113,7 @@ Human docs: `README.md`.
   has one. An explanation never names the recommended game itself. One user's failure never
   fails the run.
 - User histories come from `interactions` (the model's `ModelConfig.history_length`, same
-  derivation as training's `HistoryIndex`; the first 5 games equal the mart's `user_features`
-  history). `user_features` isn't read. The rerank prompt and the stored `liked` list keep the
+  derivation as training's `HistoryIndex`; the marts store no history). The rerank prompt and the stored `liked` list keep the
   last `LIKED_GAMES` (5) whatever the model's length, so a longer-history model doesn't change
   what users see there.
 - Memory: everything is streamed per batch, and only the `MAX_USERS` kept users' reviews are

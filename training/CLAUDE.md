@@ -85,7 +85,7 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
 - Log formats parsed by `launch.METRIC_DEFINITIONS`: the per-epoch line of `train_model` and
   `pipeline.metrics_line`. Change them together (`test_metric_definitions_parse_the_job_logs`).
 - `inference/` imports this package (path dependency): `TwoTowerModel`, `ArtifactStore`,
-  `IcebergSource`, `latest_game_rows` / `catalog_from_table` / `attach_game_tags`, `pad_history`,
+  `IcebergSource`, `latest_game_rows` / `catalog_from_table` / `attach_game_tags`,
   `evaluation.embed_catalog`. Keep those APIs stable, or update inference in the same change
   (its CI runs on `training/src/**`).
 - Promotion and training run the image of the model's commit (`training:<model_id>`) unless
@@ -96,13 +96,15 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   (`USER_TOWER_TAG_PROFILE_FORMAT`, + `TAG_PROFILE_ARRAYS`); plain models stay format 1, so a
   serving deploy that only reads format 1 keeps working until an A4 model is promoted. Deploy
   serving (reads 1 and 2) before promoting an A4 model.
-- A3 (`ModelConfig.history_length` / `history_encoder`, optional, defaults = the old layout):
-  `history_length` != `USER_HISTORY_LENGTH` (the mart's 5) makes `load_training_data` derive
-  histories from `interactions` (pass 2 keeps every positive before `end`): `TrainRows.history`
-  is then a lazy `data.HistoryIndex` (sorted games + a pointer per row; `index[rows]` gathers a
-  matrix, `take` stays lazy), never a [rows, N] matrix. The derived history must start with the
-  mart's 5 games (`test_derived_histories_extend_the_mart_history`; the load logs the match
-  rate on real data). The attention encoder (`HistoryAttention`) exports as numpy format 3
+- Histories (A3: `ModelConfig.history_length` / `history_encoder`, optional, defaults 5 /
+  mean = the old layout) are always derived from `interactions` (the marts no longer store
+  one): pass 2 keeps every positive before `end`, each row gets its user's last N positives
+  strictly before it, and `TrainRows.history` is a lazy `data.HistoryIndex` (sorted games + a
+  pointer per row; `index[rows]` gathers a matrix, `take` stays lazy), never a [rows, N]
+  matrix. Cold rows are filtered after that with the draws taken in pass 2, so the kept rows
+  are the same as when the mart supplied the warm flag. Reference: the synthetic marts' old
+  history column (`test_histories_are_the_last_positives_before_each_row`); on real data the
+  derivation matched the mart's 5 games on 99.99% of rows (2026-11-12). The attention encoder (`HistoryAttention`) exports as numpy format 3
   (`USER_TOWER_ATTENTION_FORMAT`, `ATTENTION_ARRAYS`; serving's port, parity in inference's
   `test_online_parity.py`). Inference derives the same history (`steam_inference.features`,
   `Reviews.histories`) at the model's `history_length`. Promotion loads the longer history of

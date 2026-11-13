@@ -11,30 +11,15 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PADDING_ID = 0
 OOV_ID = 1
 FIRST_ID = 2
-# dbt var `user_history_length`.
-USER_HISTORY_LENGTH = 5
 
 Id = Annotated[int, Field(ge=FIRST_ID)]
 # Encoded attribute values: a real id, or OOV when the name has no id. Never padding.
 EncodedId = Annotated[int, Field(ge=OOV_ID)]
-
-
-def _padding_or_id(value: int) -> int:
-    if value != PADDING_ID and value < FIRST_ID:
-        raise ValueError(f"history entries are {PADDING_ID} (padding) or >= {FIRST_ID}")
-    return value
-
-
-# Games in a history always come from lkp_games, so they are never OOV.
-HistoryEntry = Annotated[int, AfterValidator(_padding_or_id)]
-History = Annotated[
-    list[HistoryEntry], Field(min_length=USER_HISTORY_LENGTH, max_length=USER_HISTORY_LENGTH)
-]
 
 
 class _Row(BaseModel):
@@ -116,15 +101,6 @@ class GameTagsRow(_Row):
 UserId = Annotated[int, Field(ge=0)]
 
 
-class UserFeaturesRow(_Row):
-    """user_features: state of a user through `timestamp`."""
-
-    user_id: UserId
-    timestamp: datetime
-    # Most recent first, right-padded with PADDING_ID.
-    games_reviewed_positive: History
-
-
 class InteractionRow(_GameFeatures, _Row):
     """interactions: one review with user/game features as of strictly before it."""
 
@@ -133,7 +109,6 @@ class InteractionRow(_GameFeatures, _Row):
     user_id: UserId
     game_id: int
     is_positive: bool
-    games_reviewed_positive: History
 
 
 class UserIndexRow(_Row):
@@ -163,7 +138,6 @@ MART_CONTRACTS: dict[str, type[_Row]] = {
     "game_features": GameFeaturesRow,
     "game_details": GameDetailsRow,
     "game_tags": GameTagsRow,
-    "user_features": UserFeaturesRow,
     "interactions": InteractionRow,
     "user_index": UserIndexRow,
 }

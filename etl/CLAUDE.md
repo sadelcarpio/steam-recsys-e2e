@@ -10,10 +10,10 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
     `models/marts/lookups` (`lkp_*`, append-only, `full_refresh: false`), and `user_index`
     (spec 13), the only `table` materialization (rebuilt every run)
   - `macros/helpers.sql`: run stamp `batch_timestamp()`, reserved `padding_id()` (0) / `oov_id()` (1),
-    `clean_string_array`, `encode_array`, `pad_ids`, `incremental_max`
+    `clean_string_array`, `encode_array`, `incremental_max`
   - `macros/asof.sql` (ASOF join CTEs), `macros/lookups.sql` (dense id vocabularies)
-  - `tests/`: generic `unique_combination`, `expression_is_true` + singular tests (label
-    leakage, `assert_user_index_is_dense`)
+  - `tests/`: generic `unique_combination`, `expression_is_true` + singular tests
+    (`assert_user_index_is_dense`, ...)
   - `profiles.yml`: env-var driven, one `athena` target
 - `src/steam_etl/`
   - `config.py`: `EtlSettings` (env > SSM `/etl/*` when `USE_SSM=true`)
@@ -32,16 +32,20 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
 
 - Raw sources are Glue tables owned by Terraform (`infrastructure/etl.tf`, `local.raw_tables`),
   mirrored by `tests/integration/fixtures.py`. Update both when the scraper schema changes.
-- Watermarks: `int_game_review_counts`, `user_features` and `interactions` consume
+- Watermarks: `int_game_review_counts` and `interactions` consume
   `int_review_events` rows, and `game_features` consumes `int_game_review_counts` rows, with
   `_batch_at > max(_batch_at)` of the consuming model. `game_features` also re-merges every row
   of a game whose `int_games__deduplicated` row changed (same watermark), keeping the rows'
   `_batch_at`. Every row written must carry the
   `_batch_at` of the upstream rows it came from (or the run stamp).
 - Lookups: never rebuild, never reuse ids. 0 = padding, 1 = OOV, first real id = 2. Padding and
-  OOV must never be conflated (histories: 0 or >= 2; encoded arrays: >= 1).
+  OOV must never be conflated (encoded arrays: >= 1).
 - Features in `interactions` are strictly before the review (ASOF with events sorted before
   feature rows at equal timestamps).
+- No stored user history (`user_features` and `games_reviewed_positive` were dropped, A3):
+  training and inference derive each user's last N positives from `interactions`. Don't add a
+  fixed-length history back. `interactions` is `on_schema_change: sync_all_columns` (a dropped
+  column is an Iceberg `DROP COLUMN`); every other model stays `fail`.
 - Raw review counts stay in `int_game_review_counts`; marts expose only the Laplace-smoothed ratio.
 - `game_tags` (spec 8) is one row per catalog game with tags, merged on `game_id` only when a
   newer scrape (`scraped_at`) arrives, so a rerun writes nothing. `lkp_tags` covers the tags

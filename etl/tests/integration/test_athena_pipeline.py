@@ -71,7 +71,6 @@ KEYS = {
     "game_features": ("game_id", "timestamp"),
     "game_details": ("game_id",),
     "game_tags": ("game_id",),
-    "user_features": ("user_id", "timestamp"),
     "interactions": ("review_id",),
     "user_index": ("user_idx",),
 }
@@ -256,7 +255,6 @@ def test_incremental_matches_full_refresh(runs):
         "game_features",
         "game_details",
         "game_tags",
-        "user_features",
         "interactions",
         "user_index",
     ):
@@ -398,40 +396,23 @@ def test_game_tags_latest_scrape_per_catalog_game(runs):
     assert (batch2[50]["game_idx"], batch2[50]["game_tags"]) == (12, [8, 7])
 
 
-def test_user_features_last_five_positive_most_recent_first(runs):
-    latest = {}
-    for r in runs["batch2"]["user_features"]:
-        latest[r["user_id"]] = r["games_reviewed_positive"]  # rows sorted by timestamp
-    assert latest[900] == [10, 9, 8, 7, 6]
-    assert latest[100] == [12, 3, 2, 0, 0]  # game 50 (idx 12 after game 200)
-    assert 200 in latest and 600 not in latest  # 600 only has a negative review
-
-
 def test_interactions_use_features_strictly_before_the_review(runs):
     rows = by(runs["batch2"]["interactions"], "review_id")
-    zero = [0, 0, 0, 0, 0]
-
-    def feats(review_id):
-        r = rows[review_id]
-        return r["games_reviewed_positive"], r["game_reviews_ratio"]
-
-    # (history, ratio from the game's counts strictly before the review)
+    # ratio from the game's counts strictly before the review
     expected = {
-        1: (zero, laplace(0, 0)),
-        3: (zero, laplace(1, 0)),  # same second as 6: neither sees the other
-        6: (zero, laplace(1, 0)),
-        10: (zero, laplace(2, 1)),
-        2: ([2, 0, 0, 0, 0], laplace(0, 0)),
-        5: (zero, laplace(1, 0)),
-        8: ([3, 2, 0, 0, 0], laplace(1, 0)),
-        7: (zero, laplace(0, 0)),
-        11: (zero, laplace(2, 0)),
+        1: laplace(0, 0),
+        3: laplace(1, 0),  # same second as 6: neither sees the other
+        6: laplace(1, 0),
+        10: laplace(2, 1),
+        2: laplace(0, 0),
+        5: laplace(1, 0),
+        8: laplace(1, 0),
+        7: laplace(0, 0),
+        11: laplace(2, 0),
     }
-    for review_id, (history, ratio) in expected.items():
-        got_history, got_ratio = feats(review_id)
-        assert got_history == history, review_id
-        assert got_ratio == pytest.approx(ratio), review_id
-    assert rows[907]["games_reviewed_positive"] == [9, 8, 7, 6, 5]
+    for review_id, ratio in expected.items():
+        assert rows[review_id]["game_reviews_ratio"] == pytest.approx(ratio), review_id
+    assert "games_reviewed_positive" not in rows[907]
     assert rows[3]["is_positive"] is False and rows[2]["is_positive"] is True
     assert set(rows) == {r["review_id"] for r in runs["batch2"]["int_review_events"]}
 
