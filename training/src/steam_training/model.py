@@ -24,7 +24,8 @@ OOV, so new games are represented by the OOV row plus their content features.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
+from typing import Self
 
 import torch
 from torch import nn
@@ -36,21 +37,42 @@ NUM_NUMERIC_FEATURES = 3
 ATTRIBUTES = ("developers", "publishers", "genres", "categories")
 
 
+def map_tensors(value, fn):
+    """`value` with `fn` applied to every tensor in it (dataclasses, lists, None kept)."""
+    if isinstance(value, torch.Tensor):
+        return fn(value)
+    if isinstance(value, list):
+        return [map_tensors(v, fn) for v in value]
+    if hasattr(value, "__dataclass_fields__"):
+        return replace(
+            value, **{f.name: map_tensors(getattr(value, f.name), fn) for f in fields(value)}
+        )
+    return value
+
+
+class TensorTree:
+    """Batch containers (dataclasses of tensors): one device move / pin for all of them.
+    The DataLoader pins a batch through `pin_memory()` (pin_memory=True), and a pinned batch
+    moves with `to(device, non_blocking=True)` without blocking the host."""
+
+    def to(self, device: torch.device, non_blocking: bool = False) -> Self:
+        return map_tensors(self, lambda t: t.to(device, non_blocking=non_blocking))
+
+    def pin_memory(self) -> Self:
+        return map_tensors(self, lambda t: t.pin_memory())
+
+
 @dataclass
-class Bag:
+class Bag(TensorTree):
     """EmbeddingBag input: flat ids + start offset of each row (+ per-value weights)."""
 
     values: torch.Tensor  # int64 [n_values]
     offsets: torch.Tensor  # int64 [rows]
     weights: torch.Tensor | None = None  # float32 [n_values]
 
-    def to(self, device: torch.device) -> Bag:
-        weights = self.weights.to(device) if self.weights is not None else None
-        return Bag(self.values.to(device), self.offsets.to(device), weights)
-
 
 @dataclass
-class ItemBatch:
+class ItemBatch(TensorTree):
     game_idx: torch.Tensor  # int64 [rows]
     numeric: torch.Tensor  # float32 [rows, NUM_NUMERIC_FEATURES]
     developers: Bag
@@ -61,17 +83,6 @@ class ItemBatch:
 
     def __len__(self) -> int:
         return len(self.game_idx)
-
-    def to(self, device: torch.device) -> ItemBatch:
-        return ItemBatch(
-            game_idx=self.game_idx.to(device),
-            numeric=self.numeric.to(device),
-            developers=self.developers.to(device),
-            publishers=self.publishers.to(device),
-            genres=self.genres.to(device),
-            categories=self.categories.to(device),
-            tags=self.tags.to(device),
-        )
 
 
 def _clip_to_vocab(ids: torch.Tensor, size: int) -> torch.Tensor:

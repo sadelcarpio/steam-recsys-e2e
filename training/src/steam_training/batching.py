@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from steam_training.contracts import OOV_ID, PADDING_ID
 from steam_training.data import Catalog, ItemFeatures, NegativeRows, Ragged, TrainRows
-from steam_training.model import Bag, ItemBatch
+from steam_training.model import Bag, ItemBatch, TensorTree
 
 NO_GAME = -1
 
@@ -103,17 +103,14 @@ def to_item_batch(
 
 
 @dataclass
-class HardNegatives:
+class HardNegatives(TensorTree):
     items: ItemBatch  # one row per example (placeholder features where invalid)
     game_idx: torch.Tensor  # int64 [B]
     valid: torch.Tensor  # bool [B]
 
-    def to(self, device: torch.device) -> HardNegatives:
-        return HardNegatives(self.items.to(device), self.game_idx.to(device), self.valid.to(device))
-
 
 @dataclass
-class Batch:
+class Batch(TensorTree):
     history: torch.Tensor  # int64 [B, 5]
     items: ItemBatch  # targets
     target: torch.Tensor  # int64 [B] true game_idx (before id dropout)
@@ -122,15 +119,6 @@ class Batch:
 
     def __len__(self) -> int:
         return len(self.target)
-
-    def to(self, device: torch.device) -> Batch:
-        return Batch(
-            history=self.history.to(device),
-            items=self.items.to(device),
-            target=self.target.to(device),
-            target_log_prob=self.target_log_prob.to(device),
-            negatives=[n.to(device) for n in self.negatives],
-        )
 
 
 def history_dropout(history: np.ndarray, p: float, rng: np.random.Generator) -> np.ndarray:
@@ -233,9 +221,15 @@ class _Indices(Dataset):
 
 
 def make_loader(
-    examples: TrainingExamples, collator: Collator, batch_size: int, generator: torch.Generator
+    examples: TrainingExamples,
+    collator: Collator,
+    batch_size: int,
+    generator: torch.Generator,
+    pin_memory: bool = False,
 ) -> DataLoader:
-    """Shuffling draws from `generator`: reseed it per epoch for resumable runs."""
+    """Shuffling draws from `generator`: reseed it per epoch for resumable runs. `pin_memory`
+    (CUDA): batches come pinned, so `Batch.to(device, non_blocking=True)` copies them
+    asynchronously instead of one blocking copy per tensor (~60 per batch)."""
     return DataLoader(
         _Indices(len(examples)),
         batch_size=batch_size,
@@ -243,4 +237,5 @@ def make_loader(
         drop_last=len(examples) > batch_size,
         collate_fn=collator,
         generator=generator,
+        pin_memory=pin_memory,
     )

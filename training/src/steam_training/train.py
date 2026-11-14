@@ -194,9 +194,15 @@ def train_model(
         seed=settings.seed,
     )
     shuffle = torch.Generator()
-    loader = make_loader(examples, collator, settings.batch_size, shuffle)
+    cuda = device.type == "cuda"
+    loader = make_loader(examples, collator, settings.batch_size, shuffle, pin_memory=cuda)
+    # fused on CUDA: one kernel per step for every parameter, and no per-parameter host read
+    # of the step count (the same update rule)
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
+        model.parameters(),
+        lr=settings.learning_rate,
+        weight_decay=settings.weight_decay,
+        fused=cuda or None,
     )
 
     epoch_losses: list[float] = []
@@ -257,20 +263,22 @@ def train_model(
         collator.reseed(epoch)
         shuffle.manual_seed(_epoch_seed(settings.seed, epoch, 0))
         model.train()
-        total, batches = 0.0, 0
+        # summed on the device: no host sync per step (read once per epoch)
+        total, batches = torch.zeros((), device=device), 0
         for batch in loader:
             # before a step, never after the last one: the user MLP always trains against the
             # table it ends with
             sync_every = settings.user_table_sync_steps
             if sync_every and batches and batches % sync_every == 0:
                 model.sync_user_table()
-            loss = retrieval_loss(model, batch.to(device), settings.logq_correction)
+            batch = batch.to(device, non_blocking=cuda)
+            loss = retrieval_loss(model, batch, settings.logq_correction)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-            total += loss.item()
+            total += loss.detach()
             batches += 1
-        epoch_losses.append(total / max(batches, 1))
+        epoch_losses.append(total.item() / max(batches, 1))
         message = f"epoch {epoch + 1}/{settings.epochs} loss={epoch_losses[-1]:.4f}"
         monitor: float | None = None
         if monitor_rows is not None and len(monitor_rows):
