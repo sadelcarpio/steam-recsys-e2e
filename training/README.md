@@ -117,8 +117,9 @@ flowchart TB
 
   A batch item that is the same game as the target, or a game in the user's history, is never
   used as a negative.
-- **Cold start.** About half of the positive reviews (49% on the 2026-09 data) are a user's
-  first positive review (empty history).
+- **Cold start.** About a third of the training positives (~35%, ~33M of 94M on the 2026-11
+  data; 49% on 2026-09, before the backfill lengthened histories) are a user's first positive
+  review (empty history).
   Inference never sees an empty history, so training keeps every warm row and only
   `COLD_ROW_FRACTION` of the cold ones. Those rows teach one "no history" query, a fallback
   ranking. `HISTORY_DROPOUT` randomly truncates warm histories so short histories are learned
@@ -135,32 +136,33 @@ flowchart TB
   67 categories on the 2026-09 data); features
   come from the marts as integer ids (see `etl/README.md`).
 
-## Proposed architecture (spec 17 findings; A1, A3, A4 tried, A3 time gaps rejected)
+## Proposed architecture (spec 17 findings)
 
 A proposal derived from the EDA in `notebooks/01_feature_questions.ipynb`. Each section of that
 notebook tests a feature against a null model. Nothing below ships until it beats the champion in
 an ablation. Every change is one experiment, so this depends on experiment tracking (spec 18).
-Dashed boxes are new.
+Dashed boxes are not built yet. A3 (history + attention) and A4 (tag profile) are built; A2
+(disliked games as tokens) and the A3 time gaps were rejected and are no longer in the diagram.
+Every result is in the [experiment log](#experiment-log).
 
 ```mermaid
 flowchart TB
   subgraph user["User tower (proposed)"]
     direction TB
-    H["history: last 50 reviewed games, liked AND disliked, most recent first"]
+    H["history: last 20 liked games, most recent first"]
     UM["id mapper → OOV (1)"]
     GT["game_table (frozen copy) · 64"]
-    POL["learned disliked offset: flag × w · 64<br/>(or gate: token × (1 − flag·α))"]:::new
     PT["per history game: log playtime-at-review bucket<br/>+ unknown bucket (online path) · 64"]:::new
-    POS["position + time-gap bucket embeddings · 64"]:::new
-    TOK["token = game + disliked offset + playtime + position/gap · 64"]:::new
-    ATT["causal self-attention, 2 layers · 2 heads<br/>→ output at the most recent position · 64"]:::new
-    TP["history tag profile: EmbeddingBag over the history's tags<br/>(recency-weighted) · 16"]:::new
-    CTX["dominant review language embedding · 8<br/>free-game share of the history · 1<br/>history length · 1"]:::new
-    UC["concat · 90"]
-    UMLP["Linear 90→128 · ReLU · Linear 128→64"]
+    POS["learned position embeddings · 64"]
+    TOK["token = game + playtime + position · 64"]:::new
+    ATT["self-attention, 1 pre-LN layer · 2 heads<br/>→ learned summary token · 64 (+ mean pool · 64)"]
+    TP["history tag profile: EmbeddingBag over the history's tags<br/>(recency-weighted) · 16"]
+    CTX["dominant review language embedding · 8<br/>free-game share of the history · 1"]:::new
+    UC["concat · 154 (mean 64, length 1, attention 64, tags 16, context 9)"]
+    UMLP["Linear 154→128 · ReLU · Linear 128→64"]
     UN["L2 normalize → u · 64"]
     H --> UM --> GT --> TOK
-    POL & PT & POS --> TOK
+    PT & POS --> TOK
     TOK --> ATT --> UC
     TP & CTX --> UC
     UC --> UMLP --> UN
@@ -183,7 +185,7 @@ flowchart TB
 
   UN --> S["score = u · v / T"]
   IN --> S
-  S --> LOSS["sampled softmax: target vs in-batch negatives (logQ)<br/>sample weight log1p(target playtime hours), never an input<br/>no explicit negatives (disliked games are history tokens);<br/>mined negatives off (no gain on 2026-10-03)"]:::new
+  S --> LOSS["sampled softmax: target vs in-batch negatives (logQ)<br/>sample weight log1p(target playtime hours), never an input<br/>+ explicit (disliked) hard negatives (A1: no effect either way);<br/>mined negatives off (no gain on 2026-10-03)"]:::new
 
   classDef new stroke-dasharray: 5 5
   classDef opt stroke-dasharray: 2 4,opacity:0.7
@@ -191,8 +193,8 @@ flowchart TB
 
 | # | Change | EDA evidence (5% of users, 6M reviews) | Needs |
 |---|---|---|---|
-| A1 | Drop explicit negatives from the retrieval loss | Disliked games fit the user's liked games almost as well as liked ones (90% of the way from random to positive), and the next pick stays as close after a dislike as after a like (Q7). They mark interest, so as negatives they push the user away from games they'd engage with. | `EXPLICIT_NEGATIVES=false`. **Rejected (2026-11-12)**: warm recall@50 0.1787 vs 0.1804 for a control on the same split (2 epochs, 5-game exclusion), behind at every K and almost every activity bucket. Explicit negatives stay on |
-| A2 | Disliked games as history tokens with a learned "disliked" offset | Same as A1: interest, with the dislike kept as information. The ranker (spec 9) learns like vs dislike (label 0). Variants: plain tokens (no flag), additive offset `flag × w` (one 64-d vector shared by every disliked token), or a gate `token × (1 − flag·α)` with α learned in [0, 1], which can only shrink a disliked game's weight. | `user_features` history with negatives + polarity |
+| A1 | Drop explicit negatives from the retrieval loss | Disliked games fit the user's liked games almost as well as liked ones (90% of the way from random to positive), and the next pick stays as close after a dislike as after a like (Q7). They mark interest, so as negatives they push the user away from games they'd engage with. | `EXPLICIT_NEGATIVES=false`. **Rejected (2026-11-12)**: warm recall@50 0.1787 vs 0.1804 for a control on the same split (2 epochs, 5-game exclusion), behind at every K and almost every activity bucket. Explicit negatives stay on. That gap (−0.9%, one seed, old 5-game recipe) is inside the ~0.8% seed noise measured later. **Re-tested (2026-11-17)** on the current recipe, two seeds: +1.6% / −1.7%, mean −0.1%. No effect either way, so explicit negatives stay on (the recipe is unchanged) |
+| A2 | Disliked games as history tokens with a learned "disliked" offset | Same as A1: interest, with the dislike kept as information. The ranker (spec 9) learns like vs dislike (label 0). Variants: plain tokens (no flag), additive offset `flag × w` (one 64-d vector shared by every disliked token), or a gate `token × (1 − flag·α)` with α learned in [0, 1], which can only shrink a disliked game's weight. | `HISTORY_DISLIKED=plain\|offset\|gate` (built for the test, then removed). **Rejected (2026-11-16)**: within ±0.5% of the control on two seeds for every variant, coverage@50 −8% to −9%, see the [experiment log](#experiment-log) |
 | A3 | Self-attention over a longer, ordered history | The previous game is 21% more similar to the next one than the game 20 reviews back. With shuffled order there's no decay (Q5). 22% of consecutive reviews are written the same day, hence the time-gap embedding. | `HISTORY_LENGTH=N` + `HISTORY_ENCODER=attention` (built 2026-11-12, see below). Training derives the long history from `interactions`, so experiments need no ETL change. Served: inference derives the same history from `interactions`, serving runs the attention in numpy (user tower format 3); deploy serving and inference before promoting one. Time-gap embedding **rejected (2026-11-14)**, see below |
 | A4 | History tag profile | 42% of heavy users are more concentrated on one tag than 95% of shuffled users. Tags separate users better than genres (Q1). | `USER_TAG_PROFILE=true`. **Accepted (2026-11-12)**: warm recall@50 0.1996 vs 0.1826 for a control on the same split (+9.3%, full-history exclusion, 2 epochs), +4% for new users rising to +40% / +76% for the top 5% / 1% most active, coverage@50 0.105 vs 0.053. Learned recency: the most recent game's tags weigh 1.67× the oldest's. Built over the 5-game history; the whole-history profile needs the longer history of A3. Promotable: its `user_tower.npz` is numpy format 2 (+ the tag lookup, table and position weights), which serving reads from the serving release that added it, so deploy serving first |
 | A5 | Playtime at review: an attribute of each history token + log1p sample weight on the target | Playtime tracks taste fit (ρ +0.07) and liking (ρ +0.14). Votes don't (ρ −0.02) and grow with review age (Q2, E1). It belongs to a (user, game) interaction: on history tokens it describes past interactions, so the user tower can compute it without the candidate; on the target it only weights the loss, never an input (it's the outcome). `POST /recommendations` sends liked games without playtime, so the token needs an "unknown" bucket, also used as dropout in training. Only `playtime_at_review`: `playtime_forever` is measured at scrape time, after the review. | `playtime_at_review` in `interactions` |
@@ -210,7 +212,9 @@ the future positive ratio no better than the past ratio does: R² 0.685 → 0.68
 and `votes_*` are measured at scrape time, so they are not as-of-t features.
 
 Suggested order (cheapest first, each against the champion on warm recall@50): A1 → A4 → A5 →
-A6 → A3 + A2 → A7 → A8. A1, A4 and (for training) A3 need no ETL change. A3's settings are
+A6 → A3 + A2 → A7 → A8. A1, A4 and (for training) A3 need no ETL change. Status (2026-11-16):
+A4 and A3 accepted, A1, A2 and the A3 time gaps rejected (A1: no effect); next A5 and A6, which
+need new `interactions` / `game_features` columns. A3's settings are
 optional `ModelConfig` fields whose defaults are the old layout (like tags and A4), so older
 models keep loading without an `ARCHITECTURE_VERSION` bump.
 
@@ -221,8 +225,48 @@ LayerNorm. The summary token's output is appended to the mean-pooled history (ke
 can only add to the baseline) before the user MLP. Written out by hand so a numpy port can
 mirror it. The A4 tag profile gets one learned position weight per slot of the longer history.
 
-**Results so far** (cutoff 2026-05-01, full-history exclusion, warm recall@50 on 500k
-validation rows; models `local-<sha>-…` in the bucket, runs in MLflow):
+## Experiment log
+
+Every approach tried on the retrieval model, newest last. Accepted ones are in the champion's
+recipe; rejected ones were removed from the code (the README keeps how they worked). The
+metric is warm recall@50 on ~350k validation rows, against a control trained on the same
+snapshot and split. Models are `local-<sha>-…` in the bucket and runs are in MLflow (experiment
+`steam-two-tower`; the setting that names the arm is the run's param, e.g. `batch_size`).
+
+| Date | Approach | Verdict | Evidence |
+|---|---|---|---|
+| 2026-10-03 | `LEARNING_RATE` 2e-2 vs 5e-3 | no difference, 5e-3 kept | every run peaks at epoch 2 (~0.182, cutoff 2026-03-31, 61M positives, batch 4096) |
+| 2026-10-03 | `MINED_NEGATIVES` on vs off | **rejected**, off in every recipe since | same loss and recall, +70 s per epoch |
+| 2026-10-03 | Keep the best epoch + early stopping (`KEEP_BEST_EPOCH`, `EARLY_STOPPING_PATIENCE=1`) | **accepted** | every run peaked before the last epoch, which training used to save |
+| 2026-11-12 | A1: `EXPLICIT_NEGATIVES=false` | rejected, re-tested on 11-17 | 0.1787 vs 0.1804 (−0.9%), one seed, 5-game recipe: within the seed noise found on 11-14 |
+| 2026-11-12 | `USER_TABLE_SYNC_STEPS=1000` (user tower's game table re-synced within the epoch) | **accepted** | 0.1826 → 0.1894 (+3.7%); every run now peaks after epoch 1 |
+| 2026-11-12 | A4: `USER_TAG_PROFILE=true` | **accepted** | +9.3% alone, 0.2118 with the sync (+16% vs control), coverage@50 0.053 → 0.124 |
+| 2026-11-12 | A3: `HISTORY_LENGTH` 20 / 50, `HISTORY_ENCODER=attention` | **accepted** (champion: 20 + attention) | 20 + attention 0.2229 (+5.9%), 50 + attention 0.2249 (+6.9%) at 1.6× the epoch time |
+| 2026-11-14 | A3 time-gap embedding | **rejected** | +1.7% / −0.0% on two seeds, coverage −11% / −18% |
+| 2026-11-14 | Training speed: pinned async copies, fused Adam, no per-step host sync | **accepted** (engineering, same update rule) | epoch 607 → ~460 s |
+| 2026-11-14 | `BATCH_SIZE` 8192 / 16384 | **rejected** | mean within +0.3% of the control, coverage −8% / −11%, epochs 1.4× / 2.1× slower |
+| 2026-11-16 | A2: disliked games as history tokens (plain / offset / gate) | **rejected** | every variant within ±0.5% on two seeds, coverage −8% to −9% |
+| 2026-11-17 | A1 re-test on the current recipe | **rejected** (no effect; explicit negatives stay on) | +1.6% / −1.7% on two seeds, mean −0.1%; epochs ~4% faster without them |
+
+Before 2026-11-14 each arm ran on one seed. Gains of +3.7% and more are far outside the
+~0.8% seed noise; A1, the one small single-seed verdict, was re-tested with two seeds.
+
+Coverage@50 is noisier across seeds than recall. Over the 16 runs on the shared snapshot
+(2026-11-14 to 11-17) it ranges 0.141–0.161 on seed 42 and 0.145–0.184 on seed 43, and the
+seed-43 control (0.184) is the highest of all of them. Most of the "coverage −8% to −11%"
+against the controls above comes from that one run (vs the seed-42 control alone, the arms are
+−4% on average). Judge arms on warm recall; read coverage only as a large, consistent move.
+
+**Shared controls since 2026-11-14** (champion recipe: 20 games, attention, A4, sync every 1000
+steps, lr 5e-3, batch 4096, cutoff 2026-05-09, `interactions` snapshot 1483226419950901524):
+`local-8dde901-a3-len20-attn-control` (seed 42, 0.2187, coverage 0.158) and
+`local-8dde901-a3-len20-attn-control-s43` (0.2205, 0.184). Each new arm runs seeds 42 and 43
+and is compared with the control of the same seed while the snapshot stays the same (the marts
+keep 2 snapshots, so a rebuild needs fresh controls).
+
+### A1 / A4 / A3 results (2026-11-12)
+
+Cutoff 2026-05-01, full-history exclusion, warm recall@50 on 500k validation rows:
 
 | Run | Epochs | warm recall@50 | coverage@50 |
 |---|---|---|---|
@@ -270,6 +314,62 @@ The control alone moves 0.8% between seeds, as much as the mean gain (+0.8%), an
 bucket improves on both seeds by more than that. Coverage drops on both: the model leans on
 popular games, which also lifts cold rows (+4.2% / +2.6%) although gaps can't reach them.
 Lesson for later experiments: differences under ~1% on one seed are noise, run two per arm.
+
+**Batch size: rejected (2026-11-14).** `BATCH_SIZE` 8192 and 16384, with
+`USER_TABLE_SYNC_STEPS` scaled to keep one sync per ~4M examples (500 and 250), everything else
+at the champion's recipe (lr 5e-3 too), against the shared controls:
+
+| Batch | warm recall@50 seed 42 / 43 (vs control) | mean | coverage@50 (mean) | epoch |
+|---|---|---|---|---|
+| 4096 (controls) | 0.2187 / 0.2205 | 0.2196 | 0.171 | ~460 s |
+| 8192 | 0.2227 (+1.8%) / 0.2180 (−1.2%) | 0.2203 | 0.158 | 630 s |
+| 16384 | 0.2184 (−0.1%) / 0.2212 (+0.3%) | 0.2198 | 0.152 | 972 s |
+
+Larger batches are slower per epoch, not faster. The in-batch logits and their masks (the
+target collisions, one comparison per history slot, the cross-entropy) are [B × B], so that
+part of an epoch costs N·B: the times fit 290 s + 170 s × B / 4096. After the speed fix there is
+little per-step overhead left for a larger batch to amortize. A higher lr for the larger batches
+(fewer steps per epoch) was not tried, given the cost.
+
+**A2 disliked games as history tokens: rejected (2026-11-16).** The history held the last 20
+reviews of either polarity, disliked games stored as `-game_idx`. Training rows, validation rows
+and warm / cold stayed defined by liked games only, so the rows matched the controls exactly.
+Three variants of a disliked token (also applied to the A4 tag profile):
+
+- `plain`: the game's embedding, no flag;
+- `offset`: + one learned 64-d vector shared by every disliked token (starts at zero);
+- `gate`: × (1 − α), α = sigmoid of one learned scalar (starts at 0.5).
+
+Explicit negatives stayed on (A1). Against the shared controls:
+
+| Variant | warm recall@50 seed 42 / 43 (vs control) | mean | coverage@50 (mean) |
+|---|---|---|---|
+| control (liked only) | 0.2187 / 0.2205 | 0.2196 | 0.171 |
+| plain | 0.2195 (+0.4%) / 0.2201 (−0.2%) | 0.2198 | 0.155 |
+| offset | 0.2148 (−1.8%) / 0.2224 (+0.9%) | 0.2186 | 0.158 |
+| gate | 0.2192 (+0.2%) / 0.2199 (−0.3%) | 0.2195 | 0.156 |
+
+The models used the dislikes but gained nothing from them. Both gates learned α = 0.19: a
+disliked game counts 81% as much as a liked one, in line with the EDA (disliked games fit a
+user's taste almost as well as liked ones, Q7). The learned offset grew to 3.7× the length of a
+game vector (1.07 vs 0.29), so a disliked token became mostly a generic "disliked" marker. The
+interest a dislike signals is already in the 20 liked games, and the dislikes take ~3 of the
+20 slots from liked games, which costs coverage. Epoch time was unchanged (~460 s). Cold rows
+can hold dislikes in this setup, so their recall is not comparable with the controls.
+
+**A1 re-test: no explicit negatives, rejected (2026-11-17).** `EXPLICIT_NEGATIVES=false` on the
+champion's recipe (no other change), against the shared controls:
+
+| Seed | warm recall@30 | warm recall@50 (vs control) | warm recall@100 | coverage@50 | epoch |
+|---|---|---|---|---|---|
+| 42 | 0.1710 (+2.0%) | 0.2222 (+1.6%) | 0.3085 (+2.2%) | 0.161 (control 0.158) | 445 s |
+| 43 | 0.1658 (−1.8%) | 0.2167 (−1.7%) | 0.3003 (−1.1%) | 0.154 (control 0.184) | 435 s |
+
+The two seeds move by the same amount in opposite directions at every K (mean −0.1% at 50), so
+the disliked game as a hard negative neither helps nor hurts. It also costs little (epochs ~4%
+slower with it). Without a gain there is no reason to change the champion's loss, so explicit
+negatives stay on. With A2 rejected too, a user's dislikes add nothing measurable to retrieval
+in either role, as a negative or as history; they remain as labels for the ranker (spec 9).
 
 ## Evaluation
 
