@@ -44,7 +44,10 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
     `data.py` (`load_ranker_data`: groups after a retriever's cutoff via `load_training_data`,
     per-user cap, one extra pass for weekly popularity + later positives, `game_details`),
     `model.py` (`Groups`, `build_groups`, `fit_lambdarank`, `target_positions`,
-    `ranking_metrics`), `pipeline.py` (`run_ranking`: `python -m steam_training rank`)
+    `ranking_metrics`: recall / NDCG / MRR), `lists.py` (per-user lists at weekly snapshots:
+    `UserReviews`, `snapshot_lists`, `ListAccumulator` precision / recall / MAP),
+    `pipeline.py` (`run_ranking`: `python -m steam_training rank`; T2 = the retriever's split
+    end when it has one)
   - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary);
     `METRIC_DEFINITIONS` (log regexes -> CloudWatch curves in the SageMaker console)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
@@ -146,10 +149,12 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   doesn't install it. Tracking settings are in `NOT_FINGERPRINTED` and out of the metadata
   hyperparameters. A new metric goes in `contracts.RetrievalDiagnostics` (or `EmbeddingHealth`)
   and `tracking.final_metrics`. `EvalRows.user_id` / `activity` are optional (None = unknown).
-- Splits: `data.split_window` turns `VALIDATION_FRACTION` / `TEST_FRACTION` / `FIT_ON` into
+- Splits: `data.split_window` turns `VALIDATION_FRACTION` / `TEST_FRACTION` / `FIT_ON`, or the
+  time-based `HOLDOUT_WEEKS` / `TEST_WEEKS` (counted back from the newest row; spec 9), into
   (cutoff, end, evaluation). Rows at or after `SplitInfo.end` are never used (only pass 1 sees their timestamps: no training, no
   evaluation, no popularity counts). With `evaluation == "test"` there is no per-epoch
-  monitoring. Diagram of every split case: `docs/splits.svg` (keep it in sync).
+  monitoring. Diagram of every split case: `docs/splits.svg` (keep it in sync; the time-based windows are drawn in spec 9 "Time windows"
+and not in the svg yet).
 - Evaluation excludes `EvalRows.reviewed` (every game reviewed before the row) on top of the
   5-game history; scores of models evaluated before that change (stored champion metrics of an
   older architecture) are not comparable with newer ones.

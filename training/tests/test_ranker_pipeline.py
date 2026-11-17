@@ -88,6 +88,7 @@ def test_rank_end_to_end(settings, store):
         ranker_max_rounds=50,
         ranker_early_stopping_rounds=10,
         eval_batch_size=128,
+        ranker_list_users=200,
     )
     report = run_ranking(ranker, source, store)
 
@@ -99,6 +100,14 @@ def test_rank_end_to_end(settings, store):
     assert set(report.ablation) == {"retrieval", "candidate", "affinity"}
     assert sum(report.importances.values()) == pytest.approx(1)
     assert "ranker_recall_at_k=" in metrics_line(report)
+    # conditional = only groups whose game is among the candidates: at least end to end
+    assert report.conditional.ranker.groups <= report.test.ranker.groups
+    assert report.conditional.ranker.recall[10] >= report.test.ranker.recall[10]
+    assert report.test.ranker.mrr[5] <= report.test.ranker.recall[5]
+    lists = report.user_lists
+    assert lists is not None and lists.ranker.lists == lists.retrieval.lists > 0
+    assert lists.horizon_days == 7 and lists.snapshots
+    assert "ranker_list_map_at_k=" in metrics_line(report)
     # a miss for retrieval is a miss for the ranker: the ceiling bounds both
     assert report.test.ranker.recall[10] <= report.candidate_recall + 1e-9
 
@@ -141,3 +150,41 @@ def test_popularity_mart_matches_the_interactions_count(marts):
     assert np.array_equal(from_mart.positives, from_interactions.positives)
     assert np.array_equal(from_mart.reviews, from_interactions.reviews)
     assert from_mart.reviews[-1].sum() == len(marts["interactions"])
+
+
+def test_rank_uses_the_retrievers_time_windows(settings, store):
+    """A retriever trained with HOLDOUT_WEEKS: the ranker's T2 is its split end."""
+    source = FakeSource(make_marts(n_users=600, reviews_per_user=10, seed=1))
+    retriever = settings.model_copy(update={"holdout_weeks": 16, "test_weeks": 6})
+    metadata = run_training(retriever, source, store)
+    assert metadata.split.end is not None
+    ranker = RankerSettings(
+        model_artifacts_bucket=BUCKET,
+        ranker_id="rank2",
+        retriever_id=settings.model_id,
+        device="cpu",
+        ranker_candidates=15,
+        ranker_top_k=5,
+        ranker_history_length=5,
+        ranker_min_groups=10,
+        ranker_min_data_in_leaf=5,
+        ranker_max_rounds=20,
+        ranker_ablation=False,
+        ranker_list_users=0,
+        eval_batch_size=128,
+    )
+    report = run_ranking(ranker, source, store)
+    assert report.window.t2 == metadata.split.end
+    assert report.window.retriever_cutoff == metadata.split.cutoff
+    assert report.user_lists is None and report.ablation == {}
+
+
+def test_holdout_settings_validation():
+    base = {"model_artifacts_bucket": BUCKET, "model_id": "m1"}
+    from steam_training.config import TrainingSettings
+
+    assert TrainingSettings(**base, holdout_weeks=6).test_weeks == 2
+    with pytest.raises(ValueError, match="TEST_WEEKS"):
+        TrainingSettings(**base, holdout_weeks=2, test_weeks=2)
+    with pytest.raises(ValueError, match="TEST_FRACTION"):
+        TrainingSettings(**base, holdout_weeks=6, test_fraction=0.05)

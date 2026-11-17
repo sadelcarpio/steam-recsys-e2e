@@ -55,6 +55,8 @@ def _load(settings: TrainingSettings, source: TableSource, **kwargs: object) -> 
         validation_fraction=settings.validation_fraction,
         test_fraction=settings.test_fraction,
         fit_on=settings.fit_on,
+        holdout_weeks=settings.holdout_weeks,
+        test_weeks=settings.test_weeks,
         cold_row_fraction=settings.cold_row_fraction,
         eval_max_rows=settings.eval_max_rows,
         seed=settings.seed,

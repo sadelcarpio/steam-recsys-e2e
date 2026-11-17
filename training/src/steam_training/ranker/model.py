@@ -115,13 +115,15 @@ def ranking_metrics(position: np.ndarray, ks: list[int]) -> RankingMetrics:
     """Recall@k and NDCG@k (one relevant game per group) from `target_positions`."""
     n = len(position)
     found = position >= 0
-    recall, ndcg = {}, {}
+    recall, ndcg, mrr = {}, {}, {}
     gain = np.where(found, 1 / np.log2(np.maximum(position, 0) + 2), 0)
+    reciprocal = np.where(found, 1 / (np.maximum(position, 0) + 1), 0)
     for k in sorted(ks):
         inside = found & (position < k)
         recall[k] = float(inside.mean()) if n else 0.0
         ndcg[k] = float(np.where(inside, gain, 0).mean()) if n else 0.0
-    return RankingMetrics(groups=n, recall=recall, ndcg=ndcg)
+        mrr[k] = float(np.where(inside, reciprocal, 0).mean()) if n else 0.0
+    return RankingMetrics(groups=n, recall=recall, ndcg=ndcg, mrr=mrr)
 
 
 def retrieval_score(groups: Groups) -> np.ndarray:
@@ -136,8 +138,12 @@ class FitResult:
     best_iteration: int
 
     def predict(self, groups: Groups) -> np.ndarray:
+        return self.predict_features(groups.features)
+
+    def predict_features(self, features: np.ndarray) -> np.ndarray:
+        """Scores of rows of a full `FEATURES` matrix ([rows, len(FEATURES)])."""
         idx = [FEATURES.index(f) for f in self.features]
-        return self.booster.predict(groups.features[:, idx], num_iteration=self.best_iteration)
+        return self.booster.predict(features[:, idx], num_iteration=self.best_iteration)
 
 
 def fit_lambdarank(
