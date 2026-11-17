@@ -11,6 +11,10 @@ user's last liked games.
 `RANKER_MODE`: `shadow` computes the ranker order and compares it with retrieval order, but the
 run writes retrieval order; `on` writes the ranker's top `RANKER_TOP_K`. A failure on a chunk of
 users keeps their retrieval order (counted), never fails the run.
+
+`online_ranker` packs the same ranker for the serving Lambda (`ranker.npz`, published with the
+online catalog): its trees and the game side of the features for the published catalog rows,
+popularity as of this run.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from steam_training.ranker.data import (
     game_details,
     popularity_from_mart,
 )
+from steam_training.ranker.export import encode_ranker, ranker_arrays
 from steam_training.ranker.features import (
     FEATURES,
     MAX_RECENT_WEEKS,
@@ -43,6 +48,7 @@ from steam_training.ranker.features import (
 from steam_training.ranker.model import FitResult
 
 from steam_inference.features import InferenceData
+from steam_inference.online import RankerPayload
 from steam_inference.retrieval import NO_ROW, Candidates
 
 log = logging.getLogger(__name__)
@@ -207,3 +213,30 @@ def top_overlap(a: np.ndarray, b: np.ndarray, k: int) -> float | None:
 
 def cut(candidates: Candidates, k: int) -> Candidates:
     return Candidates(candidates.rows[:, :k], candidates.scores[:, :k], candidates.item_embeddings)
+
+
+def online_ranker(
+    ranker: ServingRanker,
+    data: InferenceData,
+    *,
+    keep: np.ndarray,
+    retriever_id: str,
+    candidates: int,
+    mode: str,
+    as_of: datetime,
+) -> RankerPayload:
+    """`ranker.npz` for the catalog rows where `keep` (the rows `build_catalog` publishes, in the
+    same order)."""
+    rows = np.flatnonzero(keep)
+    arrays = ranker_arrays(
+        ranker.fit,
+        ranker_id=ranker.ranker_id,
+        model_id=retriever_id,
+        history_length=ranker.history_length,
+        candidates=candidates,
+        games=ranker.games,
+        popularity=ranker.popularity,
+        game_idx=data.games.catalog.items.game_idx[rows],
+        as_of_seconds=epoch_seconds(as_of),
+    )
+    return RankerPayload(encode_ranker(arrays), ranker.ranker_id, mode)

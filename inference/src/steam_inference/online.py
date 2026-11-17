@@ -4,7 +4,9 @@ games against the current catalog. The user tower side is the model's own numpy 
 
 Written every run, after retrieval (item embeddings depend on the weekly `reviews_ratio` and
 new games): catalog.npz (`contracts.ONLINE_BUNDLE_ARRAYS`) first, then manifest.json pinned to
-the new catalog's S3 version id and naming the user tower. Skipped (the previous manifest stays)
+the new catalog's S3 version id and naming the user tower. With the serving pair's ranker
+(spec 9), ranker.npz (its trees + the game side of its features for the catalog rows) is written
+before the catalog and pinned in the same manifest. Skipped (the previous manifest stays)
 when the model has no numpy user tower yet. Old catalog versions expire with the bucket's
 noncurrent-version lifecycle. The demo user index (user_index.py, spec 13) is published the same
 way: index.bin, then index.json pinned to its version.
@@ -15,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -28,6 +31,7 @@ from steam_inference.features import Games
 log = logging.getLogger(__name__)
 
 CATALOG_NAME = "catalog.npz"
+RANKER_NAME = "ranker.npz"
 MANIFEST_NAME = "manifest.json"
 SEARCH_INDEX_NAME = "games.json"
 USER_INDEX_NAME = "index.bin"
@@ -91,8 +95,10 @@ class BundleStore(Protocol):
         generated_at: datetime,
         catalog_games: int,
         user_tower_key: str,
+        ranker: RankerPayload | None = None,
     ) -> str:
-        """Store the catalog, then the manifest; return where the manifest is."""
+        """Store the ranker (if any), the catalog, then the manifest; return where the manifest
+        is."""
         ...
 
     def publish_search_index(self, payload: bytes) -> str:
@@ -105,11 +111,38 @@ class BundleStore(Protocol):
         ...
 
 
-def _manifest(payload: bytes, key: str, version_id: str | None, **fields) -> OnlineBundleManifest:
+@dataclass(frozen=True)
+class RankerPayload:
+    """`ranker.npz` bytes (`steam_training.ranker.export.encode_ranker`) and its manifest fields."""
+
+    payload: bytes
+    ranker_id: str
+    mode: str  # RANKER_MODE: "on" or "shadow"
+
+
+def _manifest(
+    payload: bytes,
+    key: str,
+    version_id: str | None,
+    ranker: RankerPayload | None = None,
+    ranker_key: str | None = None,
+    ranker_version_id: str | None = None,
+    **fields,
+) -> OnlineBundleManifest:
+    ranker_fields = {}
+    if ranker is not None:
+        ranker_fields = {
+            "ranker_id": ranker.ranker_id,
+            "ranker_mode": ranker.mode,
+            "ranker_key": ranker_key,
+            "ranker_version_id": ranker_version_id,
+            "ranker_sha256": hashlib.sha256(ranker.payload).hexdigest(),
+        }
     return OnlineBundleManifest(
         catalog_key=key,
         catalog_version_id=version_id,
         catalog_sha256=hashlib.sha256(payload).hexdigest(),
+        **ranker_fields,
         **fields,
     )
 
@@ -141,10 +174,20 @@ class S3BundleStore:
         self.user_index_prefix = user_index_prefix.strip("/")
         self.s3 = boto3.client("s3", region_name=region)
 
-    def publish(self, payload: bytes, **fields) -> str:
+    def publish(self, payload: bytes, *, ranker: RankerPayload | None = None, **fields) -> str:
+        ranker_fields: dict = {}
+        if ranker is not None:
+            ranker_key = f"{self.prefix}/{RANKER_NAME}"
+            put = self.s3.put_object(Bucket=self.bucket, Key=ranker_key, Body=ranker.payload)
+            ranker_fields = {
+                "ranker": ranker,
+                "ranker_key": ranker_key,
+                "ranker_version_id": put.get("VersionId"),
+            }
+            log.info("online ranker %s: %.1f MB", ranker.ranker_id, len(ranker.payload) / 1e6)
         key = f"{self.prefix}/{CATALOG_NAME}"
         put = self.s3.put_object(Bucket=self.bucket, Key=key, Body=payload)
-        manifest = _manifest(payload, key, put.get("VersionId"), **fields)
+        manifest = _manifest(payload, key, put.get("VersionId"), **ranker_fields, **fields)
         manifest_key = f"{self.prefix}/{MANIFEST_NAME}"
         self.s3.put_object(
             Bucket=self.bucket,
@@ -196,10 +239,14 @@ class LocalBundleStore:
     def __init__(self, directory: str) -> None:
         self.directory = Path(directory)
 
-    def publish(self, payload: bytes, **fields) -> str:
+    def publish(self, payload: bytes, *, ranker: RankerPayload | None = None, **fields) -> str:
         self.directory.mkdir(parents=True, exist_ok=True)
+        ranker_fields: dict = {}
+        if ranker is not None:
+            (self.directory / RANKER_NAME).write_bytes(ranker.payload)
+            ranker_fields = {"ranker": ranker, "ranker_key": RANKER_NAME}
         (self.directory / CATALOG_NAME).write_bytes(payload)
-        manifest = _manifest(payload, CATALOG_NAME, None, **fields)
+        manifest = _manifest(payload, CATALOG_NAME, None, **ranker_fields, **fields)
         path = self.directory / MANIFEST_NAME
         path.write_text(manifest.model_dump_json(indent=2))
         return str(path)

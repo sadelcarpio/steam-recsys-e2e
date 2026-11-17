@@ -105,7 +105,8 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
   "reranked": false,
   "recommendations": [{"rank": 1, "game_id": 241910, "name": "Goodbye Deponia", "score": 0.5755}],
   "used_game_ids": [620, 105600],
-  "ignored_game_ids": []
+  "ignored_game_ids": [],
+  "ranker_id": "3692462786496a912d90a4fb79b66cdba04d6ea6"
 }
 ```
 
@@ -114,6 +115,18 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
   history (`used_game_ids`), the same input as batch inference's history of the user's last
   positive reviews. Games outside the catalog are listed in
   `ignored_game_ids`. Every liked game is excluded from the results.
+- **Ranker (spec 9).** When the manifest names a ranker (the serving pair's, published by
+  inference with the catalog: `serving/online/ranker.npz`), the top `candidates` (100) retrieved
+  games are re-ordered by it and the first `limit` returned; `ranker_id` says which ranker
+  ordered the list (absent: retrieval order). Its mode is inference's `RANKER_MODE`: `on`
+  re-orders, `shadow` only logs the overlap with retrieval order, `off` publishes no ranker.
+  The user side of its features comes from the first 20 known liked games, the game side
+  (popularity as of the inference run, price, release date, tags, developer / publisher,
+  genres / categories) from `ranker.npz`. `scores` stay the retrieval cosine. A ranker that
+  fails to load or to rank keeps retrieval order (logged); the endpoint never fails for it.
+  The trees run in numpy (`steam_serving.ranker`, LightGBM's numerical decision; ~6 ms for 300
+  trees × 100 candidates); `inference/tests/test_online_ranker.py` checks the scores against
+  LightGBM and the features against training's `compute_features`.
 - If none of the liked games is known, the response is the popular list minus the liked games
   (`source: "popular"`).
 - There are no LLM explanations online, and responses are never cached (`no-store`).
@@ -128,8 +141,9 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
   - **Catalog:** `serving/online/catalog.npz`, written by the inference job every run (item
     embeddings, plus the `game_id`, `game_idx` and name of each catalog row; about 14 MB).
   
-  `serving/online/manifest.json` pins the catalog's S3 version and names the user tower.
-  Serving refuses a pair whose `model_id`s differ.
+  `serving/online/manifest.json` pins the catalog's S3 version and names the user tower (and
+  the ranker, pinned the same way). Serving refuses a pair whose `model_id`s differ, and a
+  ranker exported for another model or other catalog rows.
 - **Mapping.** `game_id` is mapped to `game_idx` (the `lkp_games` ids) through the catalog
   rows in the catalog. Ids beyond the model's vocabulary, or games unseen in training, become
   OOV, exactly as in torch.

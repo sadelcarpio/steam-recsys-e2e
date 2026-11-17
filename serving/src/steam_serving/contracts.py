@@ -114,6 +114,8 @@ class RecommendationsResponse(_Response):
     # POST /recommendations only: liked games that made up the history / that were unknown
     used_game_ids: list[int] | None = None
     ignored_game_ids: list[int] | None = None
+    # POST /recommendations only (spec 9): the ranker that ordered the list (null: retrieval order)
+    ranker_id: str | None = None
     # GET /users/{user_idx}/recommendations only: the requested demo user number and the
     # highest one (user_idx is reassigned every pipeline run)
     user_idx: int | None = None

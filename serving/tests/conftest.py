@@ -252,17 +252,97 @@ def publish_user_index(s3, user_ids: list[int], prefix: str = "serving/users") -
     return manifest
 
 
-def publish_bundle(s3, seed: int = 0, model_id: str = "abc123") -> dict:
+FREE_GAMES = [g for g in ONLINE_GAMES if g % 3 == 0]
+
+
+def make_ranker(
+    model_id: str = "abc123", ranker_id: str = "k1", schema: int = 2, candidates: int = 30
+) -> bytes:
+    """serving/online/ranker.npz as inference writes it (steam_training.ranker.export): one
+    tree that puts free games (appid % 3 == 0) first, and the game side of the catalog rows."""
+    import numpy as np
+
+    from steam_serving.ranker import FEATURES, POPULARITY_FEATURES
+
+    rows = len(ONLINE_GAMES)
+    games = np.array(ONLINE_GAMES)
+    tag_offsets = np.arange(rows + 1, dtype=np.int64)  # one tag per game: appid % 4
+    return _npz(
+        {
+            "format_version": np.asarray(1),
+            "feature_schema_version": np.asarray(schema),
+            "features_utf8": np.frombuffer(",".join(FEATURES).encode(), np.uint8),
+            "popularity_features_utf8": np.frombuffer(
+                ",".join(POPULARITY_FEATURES).encode(), np.uint8
+            ),
+            "ranker_id": np.asarray(ranker_id),
+            "model_id": np.asarray(model_id),
+            "history_length": np.asarray(20),
+            "candidates": np.asarray(candidates),
+            "as_of_seconds": np.asarray(1_790_000_000),
+            # root: is_free <= 0.5 -> leaf 0.0, else leaf 1.0
+            "tree_roots": np.array([0], np.int32),
+            "node_feature": np.array([FEATURES.index("is_free"), -1, -1], np.int32),
+            "node_threshold": np.array([0.5, 0, 0]),
+            "node_left": np.array([1, 0, 0], np.int32),
+            "node_right": np.array([2, 0, 0], np.int32),
+            "node_default_left": np.array([True, False, False]),
+            "node_missing": np.array([2, 0, 0], np.int8),
+            "node_value": np.array([0.0, 0.0, 1.0]),
+            "max_depth": np.asarray(1),
+            "game_idx": np.arange(2, rows + 2, dtype=np.int64),
+            "game_popularity": np.ones((rows, len(POPULARITY_FEATURES)), np.float32),
+            "game_is_free": (games % 3 == 0).astype(np.float32),
+            "game_log_price": np.ones(rows, np.float32),
+            "game_release_day": np.full(rows, 19_000, np.float32),
+            "game_developer": games % 2,
+            "game_publisher": np.full(rows, -1),
+            "game_tag_values": (games % 4).astype(np.int32),
+            "game_tag_weights": np.ones(rows, np.float32),
+            "game_tag_offsets": tag_offsets,
+            "game_genre_values": np.zeros(0, np.int32),
+            "game_genre_offsets": np.zeros(rows + 1, np.int64),
+            "game_category_values": np.zeros(0, np.int32),
+            "game_category_offsets": np.zeros(rows + 1, np.int64),
+            "num_tags": np.asarray(4),
+            "num_genres": np.asarray(1),
+            "num_categories": np.asarray(1),
+        }
+    )
+
+
+def publish_bundle(
+    s3,
+    seed: int = 0,
+    model_id: str = "abc123",
+    *,
+    ranker: bytes | None = None,
+    ranker_mode: str = "on",
+    ranker_id: str = "k1",
+) -> dict:
     """The model's user tower (training) + a catalog and manifest (inference), on the
-    versioned moto bucket."""
+    versioned moto bucket; `ranker`: a ranker.npz published with them."""
+    import hashlib
+
     s3.put_object(
         Bucket=BUNDLE_BUCKET,
         Key=f"models/{model_id}/user_tower.npz",
         Body=make_user_tower(seed, model_id),
     )
+    fields = {}
+    if ranker is not None:
+        key = f"{BUNDLE_PREFIX}/ranker.npz"
+        put = s3.put_object(Bucket=BUNDLE_BUCKET, Key=key, Body=ranker)
+        fields = {
+            "ranker_id": ranker_id,
+            "ranker_mode": ranker_mode,
+            "ranker_key": key,
+            "ranker_version_id": put["VersionId"],
+            "ranker_sha256": hashlib.sha256(ranker).hexdigest(),
+        }
     catalog = make_catalog(seed)
     put = s3.put_object(Bucket=BUNDLE_BUCKET, Key=f"{BUNDLE_PREFIX}/catalog.npz", Body=catalog)
-    manifest = make_manifest(catalog, model_id, catalog_version_id=put["VersionId"])
+    manifest = make_manifest(catalog, model_id, catalog_version_id=put["VersionId"], **fields)
     s3.put_object(
         Bucket=BUNDLE_BUCKET, Key=f"{BUNDLE_PREFIX}/manifest.json", Body=json.dumps(manifest)
     )

@@ -47,7 +47,7 @@ import json
 import re
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from steam_training.contracts import ListMetrics
@@ -185,6 +185,14 @@ class OnlineBundleManifest(_Frozen):
     catalog_sha256: str
     catalog_games: int = Field(ge=1)
     user_tower_key: str  # models/<model_id>/user_tower.npz, same bucket
+    # spec 9: the serving pair's ranker for POST /recommendations (`ranker.npz`: its trees + the
+    # game side of the features for the catalog rows, `steam_training.ranker.export`), pinned
+    # like the catalog. None: retrieval order. Older serving deploys ignore these fields.
+    ranker_id: str | None = None
+    ranker_mode: Literal["off", "shadow", "on"] = "off"
+    ranker_key: str | None = None
+    ranker_version_id: str | None = None
+    ranker_sha256: str | None = None
 
 
 USER_INDEX_FORMAT = 1
@@ -299,6 +307,7 @@ class InferenceSummary(_Frozen):
     game_details_written: int = 0
     game_details_deleted: int = 0  # unreleased games removed from game-details (spec 10)
     online_bundle: str | None = None
+    online_ranker_id: str | None = None  # spec 9: the ranker published for POST /recommendations
     search_index: str | None = None
     user_index: str | None = None  # the manifest of the demo user index (spec 13)
     snapshots: dict[str, int | None] = Field(default_factory=dict)

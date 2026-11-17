@@ -131,7 +131,9 @@ Order: EventBridge → 1 → 2 → 3 → 4
   spec 13) → reads DynamoDB `game-explainable-recommendations` (+ `game-details`) →
   recommendations → User
 - User → liked game ids → `POST /recommendations` → Lambda `recsys-serving` (the model's numpy user
-  tower over the online catalog's item embeddings, exact top K) → recommendations → User
+  tower over the online catalog's item embeddings, exact top K; spec 9: the serving pair's
+  ranker re-orders the top 100 in numpy, `serving/online/ranker.npz` written by inference with
+  the catalog) → recommendations → User
 - No LB in front of the Lambda; the diagram shows the Lambda called directly (Function URL, auth
   `AWS_IAM` or `NONE`, chosen in the infrastructure CD)
 - Browser → CloudFront → S3 `recsys-frontend-<account-id>` (the app), `/data/*` → S3

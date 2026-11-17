@@ -188,6 +188,7 @@ class App:
             update={
                 "used_game_ids": result.used_game_ids,
                 "ignored_game_ids": result.ignored_game_ids,
+                "ranker_id": result.ranker_id,
             }
         )
 

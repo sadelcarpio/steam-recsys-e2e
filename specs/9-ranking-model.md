@@ -180,21 +180,29 @@ Batch (`steam_inference`):
 - A ranker failure on a batch falls back to retrieval order for that batch (logged, the run goes
   on). The summary logs ranker time, users ranked and overlap@20 between retrieval and ranker
   order. The popularity fallback and the DynamoDB item shape do not change.
-- Every run also exports the game-side feature table next to the online catalog
-  (`serving/online/game_features.npz`: per catalog game the candidate features as of the run,
-  tags, developer / publisher / genre / category ids), named in the online manifest.
+- Every run that has the serving pair's ranker also exports it next to the online catalog
+  (`serving/online/ranker.npz`, `steam_training.ranker.export`): the trees, flattened, and per
+  catalog row the game side of the features (popularity features as of the run, is_free, log
+  price, release day, developer / publisher, tags / genres / categories as CSR lists), pinned
+  in the online manifest with the run's `RANKER_MODE`.
 
 Online (`serving`, `POST /recommendations`):
 
 - Retrieval top 100 (as today, exact top K over the online catalog), then the ranker: user
-  features from the request's liked games, game features from `game_features.npz` (loaded at
-  cold start like the catalog), language from `Accept-Language`, then the top 20.
-- The ranker runs as a **numpy tree evaluator** (`rankers/<id>/ranker.npz`: per tree the split
-  feature, threshold, children, leaf values, exported from the LightGBM dump), so the Lambda
-  needs no LightGBM. Parity with LightGBM's predictions is tested (as `test_online_parity.py`
-  does for the user tower). Budget: 100 candidates × a few hundred trees, a few ms.
-- Response `source` stays `online`; the ranker id is logged. No ranker (or `RANKER_MODE` not
-  `on`, or a pair mismatch): retrieval order, as today.
+  features from the request's liked games (the first 20 known), game features from
+  `ranker.npz` (loaded with the catalog), language from `Accept-Language` (phase 6), then the
+  top `limit`.
+- The ranker runs as a **numpy tree evaluator** (`steam_serving.ranker`: LightGBM's numerical
+  decision over the flattened trees), so the Lambda needs no LightGBM. Inference, not training,
+  writes `ranker.npz`: it already loads the serving pair's ranker and the game side as of the
+  run, a new ranker needs no backfill, and the Lambda's read access (`serving/online/*`) is
+  unchanged. Parity with LightGBM's scores and with `compute_features` is tested
+  (`inference/tests/test_online_ranker.py`). Measured: 300 trees (depth 18) × 100 candidates
+  in ~6 ms of numpy.
+- Response `source` stays `online`, plus `ranker_id` (absent: retrieval order). `RANKER_MODE`
+  comes from the manifest: `on` re-orders, `shadow` logs the overlap@limit and returns
+  retrieval order; no ranker, a ranker of another model or catalog, or any ranker error:
+  retrieval order, as today.
 
 ### Cold start (no liked game)
 
@@ -244,7 +252,7 @@ evaluation at promotion, not by retraining.
   also the precision gate. The report adds top-20 churn vs the champion (share of users' lists
   that change).
 - **Promote / rollback.** Promotion copies the changed model(s) into their `champion/` folders
-  (the ranker with its `ranker.npz`),
+  (the next inference run publishes the ranker for serving),
   writes `pair.json`, and appends `evaluation/champion/history.jsonl` (one line per promotion:
   pair, metrics, actor, time). Rollback = `training promote ROLLBACK=1` (restores the previous
   line's pair; either model alone or both), then an inference run (DynamoDB keeps the current
@@ -429,8 +437,11 @@ Each phase ships on its own (CI, docs, deploy), in this order:
    Done on `feature/ranker-batch-inference` (summary fields and `evaluation/online/` JSON; a
    CloudWatch metric for it is a follow-up). Inference reads popularity from the mart for the
    ranker; its `__popular__` list still uses its own 90-day count (same data, one less read).
-5. **Online serving**: `game_features.npz` export, the numpy tree evaluator in the Lambda,
-   parity test; deploy serving before promoting a ranker that serving must read.
+5. **Online serving**: the `ranker.npz` export (inference, with the catalog), the numpy tree
+   evaluator and feature port in the Lambda, parity tests. Done on
+   `feature/ranker-online-serving`. Deploy order: serving first (older serving ignores the
+   manifest's ranker fields, so either order is safe; serving first makes the next inference
+   run take effect online).
 6. **Language**: `language` in `interactions` (ETL), the language feature (a
    `FEATURE_SCHEMA_VERSION` bump and a ranker retrain), per-language popular lists.
 7. **Training orchestration**: a training Step Function (retriever training job → ranker job →

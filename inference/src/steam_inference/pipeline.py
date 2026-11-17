@@ -30,7 +30,13 @@ from steam_inference.details import sync_game_details
 from steam_inference.features import InferenceData, load_inference_data
 from steam_inference.online import BundleStore, build_catalog, encode_catalog
 from steam_inference.online_check import check, load_sample, sample_lists, save
-from steam_inference.ranking import RankerStats, apply_ranker, cut, load_serving_ranker
+from steam_inference.ranking import (
+    RankerStats,
+    apply_ranker,
+    cut,
+    load_serving_ranker,
+    online_ranker,
+)
 from steam_inference.rerank import (
     Reranked,
     RerankLlm,
@@ -158,8 +164,24 @@ def run_inference(
         )
 
     online_bundle = search_index = None
+    ranker_payload = None
     if bundle_store is not None:
         if store.has_user_tower_numpy(metadata.model_id):
+            # spec 9: the same ranker and mode for POST /recommendations (a failed export
+            # publishes the catalog without it: retrieval order online)
+            if ranker is not None:
+                try:
+                    ranker_payload = online_ranker(
+                        ranker,
+                        data,
+                        keep=~excluded,
+                        retriever_id=metadata.model_id,
+                        candidates=settings.retrieval_candidates,
+                        mode=settings.ranker_mode,
+                        as_of=now,
+                    )
+                except Exception:
+                    log.exception("online ranker export failed: catalog published without it")
             online_bundle = bundle_store.publish(
                 encode_catalog(
                     build_catalog(
@@ -172,6 +194,7 @@ def run_inference(
                 generated_at=now,
                 catalog_games=len(data.games) - int(excluded.sum()),
                 user_tower_key=store.user_tower_numpy_key(metadata.model_id),
+                ranker=ranker_payload,
             )
             # the frontend's search covers exactly the games the online model can use
             search_index = bundle_store.publish_search_index(
@@ -269,6 +292,7 @@ def run_inference(
         game_details_written=details_written,
         game_details_deleted=details_deleted,
         online_bundle=online_bundle,
+        online_ranker_id=ranker_payload.ranker_id if ranker_payload else None,
         search_index=search_index,
         user_index=user_index,
         snapshots={
