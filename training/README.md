@@ -141,8 +141,9 @@ flowchart TB
 A proposal derived from the EDA in `notebooks/01_feature_questions.ipynb`. Each section of that
 notebook tests a feature against a null model. Nothing below ships until it beats the champion in
 an ablation. Every change is one experiment, so this depends on experiment tracking (spec 18).
-Dashed boxes are not built yet. A3 (history + attention) and A4 (tag profile) are built; A2
-(disliked games as tokens) and the A3 time gaps were rejected and are no longer in the diagram.
+Dashed boxes are not built yet. A3 (history + attention), A4 (tag profile), A6 (recency) and A7
+(language) are built; A2 (disliked games as tokens) and the A3 time gaps were rejected and are no
+longer in the diagram.
 Every result is in the [experiment log](#experiment-log).
 
 ```mermaid
@@ -157,22 +158,23 @@ flowchart TB
     TOK["token = game + playtime + position · 64"]:::new
     ATT["self-attention, 1 pre-LN layer · 2 heads<br/>→ learned summary token · 64 (+ mean pool · 64)"]
     TP["history tag profile: EmbeddingBag over the history's tags<br/>(recency-weighted) · 16"]
-    CTX["dominant review language embedding · 8<br/>free-game share of the history · 1"]:::new
+    CTX["previous review language embedding · 8"]
+    FREE["free-game share of the history · 1"]:::new
     UC["concat · 154 (mean 64, length 1, attention 64, tags 16, context 9)"]
     UMLP["Linear 154→128 · ReLU · Linear 128→64"]
     UN["L2 normalize → u · 64"]
     H --> UM --> GT --> TOK
     PT & POS --> TOK
     TOK --> ATT --> UC
-    TP & CTX --> UC
+    TP & CTX & FREE --> UC
     UC --> UMLP --> UN
   end
 
   subgraph item["Item tower (proposed)"]
     direction TB
     CUR["current inputs: game_idx, developers, publishers, genres,<br/>categories, tags + weights, is_free, reviews_ratio · 147"]
-    AGE["log days since release, as of t · 1"]:::new
-    POP["log reviews in the last 30 / 90 days, as of t · 2"]:::new
+    AGE["log days since release + release known, as of t · 2"]
+    POP["log reviews in the last 30 / 90 days, as of t · 2"]
     PRICE["log price band embedding · 4"]:::new
     DESC["optional: frozen MiniLM description embedding<br/>384 → Linear → 16 (cold-start games)"]:::opt
     IC["concat · 154 (+16)"]
@@ -198,8 +200,8 @@ flowchart TB
 | A3 | Self-attention over a longer, ordered history | The previous game is 21% more similar to the next one than the game 20 reviews back. With shuffled order there's no decay (Q5). 22% of consecutive reviews are written the same day, hence the time-gap embedding. | `HISTORY_LENGTH=N` + `HISTORY_ENCODER=attention` (built 2026-11-12, see below). Training derives the long history from `interactions`, so experiments need no ETL change. Served: inference derives the same history from `interactions`, serving runs the attention in numpy (user tower format 3); deploy serving and inference before promoting one. Time-gap embedding **rejected (2026-11-14)**, see below |
 | A4 | History tag profile | 42% of heavy users are more concentrated on one tag than 95% of shuffled users. Tags separate users better than genres (Q1). | `USER_TAG_PROFILE=true`. **Accepted (2026-11-12)**: warm recall@50 0.1996 vs 0.1826 for a control on the same split (+9.3%, full-history exclusion, 2 epochs), +4% for new users rising to +40% / +76% for the top 5% / 1% most active, coverage@50 0.105 vs 0.053. Learned recency: the most recent game's tags weigh 1.67× the oldest's. Built over the 5-game history; the whole-history profile needs the longer history of A3. Promotable: its `user_tower.npz` is numpy format 2 (+ the tag lookup, table and position weights), which serving reads from the serving release that added it, so deploy serving first |
 | A5 | Playtime at review: an attribute of each history token + log1p sample weight on the target | Playtime tracks taste fit (ρ +0.07) and liking (ρ +0.14). Votes don't (ρ −0.02) and grow with review age (Q2, E1). It belongs to a (user, game) interaction: on history tokens it describes past interactions, so the user tower can compute it without the candidate; on the target it only weights the loss, never an input (it's the outcome). `POST /recommendations` sends liked games without playtime, so the token needs an "unknown" bucket, also used as dropout in training. Only `playtime_at_review`: `playtime_forever` is measured at scrape time, after the review. | `playtime_at_review` in `interactions` |
-| A6 | Recent popularity (30 / 90 days) and game age, as of t | Top-100 games overlap only 62% between consecutive 90-day windows. 31% of recent reviews go to games released in the last year (E3). Reviews are 1.4× front-loaded in the first year, and the positive rate drops 5 points after a game's first 90 days (Q3). | time-versioned counts in `game_features` |
-| A7 | User language + free share | Non-English reviewers pick games whose reviewers mostly share their language 17% of the time vs 6% by chance (E4). Users lean free / paid beyond chance (Q4). | `language` in `interactions` |
+| A6 | Recent popularity (30 / 90 days) and game age, as of t | Top-100 games overlap only 62% between consecutive 90-day windows. 31% of recent reviews go to games released in the last year (E3). Reviews are 1.4× front-loaded in the first year, and the positive rate drops 5 points after a game's first 90 days (Q3). `ITEM_RECENCY=true` (counts from `interactions` for the test; `game_popularity_weekly` to ship). **Accepted (2026-11-17)**: +34% (two seeds), +39% with A7, see the [experiment log](#experiment-log) |
+| A7 | User language + free share | Non-English reviewers pick games whose reviewers mostly share their language 17% of the time vs 6% by chance (E4). Users lean free / paid beyond chance (Q4). `USER_LANGUAGE=true`, language of the previous review (raw reviews for the test; a `review_languages` mart to ship). Free share not built. **Accepted (2026-11-17)**: +3.3% alone, +3.6% on top of A6 |
 | A8 | Description embedding (optional) | Neighbours share 2.7× more tags than random pairs, but co-liked AUC goes from 0.623 to only 0.627 on top of tags (Q6). Only worth it for games with few tags. | precomputed embeddings per game |
 
 Cross features (user × candidate) can't go in a two-tower model, because the towers only meet at
@@ -212,9 +214,9 @@ the future positive ratio no better than the past ratio does: R² 0.685 → 0.68
 and `votes_*` are measured at scrape time, so they are not as-of-t features.
 
 Suggested order (cheapest first, each against the champion on warm recall@50): A1 → A4 → A5 →
-A6 → A3 + A2 → A7 → A8. A1, A4 and (for training) A3 need no ETL change. Status (2026-11-16):
-A4 and A3 accepted, A1, A2 and the A3 time gaps rejected (A1: no effect); next A5 and A6, which
-need new `interactions` / `game_features` columns. A3's settings are
+A6 → A3 + A2 → A7 → A8. A1, A4 and (for training) A3 need no ETL change. Status (2026-11-17):
+A4, A3, A6 and A7 accepted (A6 + A7 together is the next recipe, pending marts and serving
+support), A1, A2 and the A3 time gaps rejected (A1: no effect); A5 (playtime) and A8 not tried. A3's settings are
 optional `ModelConfig` fields whose defaults are the old layout (like tags and A4), so older
 models keep loading without an `ARCHITECTURE_VERSION` bump.
 
@@ -247,6 +249,9 @@ snapshot and split. Models are `local-<sha>-…` in the bucket and runs are in M
 | 2026-11-14 | `BATCH_SIZE` 8192 / 16384 | **rejected** | mean within +0.3% of the control, coverage −8% / −11%, epochs 1.4× / 2.1× slower |
 | 2026-11-16 | A2: disliked games as history tokens (plain / offset / gate) | **rejected** | every variant within ±0.5% on two seeds, coverage −8% to −9% |
 | 2026-11-17 | A1 re-test on the current recipe | **rejected** (no effect; explicit negatives stay on) | +1.6% / −1.7% on two seeds, mean −0.1%; epochs ~4% faster without them |
+| 2026-11-17 | A6: item recency as of t (reviews in the last 30 / 90 days, game age), one week per batch | **accepted** | +25% / +43% on two seeds (mean +34%), third seed +21%; all-rows recall@50 0.20 → 0.31; the first try (mixed weeks per batch) learned a date shortcut, −16% |
+| 2026-11-17 | A7: language of the user's previous review | **accepted** | +2.6% / +4.0% on two seeds (mean +3.3%) |
+| 2026-11-17 | A6 + A7 together | **accepted** (next recipe, not promotable yet) | +5.4% / +2.1% over A6 alone on the same seeds; +39% over the control; above the control in every activity bucket |
 
 Before 2026-11-14 each arm ran on one seed. Gains of +3.7% and more are far outside the
 ~0.8% seed noise; A1, the one small single-seed verdict, was re-tested with two seeds.
@@ -256,6 +261,12 @@ Coverage@50 is noisier across seeds than recall. Over the 16 runs on the shared 
 seed-43 control (0.184) is the highest of all of them. Most of the "coverage −8% to −11%"
 against the controls above comes from that one run (vs the seed-42 control alone, the arms are
 −4% on average). Judge arms on warm recall; read coverage only as a large, consistent move.
+
+A6 and A7 are compared on identical rows: `compare_models.py` scores every saved model, the
+popularity baseline and the weekly recent-popularity baseline on one validation sample after
+every model's cutoff (499k rows). Their training runs read `interactions` snapshot
+5387310200131862803, a rebuild of the controls' snapshot with the same rows (the marts were
+rebuilt on 2026-11-17 for `game_popularity_weekly`), so the controls stayed valid.
 
 **Shared controls since 2026-11-14** (champion recipe: 20 games, attention, A4, sync every 1000
 steps, lr 5e-3, batch 4096, cutoff 2026-05-09, `interactions` snapshot 1483226419950901524):
@@ -370,6 +381,92 @@ the disliked game as a hard negative neither helps nor hurts. It also costs litt
 slower with it). Without a gain there is no reason to change the champion's loss, so explicit
 negatives stay on. With A2 rejected too, a user's dislikes add nothing measurable to retrieval
 in either role, as a negative or as history; they remain as labels for the ranker (spec 9).
+
+**A6 item recency: accepted (2026-11-17).** `ITEM_RECENCY=true`: the item tower also reads 4
+numbers per game, as of a day: log1p reviews in the 30 and 90 days before it, log1p days since
+release, and whether the release date is known (each × 0.1). Counts come from `interactions`
+(reviews per game and day, any polarity), release dates from `game_details`.
+
+The first try computed every candidate's features as of its row's review day, with rows of all
+dates mixed in a batch. It learned a shortcut: an in-batch negative from another row carried
+features of another date, so the model could reject it for its date rather than its fit. Loss
+fell, warm recall@50 fell to 0.1836 (−16%). The fix, kept:
+
+- every batch comes from one time bucket (a week; sparse old weeks are merged, 707 buckets),
+  shuffled within the bucket, and the batches are shuffled across buckets;
+- every candidate in a batch (targets, in-batch and hard negatives) gets its features as of the
+  bucket's start, so dates can't separate them;
+- logQ uses the target frequencies of the bucket, not of the whole training set;
+- evaluation refreshes the catalog's recency weekly: each validation row is scored against the
+  catalog as of its week's start (`evaluation.recency_rescore`), as inference would with a
+  weekly run.
+
+A fairer baseline came with it: **weekly recent popularity** (the games with the most reviews in
+the 30 days before each row's week), much stronger than all-time popularity. Results on the
+same 499k rows:
+
+| Model | warm recall@50 (seed 42 / 43 / 44) | warm recall@100 | all recall@50 | coverage@50 |
+|---|---|---|---|---|
+| control | 0.2200 / 0.2202 / – | 0.303 | 0.203 | 0.158 / 0.183 |
+| A6 | 0.2760 (+25%) / 0.3157 (+43%) / 0.2673 | 0.380 / 0.421 / 0.376 | 0.306 / 0.336 / 0.293 | 0.165 / 0.146 / 0.176 |
+| popularity (all time) | 0.1027 | 0.150 | 0.123 | |
+| recent popularity (weekly) | 0.2122 | 0.301 | 0.268 | |
+
+Recall@50 by activity (reviews before the cutoff):
+
+| Model | new | 1–5 | 6–17 | 18–59 | 60–177 | 178+ |
+|---|---|---|---|---|---|---|
+| control (s42 / s43) | 0.190 / 0.194 | 0.233 | 0.215 | 0.173 | 0.130 / 0.132 | 0.071 / 0.067 |
+| A6 s42 / s43 / s44 | 0.374 / 0.389 / 0.355 | 0.320 / 0.352 / 0.305 | 0.266 / 0.312 / 0.259 | 0.190 / 0.244 / 0.187 | 0.119 / 0.168 / 0.124 | 0.052 / 0.070 / 0.059 |
+| recent popularity | 0.378 | 0.268 | 0.189 | 0.126 | 0.069 | 0.024 |
+
+The gain shrinks with activity and turns negative for the most active users on 2 of 3 seeds
+(they review older and niche games). For new users the model is only as good as weekly
+popularity: what it learned there is "what's popular this week". So the serving fallback for
+unknown users (`__popular__`, all-time) should become weekly popularity (follow-up). A6 is much
+noisier across seeds (0.267–0.316) than the control (0.2200 / 0.2202) and peaked at epoch 1, 1
+and 3. The item embeddings share a direction the recency inputs give them (mean cosine 0.61–0.69
+vs ~0.5), but their effective rank stays ~40 of 64 (no collapse). Epochs ~485 s (+5%).
+
+**A7 previous review language: accepted (2026-11-17).** `USER_LANGUAGE=true`: the user tower
+also reads an 8-d embedding of the language of the user's previous review (strictly before the
+row; 29 Steam languages, unknown for a user's first review), with 10% dropout to unknown in
+training. The language was read from the raw reviews (`RAW_REVIEWS_URI`, `rec_id` =
+`review_id`, 122M reviews, cached per file): no mart had it. 71.6% of validation rows know it.
+
+| Seed | warm recall@50 (vs control, same rows) | warm recall@100 | coverage@50 |
+|---|---|---|---|
+| 42 | 0.2258 (+2.6%) | 0.310 | 0.158 |
+| 43 | 0.2289 (+4.0%) | 0.315 | 0.176 |
+
+Small but clear of noise on both seeds. The gain sits in new and light users: users new at
+the cutoff +5% / +39% (most have reviewed since, so their language is known), 1–5 reviews +4% /
++6%, 6–59 reviews 0% to +2%, the most active 5% flat. Epochs ~490 s, plus ~3 min to attach the
+languages when loading.
+
+**A6 + A7: accepted, the next recipe (2026-11-17).** Both on (`ITEM_RECENCY=true
+USER_LANGUAGE=true`), checked against A6 alone on the same seeds, so the question is whether
+language still adds once recency is in:
+
+| Seed | A6 | A6 + A7 | warm recall@100 | all recall@50 | coverage@50 |
+|---|---|---|---|---|---|
+| 42 | 0.2760 | **0.2908 (+5.4%)** | 0.400 (A6 0.380) | 0.309 | 0.196 |
+| 43 | 0.3157 | **0.3224 (+2.1%)** | 0.428 (A6 0.421) | 0.340 | 0.169 |
+
+Language adds as much on top of recency (+3.6%) as alone (+3.3%): the two don't overlap (one
+describes the game's moment, the other the user). By activity it also fixes A6's weak spot:
+the most active 1% get 0.076 / 0.074 (control 0.071 / 0.067, A6 0.052 / 0.070), 60–177 reviews
+0.151 / 0.167, so the combination is at or above the control in every bucket on both seeds.
+Overall +39% warm recall@50 over the champion's recipe (0.3066 vs 0.2201, mean of two seeds).
+
+Not promotable yet (`run_promotion` refuses both settings, and no `user_tower.npz` is written
+with a language). What it needs: recency from `game_popularity_weekly` (the one definition of
+game popularity, shared with the ranker) instead of counting `interactions`; the language from a
+`review_languages` mart instead of the raw files; inference computing both (catalog recency as of
+its run, each user's last review language); the numpy user tower and serving port with the
+language input (unknown for `POST /recommendations`, which the dropout trains for); then a
+confirming two-seed run on those sources and a pair evaluation with a ranker trained on its
+candidates.
 
 ## Evaluation
 

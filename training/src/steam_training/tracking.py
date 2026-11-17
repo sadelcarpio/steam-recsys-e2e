@@ -48,11 +48,15 @@ def features(config: ModelConfig) -> dict[str, list[str]]:
     if config.vocab.tags is not None:
         item.append("tags")
     item += ["is_free", "is_free_known", "reviews_ratio"]
+    if config.item_recency:
+        item.append("recency[reviews_30d,reviews_90d,days_since_release,release_known]")
     user = [f"games_reviewed_positive[{config.history_length}]", "history_length"]
     if config.history_encoder == "attention":
         user.append(f"history_attention[{config.attention_layers}x{config.attention_heads}]")
     if config.user_tag_profile:
         user.append("history_tag_profile")
+    if config.user_language:
+        user.append("previous_review_language")
     return {"user": user, "item": item}
 
 

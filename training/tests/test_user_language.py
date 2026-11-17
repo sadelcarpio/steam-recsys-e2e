@@ -25,6 +25,7 @@ from steam_training.data import load_training_data, previous_language
 from steam_training.languages import ReviewLanguages, language_codes
 from steam_training.model import TwoTowerModel
 from steam_training.pipeline import run_promotion, run_training
+from steam_training.tracking import features
 from tests.conftest import BUCKET, FakeSource, make_marts
 
 LANGS = ("english", "schinese", "russian", None)
@@ -194,3 +195,12 @@ def test_train_with_language_is_not_promotable(settings, source, store, marts, m
     assert not store._exists(model_prefix("a7") + USER_TOWER_NUMPY)
     with pytest.raises(ValueError, match="not promotable"):
         run_promotion(settings, source, store)
+
+
+def test_models_saved_with_a_retired_field_still_load():
+    saved = _model(False).config
+    config = saved.model_dump()
+    assert ModelConfig.model_validate({**config, "history_gap_seconds": None}) == saved
+    with pytest.raises(ValidationError, match="retired"):
+        ModelConfig.model_validate({**config, "history_gap_seconds": 3600})
+    assert "previous_review_language" in features(_model(True).config)["user"]

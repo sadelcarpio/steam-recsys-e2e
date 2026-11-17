@@ -11,9 +11,9 @@ S3 layout (bucket `model-artifacts-<acct>`):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Reserved ids of every lkp_* vocabulary (see etl/src/steam_etl/contracts.py).
 PADDING_ID = 0
@@ -55,6 +55,10 @@ class VocabSizes(_Frozen):
     tags: int | None = Field(None, ge=FIRST_ID)
 
 
+# history time gaps (rejected, code removed): unset in the models saved while it existed
+_RETIRED_FIELDS = ("history_gap_seconds",)
+
+
 class ModelConfig(_Frozen):
     architecture_version: int = ARCHITECTURE_VERSION
     vocab: VocabSizes
@@ -79,6 +83,17 @@ class ModelConfig(_Frozen):
     # A7 (spec 17): the user tower also reads the language of the user's previous review
     # (an embedding of STEAM_LANGUAGES, OOV when unknown); False for older models
     user_language: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired(cls, data: Any) -> Any:
+        """Experiment fields whose code was removed (rejected arms) are accepted while unset,
+        so the saved models that carry them (e.g. the shared A3 controls) still load."""
+        if isinstance(data, dict) and any(data.get(k) is not None for k in _RETIRED_FIELDS):
+            raise ValueError(f"model uses a retired experiment input: {_RETIRED_FIELDS}")
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k not in _RETIRED_FIELDS}
+        return data
 
 
 class SplitInfo(_Frozen):
