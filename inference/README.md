@@ -53,6 +53,17 @@ steam_marts (Iceberg, pyiceberg)
    A failing chunk of users keeps retrieval order. Anything else (no pair, a pair with another
    retriever, a missing mart, an old feature schema) keeps retrieval order and the summary's
    `ranker_reason` says why. Item scores stay the retrieval cosine (in list order).
+   The same ranker goes to the serving Lambda for `POST /recommendations`: with the online
+   catalog, the run writes `serving/online/ranker.npz` (the trees, flattened, and the game side
+   of the features for the catalog rows, popularity as of the run;
+   `steam_training.ranker.export`) and names it in the manifest with `RANKER_MODE` (`shadow`:
+   serving only logs; `on`: serving re-orders). A failed export publishes the catalog without
+   it (summary `online_ranker_id` null). Between runs (a ranker promoted after the last one, or
+   a mode change), `uv run python scripts/publish_online_ranker.py [--dry-run] [--mode on]`
+   publishes just the ranker next to the catalog already in S3: it reads only the game marts and
+   the popularity mart (no `interactions`), checks the file with serving's code, prints one
+   example list in both orders, then rewrites the manifest with the same catalog version. Run it
+   after any inference run in progress has finished (that run rewrites the manifest).
 3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
    and at most `RERANK_MAX_USERS` (100), are sent to Bedrock (Converse API) with their last
    last 5 liked games (the start of the user tower's history) and their K

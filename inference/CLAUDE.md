@@ -48,6 +48,10 @@ Human docs: `README.md`.
     `S3BundleStore` puts the catalog, then a manifest pinned to its version id that names the
     model's `user_tower.npz`; `LocalBundleStore` for dry runs; both also publish the search
     index)
+  - `ranking.py` (spec 9): `load_serving_ranker` (the serving pair's ranker, popularity from
+    the mart as of the run), `apply_ranker` (per-chunk fallback), `online_ranker` (the
+    `ranker.npz` for the serving Lambda, rows = the published catalog's, via
+    `steam_training.ranker.export`); `online_check.py`: the delayed-label check
   - `search.py`: the frontend's search index (`build_search_index` / `index_from_catalog`:
     catalog games as [appid, name, reviews], `encode_search_index`: gzipped JSON), published
     with the catalog
@@ -61,6 +65,9 @@ Human docs: `README.md`.
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
   - `__main__.py`: SageMaker Processing entry point (`python -m steam_inference`)
+- `scripts/publish_online_ranker.py` (spec 9): `ranker.npz` for the catalog already in S3
+  (`S3BundleStore.publish_ranker`: the ranker, then the same manifest + ranker fields), without
+  an inference run; tested in `tests/test_online_ranker.py`
 - `scripts/publish_search_index.py`: publishes the search index from the catalog already in
   S3 (+ review counts from one Athena query), without an inference run; drops adult games
   from both (republishing the catalog when it had any)
@@ -111,6 +118,11 @@ Human docs: `README.md`.
   when the model has its `user_tower.npz`. `test_online_parity.py` runs training's export and
   this catalog through serving's numpy code, and compares the result with torch and with batch
   retrieval.
+- Online ranker (spec 9): `ranker.npz` is published only with the catalog, for the rows
+  `build_catalog` keeps (same order), before the catalog and pinned in the same manifest
+  (`ranker_*` fields, optional: older serving deploys ignore them). Its mode is this run's
+  `RANKER_MODE`. Serving's port must match training's features and LightGBM:
+  `tests/test_online_ranker.py`.
 - The search index (`SearchIndex`, `SEARCH_INDEX_FORMAT`) is read by the frontend
   (`frontend/src/api.ts`): change both together. It is published only with the online catalog,
   so search offers exactly the games `POST /recommendations` can use.

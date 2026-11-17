@@ -11,6 +11,10 @@ user's last liked games.
 `RANKER_MODE`: `shadow` computes the ranker order and compares it with retrieval order, but the
 run writes retrieval order; `on` writes the ranker's top `RANKER_TOP_K`. A failure on a chunk of
 users keeps their retrieval order (counted), never fails the run.
+
+`online_ranker` packs the same ranker for the serving Lambda (`ranker.npz`, published with the
+online catalog): its trees and the game side of the features for the published catalog rows,
+popularity as of this run.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import numpy as np
 from pyiceberg.exceptions import NoSuchTableError
 from steam_training.artifacts import ArtifactStore
 from steam_training.config import CHAMPION
-from steam_training.data import Ragged, TableSource
+from steam_training.data import Catalog, Ragged, TableSource
 from steam_training.pairs import load_ranker
 from steam_training.ranker.data import (
     POPULARITY_MART,
@@ -32,6 +36,7 @@ from steam_training.ranker.data import (
     game_details,
     popularity_from_mart,
 )
+from steam_training.ranker.export import encode_ranker, ranker_arrays
 from steam_training.ranker.features import (
     FEATURES,
     MAX_RECENT_WEEKS,
@@ -43,6 +48,7 @@ from steam_training.ranker.features import (
 from steam_training.ranker.model import FitResult
 
 from steam_inference.features import InferenceData
+from steam_inference.online import RankerPayload
 from steam_inference.retrieval import NO_ROW, Candidates
 
 log = logging.getLogger(__name__)
@@ -70,12 +76,15 @@ class RankerStats:
 def load_serving_ranker(
     source: TableSource,
     store: ArtifactStore,
-    data: InferenceData,
+    catalog: Catalog,
     retriever_id: str,
     as_of: datetime,
+    history_length: int | None = None,
 ) -> tuple[ServingRanker | None, str]:
-    """(the serving ranker, why) or (None, why not). Popularity covers the weeks before
-    `as_of`'s week (what training reads at t = `as_of`)."""
+    """(the serving ranker, why) or (None, why not), with the game side of its features for
+    `catalog` (the current games). Popularity covers the weeks before `as_of`'s week (what
+    training reads at t = `as_of`). `history_length`: the users' history this run has (warns
+    when shorter than the ranker's)."""
     pair = store.read_pair()
     if pair is None or pair.ranker_id is None:
         return None, "no ranker in the serving pair"
@@ -97,7 +106,6 @@ def load_serving_ranker(
         snapshots |= {t: source.snapshot_id(t) for t in ("lkp_games", "game_details")}
     except NoSuchTableError as err:
         return None, f"mart missing for the ranker features: {err}"
-    catalog = data.games.catalog
     num_games = len(catalog.row_of)
     items = catalog.items
     price, release_day = game_details(source, snapshots, num_games)
@@ -114,7 +122,7 @@ def load_serving_ranker(
     popularity = popularity_from_mart(
         source, snapshots[POPULARITY_MART], num_games, week - MAX_RECENT_WEEKS - 1, week
     )
-    history = data.users.history.shape[1]
+    history = history_length if history_length is not None else metadata.history_length
     if history < metadata.history_length:
         log.warning(
             "the retriever's history (%d games) is shorter than the ranker's (%d): its "
@@ -207,3 +215,27 @@ def top_overlap(a: np.ndarray, b: np.ndarray, k: int) -> float | None:
 
 def cut(candidates: Candidates, k: int) -> Candidates:
     return Candidates(candidates.rows[:, :k], candidates.scores[:, :k], candidates.item_embeddings)
+
+
+def online_ranker(
+    ranker: ServingRanker,
+    game_idx: np.ndarray,
+    *,
+    retriever_id: str,
+    candidates: int,
+    mode: str,
+    as_of: datetime,
+) -> RankerPayload:
+    """`ranker.npz` for the published catalog's rows (`game_idx` of each row, in order)."""
+    arrays = ranker_arrays(
+        ranker.fit,
+        ranker_id=ranker.ranker_id,
+        model_id=retriever_id,
+        history_length=ranker.history_length,
+        candidates=candidates,
+        games=ranker.games,
+        popularity=ranker.popularity,
+        game_idx=game_idx,
+        as_of_seconds=epoch_seconds(as_of),
+    )
+    return RankerPayload(encode_ranker(arrays), ranker.ranker_id, mode)
