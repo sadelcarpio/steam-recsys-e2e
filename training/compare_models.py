@@ -42,16 +42,10 @@ data = _load(
     history_length=max(m.config.history_length for m in models.values()),
     # A6 models read item recency (others ignore the extra columns)
     with_recency=any(m.config.item_recency for m in models.values()),
-    # A7 models read the user's language (RAW_REVIEWS_URI); others ignore it
-    **(
-        {
-            "languages": load_review_languages(
-                settings.raw_reviews_uri, settings.aws_region, settings.data_cache_dir
-            )
-        }
-        if any(m.config.user_language for m in models.values())
-        else {}
-    ),
+    # A7 models read the user's language (`review_languages`); others ignore it
+    languages=load_review_languages(source)
+    if any(m.config.user_language for m in models.values())
+    else None,
 )
 device = resolve_device(settings.device)
 ks = settings.recall_ks

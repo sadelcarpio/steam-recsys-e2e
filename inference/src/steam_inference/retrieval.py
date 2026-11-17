@@ -61,7 +61,12 @@ def retrieve(
     blocked = torch.from_numpy(np.flatnonzero(excluded)) if excluded is not None else None
     for start in range(0, len(users), user_batch_size):
         chunk = users.take(np.arange(start, min(start + user_batch_size, len(users))))
-        user_embeddings = model.user_tower(torch.from_numpy(chunk.history))
+        language = (  # A7: each user's language (None: unknown for all)
+            torch.from_numpy(chunk.language.astype(np.int64))
+            if chunk.language is not None
+            else None
+        )
+        user_embeddings = model.user_tower(torch.from_numpy(chunk.history), language)
         chunk_scores = user_embeddings @ item_embeddings.T
         # exclude every game the user already reviewed (positively or not)
         reviewed = reviews.of(chunk)

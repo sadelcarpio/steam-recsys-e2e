@@ -136,7 +136,12 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   history column (`test_histories_are_the_last_positives_before_each_row`); on real data the
   derivation matched the mart's 5 games on 99.99% of rows (2026-11-12). The attention encoder (`HistoryAttention`) exports as numpy format 3
   (`USER_TOWER_ATTENTION_FORMAT`, `ATTENTION_ARRAYS`; serving's port, parity in inference's
-  `test_online_parity.py`). Inference derives the same history (`steam_inference.features`,
+  `test_online_parity.py`); a model with the user's language (A7) as format 4
+  (`USER_TOWER_LANGUAGE_FORMAT`: optional blocks flagged by their arrays, `LANGUAGE_ARRAYS`
+  appended last). A6 / A7 data: `data.load_recency` (`RECENCY_TABLES`) and
+  `languages.load_review_languages` (`review_languages` mart, optionally only some review ids)
+  are shared with `rank`, `pair` and inference; `evaluation.weekly_scores` /
+  `weekly_top_candidates` score rows as of their ISO week (and with their language) there. Inference derives the same history (`steam_inference.features`,
   `Reviews.histories`) at the model's `history_length`. Promotion loads the longer history of
   candidate and champion; `evaluation.model_scores` feeds each model its own prefix (most
   recent first, so the prefix is that model's history).

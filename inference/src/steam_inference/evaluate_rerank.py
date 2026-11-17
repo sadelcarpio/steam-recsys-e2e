@@ -40,6 +40,7 @@ from steam_inference.features import (
     review_activity,
     review_rows,
     users_of,
+    with_languages,
     with_recency_as_of,
 )
 from steam_inference.pipeline import rerank_request
@@ -107,10 +108,17 @@ def load_cohort(
     cohort: np.ndarray,
     cutoff: int,
     history_length: int = USER_HISTORY_LENGTH,
+    with_language: bool = False,
 ) -> tuple[Users, Reviews, dict[int, set[int]]]:
-    """The cohort's users and reviewed games as of the cutoff, and their later positives."""
+    """The cohort's users and reviewed games as of the cutoff, and their later positives
+    (`with_language`, A7: and their newest review's language before the cutoff)."""
     review_users, reviews, _ = collect_reviews(
-        source, snapshots["interactions"], cohort, popular_since=0, until=cutoff - 1
+        source,
+        snapshots["interactions"],
+        cohort,
+        popular_since=0,
+        until=cutoff - 1,
+        with_review_id=with_language,
     )
     after: dict[int, set[int]] = {}
     for batch in source.batches("interactions", REVIEW_COLUMNS, snapshots["interactions"]):
@@ -119,6 +127,8 @@ def load_cohort(
         for u, g in zip(user[keep].tolist(), game[keep].tolist(), strict=True):
             after.setdefault(u, set()).add(g)
     users = users_of(review_users, reviews, cohort, history_length)
+    if with_language:
+        users = with_languages(users, reviews, source, snapshots)
     return users, reviews, after
 
 
@@ -148,7 +158,12 @@ def evaluate_rerank(
         seed=seed,
     )
     cohort_users, reviews, after = load_cohort(
-        source, snapshots, cohort, cutoff, metadata.config.history_length
+        source,
+        snapshots,
+        cohort,
+        cutoff,
+        metadata.config.history_length,
+        with_language=metadata.config.user_language,
     )
     log.info("evaluating %d users active after %s", len(cohort_users), metadata.split.cutoff)
     excluded = adult_mask(games) if settings.exclude_adult else np.zeros(len(games), bool)

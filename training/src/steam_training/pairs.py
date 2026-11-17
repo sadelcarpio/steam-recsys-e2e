@@ -43,6 +43,7 @@ from steam_training.contracts import (
 )
 from steam_training.data import TableSource
 from steam_training.evaluation import CatalogIndex, weekly_scores, weekly_top_candidates
+from steam_training.languages import load_review_languages
 from steam_training.ranker.data import epoch_seconds, load_ranker_data
 from steam_training.ranker.features import FEATURE_SCHEMA_VERSION, SECONDS_PER_DAY
 from steam_training.ranker.lists import candidate_lists, evaluate_lists, snapshots
@@ -118,6 +119,10 @@ def run_pair(
         list_users=settings.pair_list_users,
         # A6 retrievers score against the catalog as of each row's week; others ignore recency
         with_recency=any(m.config.item_recency for m, _ in retrievers.values()),
+        # A7 retrievers read each group's previous review language; others ignore it
+        languages=load_review_languages(source)
+        if any(m.config.user_language for m, _ in retrievers.values())
+        else None,
     )
     rows = data.rows
     if len(rows) > settings.pair_max_groups:
@@ -145,6 +150,7 @@ def run_pair(
             k,
             settings.eval_batch_size,
             exclude=rows.reviewed,
+            language=rows.language,
         )
         groups = build_groups(
             rows, candidates, scores, data.games, data.popularity, settings.pair_history_length

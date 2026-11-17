@@ -24,7 +24,10 @@ Human docs: `README.md`.
     even beyond the model vocab), lookup names, `Games.info` / `describe` (prompt lines),
     truncated short descriptions and the release status (`Games.coming_soon`);
     `with_recency_as_of` (A6 models, `ModelConfig.item_recency`): the catalog's recency as of
-    the newest review (`steam_training.data.load_recency`; `evaluate_rerank`: as of the cutoff)
+    the newest review (`steam_training.data.load_recency`; `evaluate_rerank`: as of the cutoff);
+    `with_languages` (A7, `ModelConfig.user_language`): each user's newest review's language
+    (`collect_reviews(with_review_id=True)`, `steam_training.languages.load_review_languages`
+    for only those review ids), `Users.language`, passed to the user tower by `retrieve`
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
   - `ranking.py` (spec 9): stage 2b. `load_serving_ranker` (pair.json must name this run's
     retriever and `rankers/champion/` that ranker; game table from the catalog +

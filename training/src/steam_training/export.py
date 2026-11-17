@@ -39,6 +39,14 @@ above (present iff the model has the profile), adds `ATTENTION_ARRAYS`, and x be
     attn_ffn_b2 [layers, d]
 Padding never takes part (it is masked as a key and only the summary token is read), so a
 port may drop the padding slots.
+
+Format 4 (A7, a model with the user's language): every optional block is present iff its
+arrays are (tag profile iff `tag_table`, attention iff `attn_summary`), and x gets the
+language embedding appended last: [pooled, length / history_length, attention?, profile?,
+language_table[language id]]:
+    language_table   float32 [NUM_LANGUAGE_IDS, LANGUAGE_EMBEDDING_DIM]
+    language_names   str [n]   Steam API names; language id = index + FIRST_ID (OOV_ID = unknown)
+Models without a language keep formats 1-3, so servers that predate format 4 still read them.
 """
 
 from __future__ import annotations
@@ -48,12 +56,14 @@ import io
 import numpy as np
 from torch import nn
 
-from steam_training.contracts import OOV_ID, PADDING_ID
+from steam_training.contracts import FIRST_ID, OOV_ID, PADDING_ID, STEAM_LANGUAGES
 from steam_training.model import TwoTowerModel
 
 USER_TOWER_NUMPY_FORMAT = 1
 USER_TOWER_TAG_PROFILE_FORMAT = 2
 USER_TOWER_ATTENTION_FORMAT = 3
+USER_TOWER_LANGUAGE_FORMAT = 4
+LANGUAGE_ARRAYS = ("language_table", "language_names")
 TAG_PROFILE_ARRAYS = ("tag_values", "tag_offsets", "tag_weights", "tag_recency", "tag_table")
 ATTENTION_ARRAYS = (
     "attn_heads",
@@ -91,8 +101,6 @@ USER_TOWER_ARRAYS = (
 
 
 def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarray]:
-    if model.config.user_language:
-        raise ValueError("no numpy user tower for the user's language (A7) yet")
     tower = model.user_tower
     first, second = tower.mlp[0], tower.mlp[2]
     assert isinstance(first, nn.Linear) and isinstance(second, nn.Linear), tower.mlp
@@ -101,7 +109,9 @@ def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarr
         return tensor.detach().cpu().numpy()
 
     profile = tower.tag_profile is not None
-    if tower.attention is not None:
+    if tower.language is not None:
+        version = USER_TOWER_LANGUAGE_FORMAT
+    elif tower.attention is not None:
         version = USER_TOWER_ATTENTION_FORMAT
     elif profile:
         version = USER_TOWER_TAG_PROFILE_FORMAT
@@ -132,6 +142,12 @@ def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarr
         }
     if tower.attention is not None:
         arrays |= _attention_arrays(tower.attention, numpy)
+    if tower.language is not None:
+        assert FIRST_ID + len(STEAM_LANGUAGES) == tower.language.num_embeddings
+        arrays |= {
+            "language_table": numpy(tower.language.weight).astype(np.float32),
+            "language_names": np.array(STEAM_LANGUAGES, dtype=np.str_),
+        }
     return arrays
 
 

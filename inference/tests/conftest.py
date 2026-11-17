@@ -51,6 +51,34 @@ def review_time(user: int, i: int) -> datetime:
     return START + timedelta(days=user - 100, hours=i)
 
 
+def review_id(user: int, i: int) -> int:
+    """review_id of the `i`-th review of `user`."""
+    return user * 100 + i
+
+
+def review_language(user: int, i: int) -> str | None:
+    """A7 fixture: users 101 / 103 write in english, then their newest review in russian; user
+    104 in schinese; user 102's reviews have no language (absent from the mart)."""
+    if user == 102:
+        return None
+    if user == 104:
+        return "schinese"
+    if user in (101, 103) and i == len(REVIEWS[user]) - 1:
+        return "russian"
+    return "english"
+
+
+def add_languages(marts: dict[str, pa.Table]) -> dict[str, pa.Table]:
+    """+ the `review_languages` mart (A7), per `review_language`."""
+    rows = [
+        {"review_id": review_id(user, i), "language": language}
+        for user, reviews in REVIEWS.items()
+        for i in range(len(reviews))
+        if (language := review_language(user, i)) is not None
+    ]
+    return {**marts, "review_languages": pa.Table.from_pylist(rows)}
+
+
 def game_row(game_idx: int, ts: datetime, ratio: float) -> dict:
     return {
         "game_id": 1000 + game_idx,
@@ -74,7 +102,13 @@ def make_marts() -> dict[str, pa.Table]:
         for i, (game, positive) in enumerate(reviews):
             ts = review_time(user, i)
             interactions.append(
-                {"user_id": user, "game_idx": game, "is_positive": positive, "timestamp": ts}
+                {
+                    "review_id": review_id(user, i),
+                    "user_id": user,
+                    "game_idx": game,
+                    "is_positive": positive,
+                    "timestamp": ts,
+                }
             )
             if positive:
                 liked = [game, *liked]
@@ -242,6 +276,7 @@ def make_model(
     history_length: int = 5,
     attention_layers: int = 0,
     item_recency: bool = False,
+    user_language: bool = False,
 ) -> TwoTowerModel:
     """`attention_layers` > 0: the A3 attention encoder (2 heads), its parameters randomized so
     every LayerNorm / projection matters in parity tests."""
@@ -261,8 +296,12 @@ def make_model(
         attention_heads=2,
         attention_layers=max(attention_layers, 1),
         item_recency=item_recency,
+        user_language=user_language,
     )
     model = TwoTowerModel(config)
+    if user_language:  # make the language matter in parity tests
+        with torch.no_grad():
+            model.user_tower.language.weight.mul_(3)
     if attention_layers:
         with torch.no_grad():
             for parameter in model.user_tower.attention.parameters():

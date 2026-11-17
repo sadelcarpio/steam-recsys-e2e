@@ -203,7 +203,7 @@ flowchart TB
 | A4 | History tag profile | 42% of heavy users are more concentrated on one tag than 95% of shuffled users. Tags separate users better than genres (Q1). | `USER_TAG_PROFILE=true`. **Accepted (2026-11-12)**: warm recall@50 0.1996 vs 0.1826 for a control on the same split (+9.3%, full-history exclusion, 2 epochs), +4% for new users rising to +40% / +76% for the top 5% / 1% most active, coverage@50 0.105 vs 0.053. Learned recency: the most recent game's tags weigh 1.67× the oldest's. Built over the 5-game history; the whole-history profile needs the longer history of A3. Promotable: its `user_tower.npz` is numpy format 2 (+ the tag lookup, table and position weights), which serving reads from the serving release that added it, so deploy serving first |
 | A5 | Playtime at review: an attribute of each history token + log1p sample weight on the target | Playtime tracks taste fit (ρ +0.07) and liking (ρ +0.14). Votes don't (ρ −0.02) and grow with review age (Q2, E1). It belongs to a (user, game) interaction: on history tokens it describes past interactions, so the user tower can compute it without the candidate; on the target it only weights the loss, never an input (it's the outcome). `POST /recommendations` sends liked games without playtime, so the token needs an "unknown" bucket, also used as dropout in training. Only `playtime_at_review`: `playtime_forever` is measured at scrape time, after the review. | `playtime_at_review` in `interactions` |
 | A6 | Recent popularity (30 / 90 days) and game age, as of t | Top-100 games overlap only 62% between consecutive 90-day windows. 31% of recent reviews go to games released in the last year (E3). Reviews are 1.4× front-loaded in the first year, and the positive rate drops 5 points after a game's first 90 days (Q3). `ITEM_RECENCY=true` (counts from `game_popularity_weekly` since 2026-11-17; the runs below counted `interactions` per day). **Accepted (2026-11-17)**: +34% (two seeds), +39% with A7, see the [experiment log](#experiment-log) |
-| A7 | User language + free share | Non-English reviewers pick games whose reviewers mostly share their language 17% of the time vs 6% by chance (E4). Users lean free / paid beyond chance (Q4). `USER_LANGUAGE=true`, language of the previous review (raw reviews for the test; a `review_languages` mart to ship). Free share not built. **Accepted (2026-11-17)**: +3.3% alone, +3.6% on top of A6 |
+| A7 | User language + free share | Non-English reviewers pick games whose reviewers mostly share their language 17% of the time vs 6% by chance (E4). Users lean free / paid beyond chance (Q4). `USER_LANGUAGE=true`, language of the previous review (`review_languages` mart; the test runs read the raw reviews). Free share not built. **Accepted (2026-11-17)**: +3.3% alone, +3.6% on top of A6 |
 | A8 | Description embedding (optional) | Neighbours share 2.7× more tags than random pairs, but co-liked AUC goes from 0.623 to only 0.627 on top of tags (Q6). Only worth it for games with few tags. | precomputed embeddings per game |
 
 Cross features (user × candidate) can't go in a two-tower model, because the towers only meet at
@@ -217,8 +217,7 @@ and `votes_*` are measured at scrape time, so they are not as-of-t features.
 
 Suggested order (cheapest first, each against the champion on warm recall@50): A1 → A4 → A5 →
 A6 → A3 + A2 → A7 → A8. A1, A4 and (for training) A3 need no ETL change. Status (2026-11-17):
-A4, A3, A6 and A7 accepted (A6 + A7 together is the next recipe, pending marts and serving
-support), A1, A2 and the A3 time gaps rejected (A1: no effect); A5 (playtime) and A8 not tried. A3's settings are
+A4, A3, A6 and A7 accepted (A6 + A7 together is the next recipe, promotable), A1, A2 and the A3 time gaps rejected (A1: no effect); A5 (playtime) and A8 not tried. A3's settings are
 optional `ModelConfig` fields whose defaults are the old layout (like tags and A4), so older
 models keep loading without an `ARCHITECTURE_VERSION` bump.
 
@@ -253,7 +252,7 @@ snapshot and split. Models are `local-<sha>-…` in the bucket and runs are in M
 | 2026-11-17 | A1 re-test on the current recipe | **rejected** (no effect; explicit negatives stay on) | +1.6% / −1.7% on two seeds, mean −0.1%; epochs ~4% faster without them |
 | 2026-11-17 | A6: item recency as of t (reviews in the last 30 / 90 days, game age), one week per batch | **accepted** | +25% / +43% on two seeds (mean +34%), third seed +21%; all-rows recall@50 0.20 → 0.31; the first try (mixed weeks per batch) learned a date shortcut, −16% |
 | 2026-11-17 | A7: language of the user's previous review | **accepted** | +2.6% / +4.0% on two seeds (mean +3.3%) |
-| 2026-11-17 | A6 + A7 together | **accepted** (next recipe; A6 alone promotable, A7 pending) | +5.4% / +2.1% over A6 alone on the same seeds; +39% over the control; above the control in every activity bucket |
+| 2026-11-17 | A6 + A7 together | **accepted** (next recipe, promotable) | +5.4% / +2.1% over A6 alone on the same seeds; +39% over the control; above the control in every activity bucket |
 
 Before 2026-11-14 each arm ran on one seed. Gains of +3.7% and more are far outside the
 ~0.8% seed noise; A1, the one small single-seed verdict, was re-tested with two seeds.
@@ -441,8 +440,9 @@ vs ~0.5), but their effective rank stays ~40 of 64 (no collapse). Epochs ~485 s 
 **A7 previous review language: accepted (2026-11-17).** `USER_LANGUAGE=true`: the user tower
 also reads an 8-d embedding of the language of the user's previous review (strictly before the
 row; 29 Steam languages, unknown for a user's first review), with 10% dropout to unknown in
-training. The language was read from the raw reviews (`RAW_REVIEWS_URI`, `rec_id` =
-`review_id`, 122M reviews, cached per file): no mart had it. 71.6% of validation rows know it.
+training. These runs read the language from the raw reviews (`rec_id` = `review_id`, 122M
+reviews): no mart had it. Since then it comes from the `review_languages` mart (the same Steam
+names, so the same ids: those models stay valid). 71.6% of validation rows know it.
 
 | Seed | warm recall@50 (vs control, same rows) | warm recall@100 | coverage@50 |
 |---|---|---|---|
@@ -469,19 +469,24 @@ the most active 1% get 0.076 / 0.074 (control 0.071 / 0.067, A6 0.052 / 0.070), 
 0.151 / 0.167, so the combination is at or above the control in every bucket on both seeds.
 Overall +39% warm recall@50 over the champion's recipe (0.3066 vs 0.2201, mean of two seeds).
 
-A6 is promotable: `promote`, `rank` and `pair` score each row against the catalog as of its
-ISO week (`evaluation.weekly_scores`, as training's evaluation does), and inference embeds the
-catalog with recency as of its newest review (serving reads those embeddings, so it needs no
-change; the user tower is unchanged). A7 is not yet (`run_promotion` refuses it, and no
-`user_tower.npz` is written with a language): it needs the language from the
-`review_languages` mart instead of the raw files, inference reading each user's last review
-language, and the numpy user tower and serving port with the language input (unknown for
-`POST /recommendations`, which the dropout trains for).
+Both are promotable. A6: `promote`, `rank` and `pair` score each row against the catalog as of
+its ISO week (`evaluation.weekly_scores`, as training's evaluation does), and inference embeds
+the catalog with recency as of its newest review (serving reads those embeddings, so A6 alone
+needs no serving change). A7: everything reads the `review_languages` mart (training, `rank` /
+`pair` groups, inference: each user's newest review), and the numpy user tower is format 4
+(the language table appended last), which serving reads from the release that added it.
+`POST /recommendations` doesn't know the language, so it passes unknown (the 10% dropout trains
+for it). The per-user list metrics of `rank` / `pair` also score with an unknown language (the
+groups and the promotion gate use each user's real one).
 
-Promoting an A6 retriever while a ranker serves: train it (`ITEM_RECENCY=true`), train a ranker
-on its candidates (`rank`, `RETRIEVER_ID`), then `pair` with `RETRIEVER_ID` / `RANKER_ID` and
-`PAIR_DRY_RUN=true`, then `APPLY_REPORT`, then an inference run. Deploy the inference image
-with A6 support before that run.
+Promoting an A6 + A7 retriever while a ranker serves (deploy first: ETL with the
+`review_languages` mart and one run of it, serving, then inference):
+1. train it (`ITEM_RECENCY=true USER_LANGUAGE=true`); a model trained before format 4 gets
+   its `user_tower.npz` with `python -m steam_training export` (`MODEL_ID`);
+2. train a ranker on its candidates (`rank`, `RETRIEVER_ID`);
+3. `pair` with `RETRIEVER_ID` / `RANKER_ID` and `PAIR_DRY_RUN=true`, check the report, then
+   `APPLY_REPORT`;
+4. run inference.
 
 ## Evaluation
 
@@ -760,7 +765,7 @@ forwards them to the job:
 | `HISTORY_ENCODER` | mean | A3: `mean`, or `attention` (adds a self-attention summary of the history to the mean). numpy user tower format 3 |
 | `ATTENTION_HEADS` / `ATTENTION_LAYERS` / `ATTENTION_DROPOUT` | 2 / 1 / 0.1 | the attention encoder (heads must divide `GAME_EMBEDDING_DIM`) |
 | `ITEM_RECENCY` | false | A6 (accepted, promotable; inference computes it as of its run): item features as of an ISO week (log reviews in the 4 / 13 weeks before it from `game_popularity_weekly`, log days since release from `game_details`, release known). Batches come from one ISO week each with logQ per week (mixed-date batches let the model reject candidates by their date); evaluation refreshes the catalog per ISO week and adds a recent-popularity baseline |
-| `USER_LANGUAGE` / `RAW_REVIEWS_URI` | false / unset | A7 (experiment, not promotable): the language of the user's previous review as a user tower embedding (10% dropout to unknown), read from the raw reviews (`rec_id`, `language`; cached per file under `DATA_CACHE_DIR`) until a mart has it |
+| `USER_LANGUAGE` | false | A7 (accepted, promotable): the language of the user's previous review as a user tower embedding (10% dropout to unknown), from the `review_languages` mart. numpy user tower format 4 |
 | `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |
 | `GIT_COMMIT` | `git rev-parse HEAD` | lineage tag (set by the launcher on SageMaker jobs) |
 

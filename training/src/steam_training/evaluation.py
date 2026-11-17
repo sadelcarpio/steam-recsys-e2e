@@ -269,17 +269,24 @@ def top_candidates(
     k: int,
     batch_size: int,
     exclude: Ragged | None = None,
+    language: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Each row's top `k` games (game_idx, best first) and their scores, with the same
     exclusions as `target_ranks` (the history, and `exclude` per row). Excluded games score
-    -inf, so a catalog with fewer than `k` eligible games yields -inf tails."""
+    -inf, so a catalog with fewer than `k` eligible games yields -inf tails. `language` (A7):
+    each row's language id (None: unknown)."""
     device = index.game_idx.device
     k = min(k, len(index))
     games = np.zeros((len(history), k), dtype=np.int64)
     scores = np.zeros((len(history), k), dtype=np.float32)
     for start in range(0, len(history), batch_size):
         chunk_history = torch.from_numpy(history[start : start + batch_size]).to(device)
-        chunk = mask_games(score_fn(chunk_history), chunk_history, index)
+        chunk_language = (
+            torch.from_numpy(language[start : start + batch_size].astype(np.int64)).to(device)
+            if language is not None
+            else None
+        )
+        chunk = mask_games(score_fn(chunk_history, chunk_language), chunk_history, index)
         if exclude is not None:
             _mask_ragged(chunk, exclude, start, start + len(chunk_history), index)
         top = torch.topk(chunk, k, dim=1)
@@ -297,6 +304,7 @@ def weekly_top_candidates(
     k: int,
     batch_size: int,
     exclude: Ragged | None = None,
+    language: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """`top_candidates` with each row scored as of its ISO week (`seconds`: its time)."""
     week = week_of_day(np.asarray(seconds, np.int64) // DAY_SECONDS)
@@ -312,6 +320,7 @@ def weekly_top_candidates(
             k,
             batch_size,
             exclude=exclude.take(part) if exclude is not None else None,
+            language=language[part] if language is not None else None,
         )
     return games, scores
 

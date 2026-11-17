@@ -31,6 +31,7 @@ from steam_training.contracts import (
 )
 from steam_training.data import TableSource
 from steam_training.evaluation import CatalogIndex, weekly_scores, weekly_top_candidates
+from steam_training.languages import load_review_languages
 from steam_training.ranker.data import epoch_seconds, from_epoch_seconds, load_ranker_data
 from steam_training.ranker.features import (
     FAMILIES,
@@ -77,6 +78,7 @@ def run_ranking(
         train_fraction=settings.ranker_train_fraction,
         list_users=settings.ranker_list_users,
         with_recency=retriever.config.item_recency,
+        languages=load_review_languages(source) if retriever.config.user_language else None,
     )
     rows = data.rows
     cut, t2 = data.test_start, data.t2
@@ -102,6 +104,7 @@ def run_ranking(
             k,
             settings.eval_batch_size,
             exclude=part.reviewed,
+            language=part.language,
         )
         return build_groups(
             part, candidates, scores, data.games, data.popularity, settings.ranker_history_length

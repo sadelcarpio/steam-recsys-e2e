@@ -83,9 +83,50 @@ def test_user_tower_checks_its_format():
     with np.load(io.BytesIO(make_user_tower())) as npz:
         arrays = {name: npz[name] for name in npz.files}
     buffer = io.BytesIO()
-    np.savez(buffer, **{**arrays, "format_version": np.int64(4)})
+    np.savez(buffer, **{**arrays, "format_version": np.int64(5)})
     with pytest.raises(ValueError, match="user tower format"):
         UserTower.from_bytes(buffer.getvalue())
+    # format 4 needs the language arrays
+    buffer = io.BytesIO()
+    np.savez(buffer, **{**arrays, "format_version": np.int64(4)})
+    with pytest.raises(ValueError, match="language_table"):
+        UserTower.from_bytes(buffer.getvalue())
+
+
+def _with_language(seed: int = 3) -> tuple[UserTower, np.ndarray]:
+    """Format 4 (A7): the plain tower + a 3-d language table appended to x (w1 widened)."""
+    import io
+
+    rng = np.random.default_rng(seed)
+    with np.load(io.BytesIO(make_user_tower())) as npz:
+        arrays = {name: npz[name] for name in npz.files}
+    table = rng.normal(size=(6, 3)).astype(np.float32)
+    w1 = arrays["w1"]
+    arrays |= {
+        "format_version": np.int64(4),
+        "w1": np.concatenate([w1, rng.normal(size=(len(w1), 3)).astype(np.float32)], axis=1),
+        "language_table": table,
+        "language_names": np.array(["english", "schinese", "russian", "spanish"]),
+    }
+    buffer = io.BytesIO()
+    np.savez(buffer, **arrays)
+    return UserTower.from_bytes(buffer.getvalue()), table
+
+
+@pytest.mark.parametrize("language", [None, 1, 2, 4, 99])
+def test_language_tower_appends_the_language(language):
+    tower, table = _with_language()
+    assert tower.language_names == ("english", "schinese", "russian", "spanish")
+    assert tower.attention is None and tower.tag_table is None
+    history = [2, 3, 4, 0, 0]
+    ids = [h if tower.seen_games[h] or h == 0 else 1 for h in history]
+    present = [i for i in ids if i != 0]
+    row = 1 if language is None or language >= len(table) else language  # unknown: OOV
+    x = np.concatenate([np.mean(tower.game_table[present], axis=0), [len(present) / 5], table[row]])
+    out = np.maximum(x @ tower.w1.T + tower.b1, 0) @ tower.w2.T + tower.b2
+    np.testing.assert_allclose(
+        tower.embed(np.array(history), language), out / np.linalg.norm(out), rtol=1e-5, atol=1e-6
+    )
 
 
 @pytest.fixture

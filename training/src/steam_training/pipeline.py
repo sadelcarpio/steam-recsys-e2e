@@ -32,6 +32,7 @@ from steam_training.evaluation import (
     recent_popularity_rescore,
     recent_popularity_scores,
 )
+from steam_training.languages import load_review_languages
 from steam_training.model import TwoTowerModel
 from steam_training.tracking import RunTracker, lineage_tags, params_of
 from steam_training.train import fingerprint, resolve_device, train_model
@@ -55,12 +56,7 @@ def _load(settings: TrainingSettings, source: TableSource, **kwargs: object) -> 
     kwargs.setdefault("history_length", settings.history_length)
     kwargs.setdefault("with_recency", settings.item_recency)
     if settings.user_language and "languages" not in kwargs:
-        from steam_training.languages import load_review_languages
-
-        assert settings.raw_reviews_uri is not None
-        kwargs["languages"] = load_review_languages(
-            settings.raw_reviews_uri, settings.aws_region, settings.data_cache_dir
-        )
+        kwargs["languages"] = load_review_languages(source)
     return load_training_data(
         source,
         validation_fraction=settings.validation_fraction,
@@ -341,11 +337,6 @@ def run_promotion(
             "with a retriever it wasn't evaluated with (spec 9)"
         )
     candidate, candidate_meta = store.load_model(settings.model_id)
-    if candidate.config.user_language:
-        raise ValueError(
-            f"{settings.model_id} reads the user's language (A7): not promotable, inference and "
-            "serving don't compute it"
-        )
     champion, champion_meta = _load_champion(store, settings.model_id)
     now = datetime.now(UTC)
 
@@ -378,6 +369,10 @@ def run_promotion(
         history_length=max(m.config.history_length for m in (candidate, champion) if m),
         # A6: each row scored against the catalog as of its week (other models ignore recency)
         with_recency=any(m is not None and m.config.item_recency for m in (candidate, champion)),
+        # A7: rows carry their user's previous language (other models ignore it)
+        languages=load_review_languages(source)
+        if any(m is not None and m.config.user_language for m in (candidate, champion))
+        else None,
     )
     if len(data.validation) == 0:
         raise ValueError(f"no positive interactions after {max(cutoffs)} to evaluate on")

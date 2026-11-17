@@ -8,8 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from conftest import make_model
+from conftest import FakeSource, add_languages, make_model
 from steam_serving.online import BundleManifest, OnlineModel, UserTower
+from steam_training.contracts import OOV_ID
 from steam_training.export import encode_user_tower
 
 from steam_inference.features import load_inference_data
@@ -17,18 +18,25 @@ from steam_inference.online import LocalBundleStore, build_catalog, encode_catal
 from steam_inference.retrieval import retrieve
 
 
-@pytest.fixture(params=["plain", "a3"])
-def setup(request, source, tmp_path):
-    # a3: 6-game history + attention (numpy format 3)
-    model = (
-        make_model(seed=4)
-        if request.param == "plain"
-        else make_model(seed=4, history_length=6, attention_layers=1)
-    )
+@pytest.fixture(params=["plain", "a3", "a3+a7"])
+def setup(request, marts, tmp_path):
+    # a3: 6-game history + attention (numpy format 3); a3+a7: + the user's language (format 4)
+    model = {
+        "plain": lambda: make_model(seed=4),
+        "a3": lambda: make_model(seed=4, history_length=6, attention_layers=1),
+        "a3+a7": lambda: make_model(
+            seed=4, history_length=6, attention_layers=1, user_language=True
+        ),
+    }[request.param]()
+    source = FakeSource(add_languages(marts))
     seen = torch.ones(model.config.vocab.games, dtype=torch.bool)
     seen[[5, 9]] = False  # games without training interactions map to OOV
     model.set_seen_games(seen)
-    data = load_inference_data(source, history_length=model.config.history_length)
+    data = load_inference_data(
+        source,
+        history_length=model.config.history_length,
+        with_language=model.config.user_language,
+    )
     candidates = retrieve(
         model, data.games, data.users, data.reviews, k=5, user_batch_size=2, item_batch_size=7
     )
@@ -54,14 +62,17 @@ HISTORIES = [
 ]
 
 
+@pytest.mark.parametrize("language", [None, 2, 5])
 @pytest.mark.parametrize("history", HISTORIES)
-def test_user_embedding_matches_torch(setup, history):
+def test_user_embedding_matches_torch(setup, history, language):
     model, _, _, online = setup
     length = model.config.history_length
     history = (history + [0] * length)[:length]
     with torch.no_grad():
-        expected = model.user_tower(torch.tensor([history])).numpy()[0]
-    np.testing.assert_allclose(online.user_tower.embed(np.array(history)), expected, atol=1e-5)
+        ids = torch.tensor([language]) if language is not None else None
+        expected = model.user_tower(torch.tensor([history]), ids).numpy()[0]
+    got = online.user_tower.embed(np.array(history), language)
+    np.testing.assert_allclose(got, expected, atol=1e-5)
 
 
 def test_names_and_ids(setup):
@@ -76,6 +87,8 @@ def test_same_top_k_as_batch_retrieval(setup):
     model, data, candidates, online = setup
     # a user whose history is full (more positives than the model reads)
     full = (data.users.history != 0).sum(axis=1) == model.config.history_length
+    if data.users.language is not None:  # A7: online requests don't know the language
+        full &= data.users.language == OOV_ID
     u = int(np.flatnonzero(full)[0])
     history_rows = data.games.catalog.rows(data.users.history[u][data.users.history[u] != 0])
     liked_ids = [int(data.games.game_id[r]) for r in history_rows]

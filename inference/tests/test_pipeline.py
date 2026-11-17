@@ -14,6 +14,7 @@ from conftest import (
     FailingLlm,
     FakeSource,
     ReverseLlm,
+    add_languages,
     add_recency,
     add_tags,
     make_metadata,
@@ -332,3 +333,24 @@ def test_an_a6_model_embeds_the_catalog_with_recency(settings, marts, store, tmp
     # recency moves the embeddings: an older week gives other ones
     older = embed_catalog(model, catalog.at_day(catalog.as_of_day - 21), 64).numpy()
     assert not np.array_equal(older[rows], expected[rows])
+
+
+def test_an_a6_a7_model_reads_recency_and_languages(settings, marts, store, tmp_path):
+    """The A6 + A7 recipe: the catalog with recency, each user with their language; the
+    online bundle is published (the user tower is numpy format 4)."""
+    from steam_inference.online import LocalBundleStore
+
+    model = make_model(history_length=6, attention_layers=1, item_recency=True, user_language=True)
+    store.save_model(model, make_metadata(model, "a67"))
+    settings = settings.model_copy(update={"model_id": "a67"})
+    bundle = LocalBundleStore(str(tmp_path / "online"))
+    source = FakeSource(add_languages(add_recency(marts)))
+    summary = run_inference(
+        settings, source, store, _writer(settings), None, bundle_store=bundle, now=NOW
+    )
+    assert summary.model_id == "a67" and summary.users == 4
+    assert (tmp_path / "online" / "manifest.json").exists()
+    with pytest.raises(RuntimeError, match="review_languages"):
+        run_inference(
+            settings, FakeSource(add_recency(marts)), store, _writer(settings), None, now=NOW
+        )

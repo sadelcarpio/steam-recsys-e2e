@@ -33,6 +33,7 @@ from steam_training.data import (
     _timestamps,
     load_training_data,
 )
+from steam_training.languages import ReviewLanguages
 from steam_training.ranker.features import (
     MAX_RECENT_WEEKS,
     SECONDS_PER_DAY,
@@ -59,6 +60,8 @@ class RankerRows:
     target: np.ndarray  # int64 game_idx
     reviewed: Ragged  # every game reviewed before t (excluded from the candidates)
     later: Ragged  # the user's other positives after t (dropped from the candidates)
+    # A7: language id of the user's review before t (OOV_ID: unknown); None = not loaded
+    language: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.target)
@@ -71,6 +74,7 @@ class RankerRows:
             self.target[index],
             self.reviewed.take(index),
             self.later.take(index),
+            self.language[index] if self.language is not None else None,
         )
 
 
@@ -103,6 +107,7 @@ def load_ranker_data(
     train_fraction: float = 0.7,
     list_users: int = 0,
     with_recency: bool = False,
+    languages: ReviewLanguages | None = None,
 ) -> RankerData:
     """`popularity_source`: "mart" (`game_popularity_weekly`) or "interactions" (the same
     weekly counts, counted in the extra pass; for marts without the popularity mart). `t2`:
@@ -110,7 +115,8 @@ def load_ranker_data(
     after `train_fraction` of the groups. `list_users`: users of the test window whose every
     review is kept for the per-user list metrics (0 = none). `with_recency`: the catalog
     carries A6 recency (as of the cutoff, refreshed weekly by `evaluation.weekly_scores`), for
-    an A6 retriever."""
+    an A6 retriever. `languages` (an A7 retriever): each group gets its user's previous review
+    language."""
     data = load_training_data(
         source,
         validation_fraction=0.1,  # unused: the cutoff is given
@@ -122,6 +128,7 @@ def load_ranker_data(
         with_tags=True,
         history_length=history_length,
         with_recency=with_recency,
+        languages=languages,
     )
     val = data.validation
     if val.user_id is None or val.timestamp is None or val.reviewed is None:
@@ -182,6 +189,7 @@ def load_ranker_data(
         target=target,
         reviewed=val.reviewed.take(kept),
         later=later,
+        language=val.language[kept] if val.language is not None else None,
     )
     return RankerData(
         rows=rows,

@@ -6,6 +6,7 @@ from conftest import (
     N_GAMES,
     REVIEWS,
     FakeSource,
+    add_languages,
     add_recency,
     add_tags,
     review_time,
@@ -227,3 +228,26 @@ def test_recency_is_as_of_the_newest_review(marts):
 def test_recency_needs_its_marts(marts):
     with pytest.raises(RuntimeError, match="game_popularity_weekly"):
         load_inference_data(FakeSource(marts), with_recency=True)
+
+
+def test_users_get_their_newest_reviews_language(marts):
+    """A7: the language of each user's newest review (any polarity), unknown without one."""
+    from steam_training.contracts import FIRST_ID, OOV_ID, STEAM_LANGUAGES
+
+    def code(name):
+        return FIRST_ID + STEAM_LANGUAGES.index(name)
+
+    data = load_inference_data(FakeSource(add_languages(marts)), with_language=True)
+    language = dict(zip(data.users.user_id.tolist(), data.users.language.tolist(), strict=True))
+    # 101's newest review is negative (still counts); 102 has no language
+    assert language == {
+        101: code("russian"),
+        102: OOV_ID,
+        103: code("russian"),
+        104: code("schinese"),
+    }
+    assert "review_languages" in data.snapshots
+    assert data.users.take(np.array([1])).language.tolist() == [OOV_ID]
+    assert load_inference_data(FakeSource(marts)).users.language is None
+    with pytest.raises(RuntimeError, match="review_languages"):
+        load_inference_data(FakeSource(marts), with_language=True)

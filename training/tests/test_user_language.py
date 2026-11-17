@@ -1,5 +1,5 @@
 """A7 (spec 17): the language of the user's previous review as a user tower input, read from the
-raw reviews (`rec_id` = the marts' `review_id`)."""
+`review_languages` mart."""
 
 import boto3
 import numpy as np
@@ -12,7 +12,6 @@ from pydantic import ValidationError
 from steam_training import evaluation
 from steam_training.artifacts import USER_TOWER_NUMPY, ArtifactStore, model_prefix
 from steam_training.batching import LANGUAGE_DROPOUT, Collator, build_examples, target_log_probs
-from steam_training.config import TrainingSettings
 from steam_training.contracts import (
     FIRST_ID,
     NUM_LANGUAGE_IDS,
@@ -22,7 +21,13 @@ from steam_training.contracts import (
     VocabSizes,
 )
 from steam_training.data import load_training_data, previous_language
-from steam_training.languages import ReviewLanguages, language_codes
+from steam_training.export import USER_TOWER_LANGUAGE_FORMAT, user_tower_arrays
+from steam_training.languages import (
+    LANGUAGE_MART,
+    ReviewLanguages,
+    language_codes,
+    load_review_languages,
+)
 from steam_training.model import TwoTowerModel
 from steam_training.pipeline import run_promotion, run_training
 from steam_training.tracking import features
@@ -37,7 +42,7 @@ def test_language_codes_and_lookup():
     assert codes.tolist() == [english, russian, OOV_ID, OOV_ID, NUM_LANGUAGE_IDS - 1]
     # a review scraped twice keeps one copy; unknown review ids are OOV
     batch = pa.table(
-        {"rec_id": [7, 3, 7, None], "language": ["english", "russian", "english", "x"]}
+        {"review_id": [7, 3, 7, None], "language": ["english", "russian", "english", "x"]}
     )
     lookup = ReviewLanguages.from_batches([batch])
     assert lookup.review_id.tolist() == [3, 7]
@@ -56,14 +61,31 @@ def test_previous_language_is_strictly_before_the_row():
     assert got.tolist() == [OOV_ID, 2, 25, OOV_ID, 3, OOV_ID]
 
 
-def _raw_languages(marts) -> ReviewLanguages:
-    """Each synthetic user writes in one language (by user id; some unknown)."""
+def with_languages(marts) -> dict:
+    """+ the `review_languages` mart: each synthetic user writes in one language (by user id);
+    reviews without a language are absent, as in the mart."""
     interactions = marts["interactions"]
     users = interactions["user_id"].to_numpy()
     names = [LANGS[u % len(LANGS)] for u in users]
-    return ReviewLanguages.from_batches(
-        [pa.table({"rec_id": interactions["review_id"], "language": pa.array(names, pa.string())})]
-    )
+    keep = [n is not None for n in names]
+    table = pa.table(
+        {"review_id": interactions["review_id"], "language": pa.array(names, pa.string())}
+    ).filter(pa.array(keep))
+    return {**marts, LANGUAGE_MART: table}
+
+
+def _raw_languages(marts) -> ReviewLanguages:
+    return load_review_languages(FakeSource(with_languages(marts)))
+
+
+def test_load_review_languages_keeps_only_the_asked_reviews():
+    marts = with_languages(make_marts(n_users=20, reviews_per_user=4))
+    everything = load_review_languages(FakeSource(marts))
+    assert len(everything.review_id) == marts[LANGUAGE_MART].num_rows
+    wanted = np.array([0, 1, 2, 5, 10**9])
+    some = load_review_languages(FakeSource(marts), review_ids=wanted)
+    assert set(some.review_id.tolist()) <= set(wanted.tolist())
+    np.testing.assert_array_equal(some.of(wanted), everything.of(wanted))
 
 
 @pytest.fixture(scope="module")
@@ -162,11 +184,6 @@ def test_evaluation_scores_rows_with_their_language(loaded):
     assert not torch.equal(with_language, without)
 
 
-def test_settings_need_the_raw_reviews():
-    with pytest.raises(ValidationError, match="RAW_REVIEWS_URI"):
-        TrainingSettings(model_artifacts_bucket=BUCKET, model_id="m", user_language=True)
-
-
 @pytest.fixture
 def store(aws_env):
     with mock_aws():
@@ -175,26 +192,32 @@ def store(aws_env):
         yield ArtifactStore(BUCKET, s3)
 
 
-def test_train_with_language_is_not_promotable(settings, source, store, marts, monkeypatch):
-    monkeypatch.setattr(
-        "steam_training.languages.load_review_languages", lambda *a, **k: _raw_languages(marts)
-    )
-    settings = settings.model_copy(
-        update={
-            "model_id": "a7",
-            "epochs": 2,
-            "user_language": True,
-            "raw_reviews_uri": "s3://raw/reviews/",
-        }
-    )
+def test_train_and_promote_with_language(settings, store, marts):
+    source = FakeSource(with_languages(marts))
+    settings = settings.model_copy(update={"model_id": "a7", "epochs": 2, "user_language": True})
     metadata = run_training(settings, source, store)
     assert metadata.config.user_language
     assert metadata.validation.warm.recall[5] > metadata.popularity_baseline.warm.recall[5]
     model, _ = store.load_model("a7")
     assert model.user_tower.language is not None
-    assert not store._exists(model_prefix("a7") + USER_TOWER_NUMPY)
-    with pytest.raises(ValueError, match="not promotable"):
-        run_promotion(settings, source, store)
+    assert store._exists(model_prefix("a7") + USER_TOWER_NUMPY)  # format 4
+    report = run_promotion(settings, source, store)
+    assert report.promoted
+    assert report.candidate.metrics.warm.recall[5] == pytest.approx(
+        metadata.validation.warm.recall[5], abs=0.05
+    )
+
+
+def test_language_export_is_format_4():
+    model = _model(True)
+    arrays = user_tower_arrays(model, "a7")
+    assert int(arrays["format_version"]) == USER_TOWER_LANGUAGE_FORMAT
+    assert arrays["language_table"].shape == (NUM_LANGUAGE_IDS, 8)
+    np.testing.assert_array_equal(
+        arrays["language_table"], model.user_tower.language.weight.detach().numpy()
+    )
+    assert tuple(arrays["language_names"].tolist()) == STEAM_LANGUAGES
+    assert int(user_tower_arrays(_model(False), "m")["format_version"]) == 1
 
 
 def test_models_saved_with_a_retired_field_still_load():
