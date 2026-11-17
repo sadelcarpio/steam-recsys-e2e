@@ -11,6 +11,8 @@ the users whose `content_hash` changed and deletes the users that are gone:
     generated_at     S   ISO-8601 UTC time of the run
     reranked         BOOL  true when the LLM reordered the list (and wrote the explanations)
     rerank_model     S   Bedrock model id (reranked items only)
+    ranker_id        S   spec 9: the ranker that ordered the candidates (RANKER_MODE=on; absent:
+                         retrieval order, including users whose ranker chunk failed)
     content_hash     S   hash of what the user sees (`UserRecommendations.content_hash`)
 
 `score` and `generated_at` are as of the last write: an unchanged list is not rewritten, even
@@ -82,19 +84,24 @@ class UserRecommendations(_Frozen):
     generated_at: datetime
     reranked: bool
     rerank_model: str | None = None
+    # spec 9: the ranker that ordered the candidates (None: retrieval order)
+    ranker_id: str | None = None
     # The user's last positively reviewed games (the user tower's history, the rerank prompt's
     # liked games), most recent first, adult ones left out. Shown above the recommendations.
     liked: list[LikedGame] = Field(default_factory=list)
 
     def content_hash(self) -> str:
-        """Hash of the visible content: model, rerank flag / model, the ordered games with their
-        names and explanations, and the liked games. Scores and the generation time are left out."""
+        """Hash of the visible content: model, rerank flag / model, ranker, the ordered games with
+        their names and explanations, and the liked games. Scores and the generation time are
+        left out."""
         content = {
             "model_id": self.model_id,
             "reranked": self.reranked,
             "rerank_model": self.rerank_model,
             "recommendations": [[r.game_id, r.name, r.explanation] for r in self.recommendations],
         }
+        if self.ranker_id:  # absent without a ranker: older items keep their hash
+            content["ranker_id"] = self.ranker_id
         if self.liked:  # absent from older items and the popularity fallback: same hash there
             content["liked"] = [[g.game_id, g.name] for g in self.liked]
         payload = json.dumps(content, separators=(",", ":"), ensure_ascii=False)
@@ -120,6 +127,8 @@ class UserRecommendations(_Frozen):
         }
         if self.rerank_model:
             item["rerank_model"] = self.rerank_model
+        if self.ranker_id:
+            item["ranker_id"] = self.ranker_id
         if self.liked:
             item["liked"] = [{"game_id": g.game_id, "name": g.name} for g in self.liked]
         return item

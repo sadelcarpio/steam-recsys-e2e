@@ -86,16 +86,22 @@ class App:
         except Exception:
             log.exception("unhandled error on %s %s", method, path)
             status, body, cache = 500, ErrorResponse(error="internal error"), False
-        log.info(
-            json.dumps(
-                {
-                    "method": method,
-                    "path": path,
-                    "status": status,
-                    "ms": round((time.perf_counter() - started) * 1000, 1),
-                }
-            )
-        )
+        line: dict[str, Any] = {
+            "method": method,
+            "path": path,
+            "status": status,
+            "ms": round((time.perf_counter() - started) * 1000, 1),
+        }
+        if isinstance(body, RecommendationsResponse):  # which models produced the list
+            line |= {
+                "source": body.source,
+                "model_id": body.model_id,
+                "ranker_id": body.ranker_id,
+                "results": len(body.recommendations),
+            }
+            if body.used_game_ids is not None:
+                line["liked_used"] = len(body.used_game_ids)
+        log.info(json.dumps(line))
         return self._response(status, body, cache)
 
     # ---- routes ----------------------------------------------------------------------------
@@ -151,7 +157,7 @@ class App:
         model = self.online() if self.online else None
         if model is None:
             raise HttpError(503, "online model not available", "no bundle published yet")
-        result = model.recommend(request.liked_game_ids, limit)
+        result = model.recommend(request.liked_game_ids, limit, ranked_k=self.settings.ranker_top_k)
         if not result.game_ids:  # no liked game is in the catalog: popular, minus the liked ones
             liked = set(request.liked_game_ids)
             popular = self._popular()
@@ -248,6 +254,7 @@ class App:
             generated_at=stored.generated_at,
             reranked=stored.reranked,
             rerank_model=stored.rerank_model,
+            ranker_id=stored.ranker_id,
             recommendations=[
                 RecommendationOut(
                     rank=rank,

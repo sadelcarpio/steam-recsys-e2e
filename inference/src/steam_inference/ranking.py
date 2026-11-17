@@ -71,6 +71,8 @@ class RankerStats:
     # mean share of the retrieval top RANKER_TOP_K also in the ranker's top RANKER_TOP_K
     overlap: float | None = None
     seconds: float = 0.0
+    # per user: True when the ranker ordered its candidates (False: a failed chunk)
+    ranked: np.ndarray | None = None
 
 
 def load_serving_ranker(
@@ -166,7 +168,8 @@ def apply_ranker(
     history = data.users.history[:, : ranker.history_length]
     seconds = np.full(n, epoch_seconds(as_of), dtype=np.int64)
     order = np.broadcast_to(np.arange(k), (n, k)).copy()
-    stats = RankerStats()
+    ranked = np.zeros(n, dtype=bool)
+    stats = RankerStats(ranked=ranked)
     for start in range(0, n, chunk):
         part = slice(start, min(start + chunk, n))
         try:
@@ -178,6 +181,7 @@ def apply_ranker(
             score[~valid[part]] = -np.inf
             order[part] = np.argsort(-score, axis=1, kind="stable")
             stats.ranked_users += part.stop - part.start
+            ranked[part] = True
         except Exception:  # one chunk keeps retrieval order, the run goes on
             stats.failures += part.stop - part.start
             log.exception("ranker failed on users %d-%d: retrieval order kept", start, part.stop)

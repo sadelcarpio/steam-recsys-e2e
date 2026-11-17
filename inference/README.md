@@ -174,6 +174,7 @@ steam_marts (Iceberg, pyiceberg)
   "generated_at": "2026-09-24T12:40:00+00:00",
   "reranked": true,
   "rerank_model": "us.amazon.nova-2-lite-v1:0",
+  "ranker_id": "3692462786496a912d90a4fb79b66cdba04d6ea6",
   "liked": [{"game_id": 375180, "name": "Dungeons 2"}],
   "content_hash": "9f2c0e5d7a1b4c8e0f3a6b9d2c5e8f1a"
 }

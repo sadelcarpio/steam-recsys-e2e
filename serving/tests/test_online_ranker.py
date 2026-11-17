@@ -111,3 +111,41 @@ def test_tree_evaluator_missing_values_follow_the_default_child():
     x = np.zeros((3, 15))
     x[:, 7] = [0.0, 1.0, np.nan]  # is_free: not free, free, missing (default left)
     assert trees.predict(x).tolist() == [0.0, 1.0, 0.0]
+
+
+def test_a_ranked_list_returns_at_most_ranker_top_k(tables, settings, s3):
+    publish_bundle(s3, ranker=make_ranker())
+    ranked = _recommend(settings, limit=30)  # the frontend's LIMIT
+    assert ranked["ranker_id"] == "k1" and len(ranked["recommendations"]) == 20
+    publish_bundle(s3)
+    plain = _recommend(settings, limit=30)  # retrieval order keeps `limit`
+    assert "ranker_id" not in plain and len(plain["recommendations"]) == 28  # 30 minus 2 liked
+    capped = settings.model_copy(update={"ranker_top_k": 5})
+    publish_bundle(s3, ranker=make_ranker())
+    assert len(_recommend(capped, limit=30)["recommendations"]) == 5
+
+
+def test_the_request_log_names_the_models(tables, settings, s3, caplog):
+    import json
+
+    publish_bundle(s3, ranker=make_ranker())
+    with caplog.at_level("INFO", logger="steam_serving.app"):
+        _recommend(settings)
+    line = json.loads(caplog.records[-1].getMessage())
+    assert line["path"] == "/recommendations" and line["status"] == 200
+    assert (line["source"], line["model_id"], line["ranker_id"]) == ("online", "abc123", "k1")
+    assert (line["results"], line["liked_used"]) == (8, 2)
+
+
+def test_a_stored_list_names_its_ranker(tables, app):
+    from decimal import Decimal
+
+    from conftest import USERS, event, user_item
+
+    recs, _ = tables
+    item = user_item(USERS[2], [10, 11, 12], reranked=False) | {"ranker_id": "k1"}
+    item["recommendations"][0]["score"] = Decimal("0.5")  # ranker order: scores not sorted
+    recs.put_item(Item=item)
+    data = body(app.handle(event("/users/2/recommendations")))
+    assert data["ranker_id"] == "k1" and data["source"] == "personalized"
+    assert "ranker_id" not in body(app.handle(event("/users/1/recommendations")))  # older item
