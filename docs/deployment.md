@@ -336,7 +336,8 @@ merge commit that contains the code the model was trained with (or a later compa
 **GPU** (optional, once a GPU quota is granted, e.g. `ml.g4dn.xlarge`, quota code `L-3F53BF0F`):
 run *training CD* with `torch_variant=cu128` and `instance_type=ml.g4dn.xlarge`.
 
-**Promote.** Actions → *training promote* → Run workflow with `retriever_id` = the trained commit
+**Promote.** Actions → *training promote* → Run workflow with `mode=retriever` (the mode has
+no default: a run left on `choose` fails) and `retriever_id` = the trained commit
 sha (empty = the commit the workflow runs on). It evaluates the candidate and the current
 champion on the same validation rows and writes `evaluation/<sha>/metrics.json`. When the
 candidate wins, it copies the model to `models/champion/` and the report to

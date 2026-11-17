@@ -24,11 +24,14 @@ name: training promote
 on:
   workflow_dispatch:
     inputs:
+      # No real default: a run left on `choose` fails before anything starts (an empty
+      # retriever_id in retriever mode would otherwise promote this commit's sha as a retriever).
       mode:
         description: "retriever (a retriever alone), pair (retriever and / or ranker), rollback"
         type: choice
-        options: [retriever, pair, rollback]
-        default: retriever
+        required: true
+        options: [choose, retriever, pair, rollback]
+        default: choose
       ranker_id:
         description: "pair: challenger ranker, rankers/<ranker_id>/ (empty = none)"
         type: string
@@ -67,6 +70,12 @@ jobs:
       USE_SSM: "true"
       AWS_REGION: ${{ vars.AWS_REGION }}
     steps:
+      - name: Require a mode
+        if: inputs.mode == 'choose'
+        working-directory: .
+        run: |
+          echo "::error::pick a mode: retriever, pair or rollback"
+          exit 1
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
