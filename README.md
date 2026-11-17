@@ -122,7 +122,7 @@ Sin un modelo promovido, el paso de inferencia se omite. Después corre sola tod
    `ml.g4dn.xlarge for training job usage` en Service Quotas.
 2. Actions → **training CD** con `torch_variant=cu128`, `instance_type=ml.g4dn.xlarge` y
    `env_overrides=VALIDATION_FRACTION=0.01 EPOCHS=30 BATCH_SIZE=4096`.
-3. Actions → **training promote** con `model_id=<sha del commit entrenado>` e
+3. Actions → **training promote** con `retriever_id=<sha del commit entrenado>` e
    `image_tag=<sha>-cu128`. Si el modelo gana, pasa a ser el campeón.
 
 ### 8. Generar las recomendaciones

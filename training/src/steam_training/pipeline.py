@@ -66,6 +66,8 @@ def _load(settings: TrainingSettings, source: TableSource, **kwargs: object) -> 
         validation_fraction=settings.validation_fraction,
         test_fraction=settings.test_fraction,
         fit_on=settings.fit_on,
+        holdout_weeks=settings.holdout_weeks,
+        test_weeks=settings.test_weeks,
         cold_row_fraction=settings.cold_row_fraction,
         eval_max_rows=settings.eval_max_rows,
         seed=settings.seed,
@@ -331,6 +333,13 @@ def decide(
 def run_promotion(
     settings: TrainingSettings, source: TableSource, store: ArtifactStore
 ) -> EvaluationReport:
+    pair = store.read_pair()
+    if pair is not None and pair.ranker_id is not None:
+        raise ValueError(
+            f"the serving pair has ranker {pair.ranker_id}: promote retrievers with "
+            "`python -m steam_training pair` (RETRIEVER_ID / RANKER_ID), so a ranker never serves "
+            "with a retriever it wasn't evaluated with (spec 9)"
+        )
     candidate, candidate_meta = store.load_model(settings.model_id)
     if candidate.config.user_language:
         raise ValueError(

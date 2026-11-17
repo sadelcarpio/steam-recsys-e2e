@@ -17,6 +17,11 @@ Human docs: `README.md`.
     (+ the catalog from inference: exact top K, `recommend`, refuses mismatched model ids),
     `BundleLoader` (manifest -> pinned catalog version + the model's user tower, periodic
     refresh, user tower reused while the model is unchanged, keeps the old model on failure)
+  - `ranker.py` (spec 9): `OnlineRanker` (inference's `ranker.npz`: game side of the features
+    per catalog row + `TreeEnsemble`, LightGBM's numerical decision in numpy), `features` (one
+    request's features, the port of training's `compute_features`), `order`. `OnlineModel`
+    re-orders its top `candidates` with it when the manifest's `ranker_mode` is `on` (`shadow`:
+    logs the overlap); `BundleLoader._ranker` loads it, any failure = retrieval order
   - `users.py`: `UserIndex` (demo user index of spec 13: cached `index.json` manifest, one
     8-byte ranged GetObject of `index.bin` at the manifest's version per lookup)
   - `app.py`: `App.handle(event)`: routing of Function URL events (payload 2.0), validation,
@@ -42,6 +47,12 @@ Human docs: `README.md`.
   drops padding slots (exact: training masks them as keys and reads only the summary token). When the catalog changes, change `steam_inference.online` / `ONLINE_BUNDLE_FORMAT`
   and `SUPPORTED_MANIFEST_FORMAT`. Parity is tested in
   `inference/tests/test_online_parity.py`, since torch lives there.
+- Ranker (spec 9): `FEATURES` / `POPULARITY_FEATURES` / `FEATURE_SCHEMA_VERSION` here copy
+  training's `steam_training.ranker.features` and `features()` ports `compute_features` for one
+  group; the file layout is `steam_training.ranker.export` (`RANKER_NUMPY_FORMAT` =
+  `SUPPORTED_RANKER_FORMAT`). Change the three together; parity (features, LightGBM scores,
+  the constants) is tested in inference's `tests/test_online_ranker.py`. A ranker problem
+  never fails a request: it falls back to retrieval order. No LightGBM in the zip.
 - Online ranking is by the score rounded to 4 decimals (as returned), then by lowest appid.
   Raw float order is not reproducible: identical games differ by CPU / BLAS-dependent noise
   (this flipped CI once). Batch uses `torch.topk`.

@@ -10,7 +10,15 @@ import torch
 from botocore.exceptions import ClientError
 
 from steam_training.config import CHAMPION
-from steam_training.contracts import EvaluationReport, ModelMetadata, TrackingRecord
+from steam_training.contracts import (
+    EvaluationReport,
+    ModelMetadata,
+    PairRecord,
+    PairReport,
+    RankerMetadata,
+    RankerReport,
+    TrackingRecord,
+)
 from steam_training.export import encode_user_tower
 from steam_training.model import TwoTowerModel
 
@@ -34,6 +42,27 @@ def model_prefix(model_id: str) -> str:
 
 def metrics_key(model_id: str) -> str:
     return f"evaluation/{model_id}/{METRICS}"
+
+
+# rankers (spec 9): rankers/<ranker_id>/{model.txt, metadata.json}
+RANKER_MODEL = "model.txt"
+RANKER_REPORT = "ranker.json"
+RANKER_FILES = (RANKER_MODEL, METADATA)  # metadata last
+# the serving pair (spec 9): written last by a pair promotion / rollback
+PAIR_KEY = f"evaluation/{CHAMPION}/pair.json"
+HISTORY_KEY = f"evaluation/{CHAMPION}/history.jsonl"
+
+
+def pair_report_key(retriever_id: str, ranker_id: str | None) -> str:
+    return f"evaluation/pairs/{retriever_id}__{ranker_id or 'none'}.json"
+
+
+def ranker_prefix(ranker_id: str) -> str:
+    return f"rankers/{ranker_id}/"
+
+
+def ranker_report_key(ranker_id: str) -> str:
+    return f"evaluation/rankers/{ranker_id}/{RANKER_REPORT}"
 
 
 def checkpoint_key(model_id: str) -> str:
@@ -143,6 +172,102 @@ class ArtifactStore:
     def checkpoints(self, model_id: str) -> S3Checkpoints:
         return S3Checkpoints(self, model_id)
 
+    # ---- rankers (spec 9) ----
+
+    def save_ranker(self, model_text: str, metadata: RankerMetadata) -> None:
+        prefix = ranker_prefix(metadata.ranker_id)
+        self._put(prefix + RANKER_MODEL, model_text.encode(), "text/plain")
+        # metadata last: its presence marks a complete ranker
+        self._put(
+            prefix + METADATA, metadata.model_dump_json(indent=2).encode(), "application/json"
+        )
+        log.info("saved ranker to s3://%s/%s", self.bucket, prefix)
+
+    def load_ranker_metadata(self, ranker_id: str) -> RankerMetadata | None:
+        body = self._get(ranker_prefix(ranker_id) + METADATA)
+        return RankerMetadata.model_validate_json(body) if body is not None else None
+
+    def load_ranker(self, ranker_id: str) -> tuple[str, RankerMetadata]:
+        """(LightGBM model text, metadata) of a saved ranker."""
+        metadata = self.load_ranker_metadata(ranker_id)
+        body = self._get(ranker_prefix(ranker_id) + RANKER_MODEL)
+        if metadata is None or body is None:
+            raise FileNotFoundError(f"no ranker at s3://{self.bucket}/{ranker_prefix(ranker_id)}")
+        return body.decode(), metadata
+
+    def write_ranker_report(self, report: RankerReport) -> str:
+        key = ranker_report_key(report.ranker_id)
+        self._put(key, report.model_dump_json(indent=2).encode(), "application/json")
+        log.info("wrote s3://%s/%s", self.bucket, key)
+        return key
+
+    def read_ranker_report(self, ranker_id: str) -> RankerReport | None:
+        body = self._get(ranker_report_key(ranker_id))
+        return RankerReport.model_validate_json(body) if body is not None else None
+
+    def copy_ranker_to_champion(self, ranker_id: str | None) -> None:
+        """rankers/champion/ = a copy of rankers/<ranker_id>/ (metadata last); None deletes it,
+        so a stale ranker never serves with another retriever."""
+        target = ranker_prefix(CHAMPION)
+        if ranker_id is None:
+            for name in reversed(RANKER_FILES):  # metadata first: no half-complete ranker
+                self.s3.delete_object(Bucket=self.bucket, Key=target + name)
+            return
+        source = ranker_prefix(ranker_id)
+        for name in RANKER_FILES:
+            self.s3.copy_object(
+                Bucket=self.bucket,
+                Key=target + name,
+                CopySource={"Bucket": self.bucket, "Key": source + name},
+            )
+
+    # ---- serving pair (spec 9) ----
+
+    def read_pair(self) -> PairRecord | None:
+        body = self._get(PAIR_KEY)
+        return PairRecord.model_validate_json(body) if body is not None else None
+
+    def read_history(self) -> list[PairRecord]:
+        body = self._get(HISTORY_KEY)
+        if body is None:
+            return []
+        return [PairRecord.model_validate_json(line) for line in body.decode().splitlines() if line]
+
+    def write_pair(self, record: PairRecord) -> None:
+        """Appends to history.jsonl, then writes pair.json (last: it names what serves)."""
+        lines = [r.model_dump_json() for r in self.read_history()] + [record.model_dump_json()]
+        self._put(HISTORY_KEY, ("\n".join(lines) + "\n").encode(), "application/x-ndjson")
+        self._put(PAIR_KEY, record.model_dump_json(indent=2).encode(), "application/json")
+        log.info("serving pair: %s + %s", record.retriever_id, record.ranker_id or "no ranker")
+
+    def write_pair_report(self, report: PairReport, key: str | None = None) -> str:
+        chosen = report.chosen or (report.challengers[0] if report.challengers else None)
+        key = key or pair_report_key(
+            chosen.retriever_id if chosen else "none", chosen.ranker_id if chosen else None
+        )
+        self._put(key, report.model_dump_json(indent=2).encode(), "application/json")
+        log.info("wrote s3://%s/%s", self.bucket, key)
+        return key
+
+    def read_pair_report(self, key: str) -> PairReport | None:
+        body = self._get(key)
+        return PairReport.model_validate_json(body) if body is not None else None
+
+    def copy_model_to_champion(self, model_id: str) -> None:
+        """models/champion/ = a copy of models/<model_id>/ (metadata last). A model without the
+        numpy user tower deletes the champion's copy."""
+        source, target = model_prefix(model_id), model_prefix(CHAMPION)
+        for name in MODEL_FILES:
+            if name == USER_TOWER_NUMPY and not self._exists(source + name):
+                log.warning("%s has no %s: online serving needs `export`", source, name)
+                self.s3.delete_object(Bucket=self.bucket, Key=target + name)
+                continue
+            self.s3.copy_object(
+                Bucket=self.bucket,
+                Key=target + name,
+                CopySource={"Bucket": self.bucket, "Key": source + name},
+            )
+
     # ---- evaluation + promotion ----
 
     def write_report(self, report: EvaluationReport, model_id: str | None = None) -> None:
@@ -157,18 +282,7 @@ class ArtifactStore:
     def promote(self, report: EvaluationReport) -> None:
         """Copy the candidate to models/champion/ and its report to evaluation/champion/ (last,
         so the champion metrics never describe a model that is not fully in place)."""
-        source, target = model_prefix(report.model_id), model_prefix(CHAMPION)
-        for name in MODEL_FILES:
-            if name == USER_TOWER_NUMPY and not self._exists(source + name):
-                # saved before the numpy export existed: backfill with `export`
-                log.warning("%s has no %s: online serving needs `export`", source, name)
-                self.s3.delete_object(Bucket=self.bucket, Key=target + name)
-                continue
-            self.s3.copy_object(
-                Bucket=self.bucket,
-                Key=target + name,
-                CopySource={"Bucket": self.bucket, "Key": source + name},
-            )
+        self.copy_model_to_champion(report.model_id)
         self.write_report(report, model_id=CHAMPION)
         log.info("promoted %s to champion", report.model_id)
 

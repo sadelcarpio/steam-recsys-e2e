@@ -13,7 +13,7 @@ import os
 from typing import Any, Literal
 
 import boto3
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -92,6 +92,12 @@ class TrainingSettings(_SsmSettings):
     validation_fraction: float = Field(0.1, gt=0, lt=0.5)
     test_fraction: float = Field(0.0, ge=0, lt=0.5)
     fit_on: Literal["train", "train+validation"] = "train"
+    # Time-based windows (spec 9, "Time windows"), counted back from the newest interaction N:
+    # train before N - HOLDOUT_WEEKS, validate on [N - HOLDOUT_WEEKS, N - TEST_WEEKS), and the
+    # last TEST_WEEKS are the test window only gates read (rows there are never used by
+    # training). Replaces VALIDATION_FRACTION / TEST_FRACTION when set.
+    holdout_weeks: int | None = Field(None, ge=1)
+    test_weeks: int = Field(2, ge=0)
     # Share of empty-history (first positive review) rows kept for training. Inference never
     # sees an empty history; a few of them teach the model a "no history" fallback query.
     cold_row_fraction: float = Field(0.1, ge=0, le=1)
@@ -206,7 +212,14 @@ class TrainingSettings(_SsmSettings):
             raise ValueError("USER_LANGUAGE needs RAW_REVIEWS_URI")
         if self.user_tag_profile and not self.use_game_tags:
             raise ValueError("USER_TAG_PROFILE needs USE_GAME_TAGS")
-        if self.fit_on == "train+validation" and self.test_fraction == 0:
+        if self.holdout_weeks is not None:
+            if self.test_weeks >= self.holdout_weeks:
+                raise ValueError("TEST_WEEKS must be < HOLDOUT_WEEKS")
+            if self.test_fraction > 0:
+                raise ValueError("HOLDOUT_WEEKS replaces TEST_FRACTION: set only one")
+            if self.fit_on == "train+validation" and self.test_weeks == 0:
+                raise ValueError("FIT_ON=train+validation needs TEST_WEEKS > 0")
+        elif self.fit_on == "train+validation" and self.test_fraction == 0:
             raise ValueError("FIT_ON=train+validation needs TEST_FRACTION > 0 to evaluate on")
         return self
 
@@ -236,6 +249,148 @@ NOT_FINGERPRINTED = {
     "data_cache_dir",
     "log_level",
 }
+
+
+class RankerSettings(_SsmSettings):
+    """Settings of `python -m steam_training rank` (spec 9): train a ranker on a retriever's
+    candidates after that retriever's cutoff. Separate from `TrainingSettings`, so ranker
+    settings never change a retriever's checkpoint fingerprint or metadata."""
+
+    model_artifacts_bucket: str = Field(pattern=BUCKET_PATTERN)
+    # the ranker's id (rankers/<ranker_id>/): the commit sha in CD, local-<sha>-<suffix> locally.
+    # RANKER_ID, or MODEL_ID (what the SageMaker launcher sets)
+    ranker_id: str = Field(
+        pattern=MODEL_ID_PATTERN, validation_alias=AliasChoices("ranker_id", "model_id")
+    )
+    # the retriever whose candidates train the ranker (`champion` = the current champion)
+    retriever_id: str = Field(CHAMPION, pattern=MODEL_ID_PATTERN)
+    glue_database: str = "steam_marts"
+    aws_region: str = "us-east-1"
+    data_cache_dir: str | None = None
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    eval_batch_size: int = Field(4096, ge=1)
+    seed: int = 42
+
+    # ---- groups ----
+    # candidates per group (RETRIEVAL_CANDIDATES at inference) and the ranker's list length
+    ranker_candidates: int = Field(100, ge=2)
+    ranker_top_k: int = Field(20, ge=1)
+    # liked games the user-side features read (MAX_LIKED_GAMES online)
+    ranker_history_length: int = Field(20, ge=1, le=512)
+    # share of the window's groups (by time) before T2: train; the rest: test. Only for
+    # retrievers without a split end: with time-based windows (HOLDOUT_WEEKS), T2 is the
+    # retriever's split end (its test window starts there)
+    ranker_train_fraction: float = Field(0.7, gt=0, lt=1)
+    # last share (by time) of the training groups used for early stopping
+    ranker_early_stopping_fraction: float = Field(0.2, gt=0, lt=1)
+    ranker_max_groups_per_user: int = Field(20, ge=1)
+    # positive rows of the window read (uniform sample) before the per-user cap
+    ranker_max_rows: int = Field(2_000_000, ge=1)
+    ranker_max_train_groups: int = Field(300_000, ge=1)
+    ranker_max_test_groups: int = Field(100_000, ge=1)
+    ranker_min_groups: int = Field(5000, ge=1)
+    # weekly game popularity: the `game_popularity_weekly` mart, or the same counts computed
+    # from `interactions` (marts deployed before the mart existed)
+    ranker_popularity_source: Literal["mart", "interactions"] = "mart"
+
+    # ---- per-user lists (the batch path's view; spec 9) ----
+    # test-window users whose lists are rebuilt at weekly snapshots (0 = skip the list metrics)
+    ranker_list_users: int = Field(20_000, ge=0)
+    # relevant games: positives in [T, T + horizon) (the batch cadence)
+    ranker_list_horizon_days: int = Field(7, ge=1)
+    ranker_list_max_snapshots: int = Field(6, ge=1)
+
+    # ---- model (LightGBM lambdarank) ----
+    ranker_num_leaves: int = Field(31, ge=2)
+    ranker_learning_rate: float = Field(0.05, gt=0)
+    ranker_max_rounds: int = Field(500, ge=1)
+    ranker_early_stopping_rounds: int = Field(30, ge=1)
+    ranker_min_data_in_leaf: int = Field(100, ge=1)
+    ranker_feature_fraction: float = Field(0.8, gt=0, le=1)
+    num_threads: int = Field(0, ge=0)  # 0 = LightGBM default
+
+    # ---- report / gate ----
+    # retrain without each feature family and report the recall@top_k change
+    ranker_ablation: bool = True
+    # the ranker must beat retrieval order's recall@top_k by this much (absolute)
+    ranker_min_gain: float = Field(0.005, ge=0)
+    log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _check(self) -> RankerSettings:
+        if self.ranker_id == CHAMPION:
+            raise ValueError(f"ranker_id '{CHAMPION}' is reserved")
+        if self.ranker_top_k > self.ranker_candidates:
+            raise ValueError("RANKER_TOP_K must be <= RANKER_CANDIDATES")
+        return self
+
+
+class PairSettings(_SsmSettings):
+    """Settings of `python -m steam_training pair` (spec 9): evaluate challenger (retriever,
+    ranker) pairs against the serving pair on a window none of them trained on, and promote the
+    best one; or roll back to the previous pair (`ROLLBACK=true`)."""
+
+    model_artifacts_bucket: str = Field(pattern=BUCKET_PATTERN)
+    # challenger retriever (unset = the serving one: a ranker-only challenge)
+    retriever_id: str | None = Field(None, pattern=MODEL_ID_PATTERN)
+    # challenger ranker trained on the challenger retriever's candidates (unset = none)
+    ranker_id: str | None = Field(None, pattern=MODEL_ID_PATTERN)
+    rollback: bool = False
+    # Evaluate and write the decision (the report's `chosen` = the pair that would be promoted)
+    # without promoting: the training Step Function's step before its approval.
+    pair_dry_run: bool = False
+    # Key of the report (default evaluation/pairs/<chosen retriever>__<ranker>.json); the Step
+    # Function sets a per-execution key to read the decision back.
+    pair_report_key: str | None = None
+    # Promote the pair a dry-run report chose (no re-evaluation), refused when the serving pair
+    # changed since that report: the Step Function's step after the approval.
+    apply_report: str | None = None
+    glue_database: str = "steam_marts"
+    aws_region: str = "us-east-1"
+    data_cache_dir: str | None = None
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    eval_batch_size: int = Field(4096, ge=1)
+    seed: int = 42
+
+    pair_candidates: int = Field(100, ge=2)
+    pair_top_k: int = Field(20, ge=1)
+    # retrieval recall@K the retriever gate compares (as the retriever's own promotion)
+    pair_retrieval_k: int = Field(50, ge=1)
+    pair_history_length: int = Field(20, ge=1, le=512)
+    pair_max_rows: int = Field(1_000_000, ge=1)
+    pair_max_groups_per_user: int = Field(20, ge=1)
+    pair_max_groups: int = Field(100_000, ge=1)
+    pair_list_users: int = Field(20_000, ge=0)
+    pair_list_horizon_days: int = Field(7, ge=1)
+    pair_list_max_snapshots: int = Field(4, ge=1)
+    pair_popularity_source: Literal["mart", "interactions"] = "mart"
+
+    # final list: recall@top_k must beat the serving pair by this much, NDCG@top_k not drop
+    min_improvement: float = Field(0.0, ge=0)
+    # a new retriever: retrieval recall@PAIR_RETRIEVAL_K must beat the serving retriever's by
+    # this much and recall@PAIR_CANDIDATES (the ranker's ceiling) must not drop
+    retriever_min_improvement: float = Field(0.0, ge=0)
+    # promote even when the gates reject (the report keeps the real reason)
+    force_promotion: bool = False
+    log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _check(self) -> PairSettings:
+        for value in (self.retriever_id, self.ranker_id):
+            if value == CHAMPION:
+                raise ValueError("challenger ids can't be 'champion' (it names the serving pair)")
+        if self.rollback + (self.apply_report is not None) + self.pair_dry_run > 1:
+            raise ValueError("ROLLBACK, APPLY_REPORT and PAIR_DRY_RUN are exclusive")
+        if (
+            not self.rollback
+            and self.apply_report is None
+            and self.retriever_id is None
+            and self.ranker_id is None
+        ):
+            raise ValueError("set RETRIEVER_ID and / or RANKER_ID (or ROLLBACK / APPLY_REPORT)")
+        if self.pair_top_k > self.pair_candidates:
+            raise ValueError("PAIR_TOP_K must be <= PAIR_CANDIDATES")
+        return self
 
 
 class LaunchSettings(_SsmSettings):

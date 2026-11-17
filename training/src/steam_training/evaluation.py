@@ -225,6 +225,33 @@ def target_ranks(
     return ranks
 
 
+def top_candidates(
+    score_fn: ScoreFn,
+    history: np.ndarray,
+    index: CatalogIndex,
+    k: int,
+    batch_size: int,
+    exclude: Ragged | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each row's top `k` games (game_idx, best first) and their scores, with the same
+    exclusions as `target_ranks` (the history, and `exclude` per row). Excluded games score
+    -inf, so a catalog with fewer than `k` eligible games yields -inf tails."""
+    device = index.game_idx.device
+    k = min(k, len(index))
+    games = np.zeros((len(history), k), dtype=np.int64)
+    scores = np.zeros((len(history), k), dtype=np.float32)
+    for start in range(0, len(history), batch_size):
+        chunk_history = torch.from_numpy(history[start : start + batch_size]).to(device)
+        chunk = mask_games(score_fn(chunk_history), chunk_history, index)
+        if exclude is not None:
+            _mask_ragged(chunk, exclude, start, start + len(chunk_history), index)
+        top = torch.topk(chunk, k, dim=1)
+        end = start + len(chunk_history)
+        games[start:end] = index.game_idx[top.indices].cpu().numpy()
+        scores[start:end] = top.values.float().cpu().numpy()
+    return games, scores
+
+
 def recall_from_ranks(ranks: torch.Tensor, is_warm: torch.Tensor, ks: list[int]) -> RecallMetrics:
     def segment(mask: torch.Tensor) -> SegmentRecall:
         n = int(mask.sum())

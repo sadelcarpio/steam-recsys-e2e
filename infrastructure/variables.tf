@@ -162,6 +162,36 @@ variable "training_instance_type" {
   default     = "ml.m5.2xlarge"
 }
 
+variable "training_pipeline_image_tag" {
+  description = "Image tag of ECR training the training Step Function runs by default (training image CD moves :latest on merges). GPU retriever runs pass retriever_image_tag = <sha>-cu128 in the execution input."
+  type        = string
+  default     = "latest"
+}
+
+variable "training_pipeline_cpu_instance_type" {
+  description = "SageMaker instance of the ranker, pair evaluation and promotion jobs of the training Step Function (CPU; ~32 GB RAM for the real marts)."
+  type        = string
+  default     = "ml.m5.2xlarge"
+}
+
+variable "training_pipeline_max_runtime_seconds" {
+  description = "Max runtime of each training Step Function job."
+  type        = number
+  default     = 6 * 3600
+}
+
+variable "training_pipeline_schedule_enabled" {
+  description = "Start the training Step Function on training_pipeline_schedule_expression (continuous training; the approval step still gates every promotion)."
+  type        = bool
+  default     = false
+}
+
+variable "training_pipeline_schedule_expression" {
+  description = "Schedule of the training Step Function (EventBridge Scheduler, schedule_timezone)."
+  type        = string
+  default     = "cron(0 6 1 * ? *)"
+}
+
 # ---- inference -----------------------------------------------------------------------------
 
 variable "inference_image_tag" {
@@ -224,6 +254,16 @@ variable "inference_rerank_shuffle" {
   description = "Shuffle the candidates of the ranking prompt (seeded by the user id) against position bias."
   type        = bool
   default     = true
+}
+
+variable "inference_ranker_mode" {
+  description = "Spec 9 ranker in batch inference: off, shadow (computed and compared, retrieval order written) or on (its top RANKER_TOP_K is written). Only runs when evaluation/champion/pair.json names a ranker for the champion retriever."
+  type        = string
+  default     = "shadow"
+  validation {
+    condition     = contains(["off", "shadow", "on"], var.inference_ranker_mode)
+    error_message = "inference_ranker_mode must be off, shadow or on."
+  }
 }
 
 # ---- serving -------------------------------------------------------------------------------

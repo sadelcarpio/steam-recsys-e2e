@@ -46,11 +46,19 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
   training and inference derive each user's last N positives from `interactions`. Don't add a
   fixed-length history back. `interactions` is `on_schema_change: sync_all_columns` (a dropped
   column is an Iceberg `DROP COLUMN`); every other model stays `fail`.
-- Raw review counts stay in `int_game_review_counts`; marts expose only the Laplace-smoothed ratio.
+- Raw cumulative review counts stay in `int_game_review_counts`; `game_features` /
+  `interactions` expose only the Laplace-smoothed ratio. The one exception is
+  `game_popularity_weekly` (spec 9): counts per (game, ISO week), point in time by
+  construction (a consumer at t reads weeks before t's week). Its incremental run recounts
+  every (game, week) touched by new `interactions` rows (late backfilled reviews land in old
+  weeks); `_batch_at` = the newest counted row. Week = `date_trunc('week')` (Monday UTC), the
+  same week the training ranker uses (`steam_training.ranker.features.week_of`).
 - `game_tags` (spec 8) is one row per catalog game with tags, merged on `game_id` only when a
   newer scrape (`scraped_at`) arrives, so a rerun writes nothing. `lkp_tags` covers the tags
   of `int_games__deduplicated` games only.
-- `game_details` is display data, never a model feature. Its rows are the rows of
+- `game_details` is display data, never a time-versioned feature: the spec 9 ranker reads its
+  `game_price` (the price at the last scrape, not as of t) and `game_release_date` (static)
+  as static game attributes, documented as such; nothing else may. Its rows are the rows of
   `int_games__deduplicated` (merge key `game_name_key`, watermark `_batch_at`), with the text
   taken from the winning scrape. A re-scrape of a game that already wins its name does not
   update it (the details are treated as static; a full refresh takes the latest scrape),

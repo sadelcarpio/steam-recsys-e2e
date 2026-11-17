@@ -88,7 +88,7 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - S3 raw parquet (Glue `steam_raw`) → Athena → modeled tables → S3 `processed-steam-data-<account-id>/iceberg/`
   (Glue `steam_staging` / `steam_intermediate` / `steam_marts`)
 - dbt (3) runs its models via Athena (workgroup `steam-recsys-etl`)
-- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
+- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `game_popularity_weekly` (reviews per game and week, spec 9), `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
 
 ### Public dataset (spec 16)
 
@@ -101,11 +101,19 @@ Order: EventBridge → 1 → 2 → 3 → 4
 
 - S3 (Iceberg, read with pyiceberg) → SageMaker training job (`training CD`) → S3 `model-artifacts-<account-id>/models/<sha>/`
   (user + item tower, plus the user tower as numpy for online serving); `training promote` evaluates it vs `models/champion/` and swaps it in when better
+- Spec 9: `training rank` → `rankers/<id>/`; pairs (retriever, ranker) are promoted together
+  (`evaluation/champion/pair.json`). State machine `steam-recsys-training` (manual or monthly):
+  retriever job → ranker job → pair dry run → approval (`training approve` workflow) → promotion →
+  inference job
 
 ### Batch inference (4)
 
 - S3 (Iceberg `game_features`, `interactions`; user histories derived from `interactions`) → features → SageMaker Inference Pipeline
 - S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → SageMaker Inference Pipeline
+- S3 `model-artifacts-<account-id>/evaluation/champion/pair.json` + `rankers/champion/` → the serving
+  ranker (spec 9; Iceberg `game_popularity_weekly` + `game_details` features) re-orders the top 100
+  (`RANKER_MODE` shadow / on); `evaluation/online/` ↔ delayed-label check (previous run's lists vs
+  reviews since)
 - SageMaker Inference Pipeline ↔ Bedrock (LLM reranking + explanations for the most active reviewers)
 - SageMaker Inference Pipeline → top-K recs (changed users only) + `__popular__` fallback → DynamoDB
   `game-explainable-recommendations`
@@ -123,7 +131,9 @@ Order: EventBridge → 1 → 2 → 3 → 4
   spec 13) → reads DynamoDB `game-explainable-recommendations` (+ `game-details`) →
   recommendations → User
 - User → liked game ids → `POST /recommendations` → Lambda `recsys-serving` (the model's numpy user
-  tower over the online catalog's item embeddings, exact top K) → recommendations → User
+  tower over the online catalog's item embeddings, exact top K; spec 9: the serving pair's
+  ranker re-orders the top 100 in numpy, `serving/online/ranker.npz` written by inference with
+  the catalog) → recommendations → User
 - No LB in front of the Lambda; the diagram shows the Lambda called directly (Function URL, auth
   `AWS_IAM` or `NONE`, chosen in the infrastructure CD)
 - Browser → CloudFront → S3 `recsys-frontend-<account-id>` (the app), `/data/*` → S3

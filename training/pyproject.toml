@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.35",
+    "lightgbm>=4.7.0",
     "numpy>=2.0",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
@@ -13,12 +14,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cpu = [
-    "torch>=2.8",
-]
-cu128 = [
-    "torch>=2.8",
-]
 tracking = [
     "mlflow-skinny>=3.18.0",
 ]
@@ -30,10 +25,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/steam_training"]
 
-# torch comes from one of two mutually exclusive extras: `cpu` (default image, CI; the CPU wheels
-# avoid ~3 GB of CUDA libraries) or `cu128` (GPU image). Always sync with one of them.
+# torch comes from one of two mutually exclusive dependency groups: `cu128` (the default, so a
+# plain `uv sync` / `uv run` / `uv add` keeps the GPU build in a local venv) or `cpu` (CI and the
+# default image; the CPU wheels avoid ~3 GB of CUDA libraries): `uv sync --no-group cu128 --group
+# cpu`. cu128 wheels also run on a machine without a GPU (DEVICE=auto falls back to the CPU).
 [tool.uv]
-conflicts = [[{ extra = "cpu" }, { extra = "cu128" }]]
+default-groups = ["dev", "cu128"]
+conflicts = [[{ group = "cpu" }, { group = "cu128" }]]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -47,8 +45,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu128", extra = "cu128" },
+    { index = "pytorch-cpu", group = "cpu" },
+    { index = "pytorch-cu128", group = "cu128" },
 ]
 
 [tool.ruff]
@@ -62,6 +60,12 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 
 [dependency-groups]
+cpu = [
+    "torch>=2.8",
+]
+cu128 = [
+    "torch>=2.8",
+]
 dev = [
     "mlflow>=3.18.0",
     "moto[s3,sagemaker,ssm]>=5.0",

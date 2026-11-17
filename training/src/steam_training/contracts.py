@@ -6,6 +6,13 @@ S3 layout (bucket `model-artifacts-<acct>`):
     models/<model_id>/metadata.json                  ModelMetadata
     evaluation/<model_id>/metrics.json               EvaluationReport (promotion job)
     models/champion/..., evaluation/champion/...     copies of the promoted model
+    rankers/<ranker_id>/model.txt                    LightGBM text dump of a ranker (spec 9)
+    rankers/<ranker_id>/metadata.json                RankerMetadata
+    evaluation/rankers/<ranker_id>/ranker.json       RankerReport (`python -m steam_training rank`)
+    rankers/champion/...                             copy of the serving ranker (none: deleted)
+    evaluation/pairs/<retriever>__<ranker>.json      PairReport (`python -m steam_training pair`)
+    evaluation/champion/pair.json                    PairRecord: the serving (retriever, ranker)
+    evaluation/champion/history.jsonl                one PairRecord per promotion / rollback
 """
 
 from __future__ import annotations
@@ -232,3 +239,151 @@ class TrackingRecord(_Frozen):
     user_embeddings: EmbeddingHealth
     # A6 runs: the weekly recent-popularity baseline (`evaluation.recent_popularity_scores`)
     recent_popularity: RetrievalDiagnostics | None = None
+
+
+# ---- ranker (spec 9) ----
+
+
+class RankingMetrics(_Frozen):
+    """Ranking quality of one ordering of the test groups (one held-out game per group).
+    `recall[k]` = share of groups with the game in the top k (precision@k = recall@k / k);
+    groups whose game the retriever missed count as misses."""
+
+    groups: int = Field(ge=0)
+    recall: dict[int, Recall]
+    ndcg: dict[int, Recall]
+    # mean of 1 / position (1-based) when the game is in the top k, else 0: average precision@k
+    # with one relevant game
+    mrr: dict[int, Recall] = Field(default_factory=dict)
+
+
+class RankerWindow(_Frozen):
+    """Time split of a ranker: its candidates come from a retriever trained before
+    `retriever_cutoff` (T1); groups in [T1, t2) train it (the last share by time stops early),
+    groups in [t2, end] test it."""
+
+    retriever_cutoff: datetime
+    t2: datetime
+    end: datetime
+    train_groups: int = Field(ge=0)
+    early_stopping_groups: int = Field(ge=0)
+    test_groups: int = Field(ge=0)
+
+
+class RankerComparison(_Frozen):
+    """Retrieval order vs ranker order on the same test groups."""
+
+    retrieval: RankingMetrics
+    ranker: RankingMetrics
+
+
+class ListMetrics(_Frozen):
+    """Per-user list metrics: one list per (user, snapshot T) built from the history before T,
+    relevant = the games the user reviews positively in [T, T + horizon) (not reviewed before
+    T). Averaged over (user, snapshot) pairs, so every user weighs the same at each snapshot."""
+
+    lists: int = Field(ge=0)
+    # hits in the top k / k
+    precision: dict[int, Recall]
+    # hits in the top k / min(k, relevant games)
+    recall: dict[int, Recall]
+    # average precision@k: mean over the hits of precision at their position, / min(k, relevant)
+    map: dict[int, Recall]
+
+
+class UserListComparison(_Frozen):
+    """Retrieval order vs ranker order of the same per-user lists (the batch path's view: one
+    list written per run, judged against what the user does until the next run)."""
+
+    snapshots: list[datetime]
+    horizon_days: int = Field(ge=1)
+    retrieval: ListMetrics
+    ranker: ListMetrics
+
+
+class RankerMetadata(_Frozen):
+    ranker_id: str
+    created_at: datetime
+    # the retriever whose candidates trained it (candidates and windows depend on it; no
+    # feature does)
+    retriever_id: str
+    feature_schema_version: int
+    feature_names: list[str]
+    candidates: int = Field(ge=1)
+    top_k: int = Field(ge=1)
+    history_length: int = Field(ge=1)
+    window: RankerWindow
+    snapshots: dict[str, int | None]
+    hyperparameters: dict[str, object]
+    best_iteration: int = Field(ge=0)
+    test: RankerComparison
+
+
+class RankerReport(_Frozen):
+    """evaluation/rankers/<ranker_id>/ranker.json: the ranker on its test window."""
+
+    ranker_id: str
+    retriever_id: str
+    evaluated_at: datetime
+    top_k: int
+    window: RankerWindow
+    # share of test groups whose game is among the retriever's candidates (the ceiling)
+    candidate_recall: Recall
+    test: RankerComparison
+    # the same, only the test groups whose game is among the candidates (the ranker's own skill)
+    conditional: RankerComparison | None = None
+    # per-user lists at weekly snapshots of the test window (None: not computed)
+    user_lists: UserListComparison | None = None
+    # the same, split by the length of the user's history (short: < history_length games)
+    by_history: dict[str, RankerComparison]
+    # share of the total split gain per feature
+    importances: dict[str, float]
+    # recall@top_k change when a feature family is left out (retrained without it)
+    ablation: dict[str, float]
+    gate_passed: bool
+    reason: str
+
+
+# ---- serving pair (spec 9, phase 3) ----
+
+
+class PairEvaluation(_Frozen):
+    """One (retriever, ranker) on the common test groups. `final` = the list the pair serves
+    (ranker order, or retrieval order without a ranker); `retrieval` = the retriever's own order
+    (its recall@K is the ranker's ceiling)."""
+
+    retriever_id: str
+    ranker_id: str | None
+    final: RankingMetrics
+    retrieval: RankingMetrics
+    user_lists: ListMetrics | None = None
+
+
+class PairReport(_Frozen):
+    """evaluation/pairs/<retriever>__<ranker>.json: a promotion decision between the champion
+    pair and challenger pairs, all on groups at or after `window_start` (no compared model
+    trained on them)."""
+
+    evaluated_at: datetime
+    window_start: datetime
+    top_k: int
+    candidates: int
+    champion: PairEvaluation | None
+    challengers: list[PairEvaluation]
+    chosen: PairEvaluation | None
+    promoted: bool
+    reason: str
+    # evaluated only (PAIR_DRY_RUN): `chosen` is the pair that would be promoted, applied later
+    # by APPLY_REPORT (the training Step Function's approval sits in between)
+    dry_run: bool = False
+
+
+class PairRecord(_Frozen):
+    """evaluation/champion/pair.json (and one line of history.jsonl): the pair being served."""
+
+    retriever_id: str
+    ranker_id: str | None
+    promoted_at: datetime
+    reason: str
+    window_start: datetime | None = None
+    final: RankingMetrics | None = None

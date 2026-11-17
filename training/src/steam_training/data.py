@@ -608,6 +608,8 @@ def load_training_data(
     with_train_rows: bool = True,
     with_tags: bool = False,
     history_length: int = USER_HISTORY_LENGTH,
+    holdout_weeks: int | None = None,
+    test_weeks: int = 0,
     with_recency: bool = False,
     languages: ReviewLanguages | None = None,
 ) -> TrainingData:
@@ -640,7 +642,9 @@ def load_training_data(
     all_ts = np.concatenate(timestamps) if timestamps else np.array([], dtype="datetime64[us]")
     all_positive = np.concatenate(positive) if positive else np.array([], dtype=bool)
     if cutoff is None:
-        cutoff, end, evaluation = split_window(all_ts, validation_fraction, test_fraction, fit_on)
+        cutoff, end, evaluation = split_window(
+            all_ts, validation_fraction, test_fraction, fit_on, holdout_weeks, test_weeks
+        )
     else:
         end, evaluation = None, "validation"
     is_validation = all_ts >= np.datetime64(cutoff, "us")
@@ -836,10 +840,30 @@ def load_training_data(
 
 
 def split_window(
-    timestamps: np.ndarray, validation_fraction: float, test_fraction: float, fit_on: str
+    timestamps: np.ndarray,
+    validation_fraction: float,
+    test_fraction: float,
+    fit_on: str,
+    holdout_weeks: int | None = None,
+    test_weeks: int = 0,
 ) -> tuple[datetime, datetime | None, str]:
     """(training cutoff, evaluation end, evaluation name) of the timeline split by row share
-    into [train | validation | test]."""
+    into [train | validation | test], or, with `holdout_weeks`, by time counted back from the
+    newest row N: [.. N - holdout | N - holdout .. N - test | N - test ..]."""
+    if holdout_weeks is not None:
+        if len(timestamps) == 0:
+            raise ValueError("no interactions to split")
+        newest = timestamps.max().astype("datetime64[us]")
+        week = np.timedelta64(7, "D")
+        cutoff = (newest - holdout_weeks * week).item()
+        test_start = (newest - test_weeks * week).item() if test_weeks else None
+        if fit_on == "train":
+            return cutoff, test_start, "validation"
+        if fit_on == "train+validation":
+            if test_start is None:
+                raise ValueError("fit_on=train+validation needs test_weeks > 0")
+            return test_start, None, "test"
+        raise ValueError(f"unknown fit_on {fit_on!r}")
     test_start = temporal_cutoff(timestamps, test_fraction) if test_fraction > 0 else None
     if fit_on == "train":
         return (

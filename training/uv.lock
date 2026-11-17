@@ -2,30 +2,30 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform == 'win32' and extra != 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform == 'win32' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform == 'emscripten' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform == 'win32' and extra != 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
-    "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'extra-14-steam-training-cpu' and extra != 'extra-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform == 'win32' and extra != 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform == 'win32' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform == 'emscripten' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform == 'darwin' and extra == 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform == 'emscripten' and extra != 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform == 'win32' and extra != 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
+    "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32' and extra != 'group-14-steam-training-cpu' and extra != 'group-14-steam-training-cu128'",
 ]
 conflicts = [[
-    { package = "steam-training", extra = "cpu" },
-    { package = "steam-training", extra = "cu128" },
+    { package = "steam-training", group = "cpu" },
+    { package = "steam-training", group = "cu128" },
 ]]
 
 [[package]]
@@ -48,7 +48,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6c/4c/bdccd81e9ee225b69c60e7766c9a5b05364f118f4d383713b89a682d772d/aiohttp-3.14.5.tar.gz", hash = "sha256:5558a7f5a05af9ecf744af91e5baefc436f93c9333e656c27ec253f9a6bbe178", size = 8078052, upload-time = "2026-10-11T01:05:12.408Z" }
@@ -185,7 +185,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -230,7 +230,7 @@ version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a1/98/7e457a3b014976887a050561955c0b76e1e7e2d6e27b78ecef2ef80518f2/anyio-4.16.0.tar.gz", hash = "sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb", size = 310971, upload-time = "2026-11-01T11:20:07.282Z" }
 wheels = [
@@ -306,7 +306,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -629,7 +629,7 @@ name = "cryptography"
 version = "50.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bb/ad/5d6702db60b1e40b41ef513b6967ff5848f307d50f8449baf1634f5908f1/cryptography-50.0.1.tar.gz", hash = "sha256:5dd9bda1c12b4162f6ff568eeb5e0ff956c28d14406e875cfe8a63a2d414ff20", size = 880381, upload-time = "2026-08-25T19:45:45.499Z" }
 wheels = [
@@ -679,7 +679,7 @@ name = "cuda-bindings"
 version = "12.9.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "cuda-pathfinder" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/15/d5/572ced1aecc8c8f3e617c3af58d3b1ed5378ed71531c607c960a3e48b516/cuda_bindings-12.9.9-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:88c41afe5be41acb17e57977dd534e335f86d0c96d284d71457168525f6327c0", size = 7063842, upload-time = "2026-09-23T03:20:45.94Z" },
@@ -714,37 +714,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cuda-runtime-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 cufft = [
-    { name = "nvidia-cufft-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufft-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 cufile = [
     { name = "nvidia-cufile-cu12", marker = "sys_platform == 'linux'" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cuda-cupti-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 curand = [
-    { name = "nvidia-curand-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-curand-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cusolver-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cuda-nvrtc-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-nvtx-cu12", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 [[package]]
@@ -777,7 +777,7 @@ name = "docker"
 version = "7.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
     { name = "requests" },
     { name = "urllib3" },
 ]
@@ -1118,7 +1118,7 @@ name = "importlib-metadata"
 version = "10.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "lazy-importer", marker = "python_full_version < '3.15' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "lazy-importer", marker = "python_full_version < '3.15' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
     { name = "zipp" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a6/91/0ef39e4ef4407de276289a3759977ac3a8cc546f59c55d725750eae3f41b/importlib_metadata-10.2.0.tar.gz", hash = "sha256:9413a2029fd9ca5669d27f1386071bbfe3c7ebca0545692ec975088241fe1d79", size = 72457, upload-time = "2026-11-09T19:09:10.915Z" }
@@ -1297,6 +1297,24 @@ wheels = [
 ]
 
 [[package]]
+name = "lightgbm"
+version = "4.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "narwhals" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/63/8e/4db5e29290d7e619c307fdb8dab0a0514090af2ce3ec483050e024ec6126/lightgbm-4.7.0.tar.gz", hash = "sha256:f8e20f682c9aabd000bcf4a7ed8aa6f473c1adfecccae34ec24e823d156f4af0", size = 1792896, upload-time = "2026-07-18T21:00:56.139Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/05/7213965863cba1ed0150ad045bceed6276a1afaaaedbaeff4699ec4f0ccb/lightgbm-4.7.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:dfc1cfe8e760387be1e7ba7a214688be21fdff96e4ed9749188f83e1877c2477", size = 1877851, upload-time = "2026-07-18T21:00:35.225Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/86/f4fe714f2e0bf3941705a20d7f6849dc476276d71236e82ea6b0d6539b86/lightgbm-4.7.0-py3-none-macosx_12_0_arm64.whl", hash = "sha256:129535462686f274df179133643118c5c5c5667167fe6c3a28d955f0b3c8e868", size = 1498914, upload-time = "2026-07-18T21:00:36.549Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/a3/b29580948b92e8c2f84dea70118ac702ff067dc52ec4ffb5d73c953536a5/lightgbm-4.7.0-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d4529acec5c6fefe4768302a529707d0ead90f6a6f42df694b856212e09695b8", size = 3349492, upload-time = "2026-07-18T21:00:37.943Z" },
+    { url = "https://files.pythonhosted.org/packages/15/eb/837ea3b40cc36e22eeebb9785c01e42b2c255d033eea1d2d9ee8e2540e55/lightgbm-4.7.0-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d23e922acd891e77212e4d0fbcee9ba973c96dee479491341d05ba595357ebb7", size = 3476028, upload-time = "2026-07-18T21:00:39.331Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/0b/c5c17d862b12ce292f24cd85d40f2f8f8981668fbdbd43fdc2625eccbc79/lightgbm-4.7.0-py3-none-win_amd64.whl", hash = "sha256:f42d1e5b32b6f170e606d7c689c6165671da98d7bf37f1addec2623efc8740c9", size = 1360833, upload-time = "2026-07-18T21:00:40.865Z" },
+]
+
+[[package]]
 name = "mako"
 version = "1.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1465,7 +1483,7 @@ dependencies = [
     { name = "flask" },
     { name = "flask-cors" },
     { name = "graphene" },
-    { name = "gunicorn", marker = "sys_platform != 'win32' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "gunicorn", marker = "sys_platform != 'win32' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
     { name = "huey" },
     { name = "matplotlib" },
     { name = "mlflow-skinny" },
@@ -1477,7 +1495,7 @@ dependencies = [
     { name = "scipy" },
     { name = "skops" },
     { name = "sqlalchemy" },
-    { name = "waitress", marker = "sys_platform == 'win32' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "waitress", marker = "sys_platform == 'win32' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/02/c9/05391f9d8ec98f4040d1635067f18691c65dc145530b0cb65b77a88a4bb0/mlflow-3.18.0.tar.gz", hash = "sha256:04e912d5b154b417c5930ba47ef3dc2f74738fb3ba93e3d70499955ec8884540", size = 11699010, upload-time = "2026-11-03T23:46:09.257Z" }
 wheels = [
@@ -1965,7 +1983,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.19.0.56"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "nvidia-cublas-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/09/b8/277c51962ee46fa3e5b203ac5f76107c650f781d6891e681e28e6f3e9fe6/nvidia_cudnn_cu12-9.19.0.56-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:08caaf27fe556aca82a3ee3b5aa49a77e7de0cfcb7ff4e5c29da426387a8267e", size = 656910700, upload-time = "2026-02-03T20:40:25.508Z" },
@@ -1978,7 +1996,7 @@ name = "nvidia-cufft-cu12"
 version = "11.3.3.83"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/bc/7771846d3a0272026c416fbb7e5f4c1f146d6d80704534d0b187dd6f4800/nvidia_cufft_cu12-11.3.3.83-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:848ef7224d6305cdb2a4df928759dca7b1201874787083b6e7550dd6765ce69a", size = 193109211, upload-time = "2025-03-07T01:44:56.873Z" },
@@ -2010,9 +2028,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.7.3.90"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "nvidia-cusparse-cu12", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cusparse-cu12" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/32/f7cd6ce8a7690544d084ea21c26e910a97e077c9b7f07bf5de623ee19981/nvidia_cusolver_cu12-11.7.3.90-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:db9ed69dbef9715071232caa9b69c52ac7de3a95773c2db65bdba85916e4e5c0", size = 267229841, upload-time = "2025-03-07T01:46:54.356Z" },
@@ -2025,7 +2043,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.5.8.93"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bc/f7/cd777c4109681367721b00a106f491e0d0d15cfa1fd59672ce580ce42a97/nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9b6c161cb130be1a07a27ea6923df8141f3c295852f4b260c65f18f3e0a091dc", size = 288117129, upload-time = "2025-03-07T01:47:40.407Z" },
@@ -2148,7 +2166,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "python-dateutil" },
-    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/17/ca/24c6bc92aca3d366146358e47f1d374c0e1a50763ef226fc71eff20a63fb/pandas-3.1.1.tar.gz", hash = "sha256:05fed3e3b7c99b226f160e29d7d6cb7ef39638c758cbfe42b3f24ba34f04b859", size = 5936163, upload-time = "2026-11-04T15:08:01.994Z" }
 wheels = [
@@ -2735,7 +2753,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -3199,7 +3217,7 @@ version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/48/bb/3d8757f21e9a53d9035c9eb039a777047139a16bfdbedfc7a58241c3d914/starlette-1.10.0.tar.gz", hash = "sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b", size = 2734356, upload-time = "2026-10-24T15:04:12.342Z" }
 wheels = [
@@ -3212,6 +3230,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
+    { name = "lightgbm" },
     { name = "numpy" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -3219,18 +3238,18 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-cpu = [
-    { name = "torch", version = "2.14.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-14-steam-training-cpu') or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
-    { name = "torch", version = "2.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-14-steam-training-cpu') or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
-]
-cu128 = [
-    { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
-]
 tracking = [
     { name = "mlflow-skinny" },
 ]
 
 [package.dev-dependencies]
+cpu = [
+    { name = "torch", version = "2.14.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'group-14-steam-training-cpu') or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
+    { name = "torch", version = "2.14.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'group-14-steam-training-cpu') or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
+]
+cu128 = [
+    { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" } },
+]
 dev = [
     { name = "mlflow" },
     { name = "moto", extra = ["s3", "ssm"] },
@@ -3242,17 +3261,18 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
+    { name = "lightgbm", specifier = ">=4.7.0" },
     { name = "mlflow-skinny", marker = "extra == 'tracking'", specifier = ">=3.18.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pyiceberg", extras = ["glue", "pyarrow"], specifier = ">=0.10" },
-    { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "steam-training", extra = "cpu" } },
-    { name = "torch", marker = "extra == 'cu128'", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "steam-training", extra = "cu128" } },
 ]
-provides-extras = ["cpu", "cu128", "tracking"]
+provides-extras = ["tracking"]
 
 [package.metadata.requires-dev]
+cpu = [{ name = "torch", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "steam-training", group = "cpu" } }]
+cu128 = [{ name = "torch", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "steam-training", group = "cu128" } }]
 dev = [
     { name = "mlflow", specifier = ">=3.18.0" },
     { name = "moto", extras = ["s3", "sagemaker", "ssm"], specifier = ">=5.0" },
@@ -3317,7 +3337,7 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "cuda-bindings", marker = "sys_platform == 'linux'" },
-    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'extra-14-steam-training-cu128') or (extra == 'extra-14-steam-training-cpu' and extra == 'extra-14-steam-training-cu128')" },
+    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'group-14-steam-training-cu128') or (extra == 'group-14-steam-training-cpu' and extra == 'group-14-steam-training-cu128')" },
     { name = "filelock" },
     { name = "fsspec" },
     { name = "jinja2" },
