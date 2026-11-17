@@ -251,6 +251,8 @@ def run_inference(
                 rerank_model=settings.bedrock_model_id,
                 now=now,
                 excluded=excluded,
+                ranker_id=ranker.ranker_id if ranker and settings.ranker_mode == "on" else None,
+                ranked=ranker_stats.ranked,
             ),
             [popular] if popular else [],
         ),
@@ -431,7 +433,11 @@ def user_recommendations(
     rerank_model: str,
     now: datetime,
     excluded: np.ndarray | None = None,
+    ranker_id: str | None = None,
+    ranked: np.ndarray | None = None,
 ) -> Iterator[UserRecommendations]:
+    """`ranker_id`: the ranker that ordered the written candidates (RANKER_MODE=on), recorded on
+    the users it ranked (`ranked`, per user; None = all)."""
     games = data.games
     for user in range(len(data.users)):
         rows, scores = candidates.of(user)
@@ -455,5 +461,6 @@ def user_recommendations(
             generated_at=now,
             reranked=result is not None,
             rerank_model=rerank_model if result else None,
+            ranker_id=ranker_id if ranked is None or ranked[user] else None,
             liked=liked_games(data, user, excluded),
         )
