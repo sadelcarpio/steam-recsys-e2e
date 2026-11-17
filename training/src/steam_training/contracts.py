@@ -6,6 +6,9 @@ S3 layout (bucket `model-artifacts-<acct>`):
     models/<model_id>/metadata.json                  ModelMetadata
     evaluation/<model_id>/metrics.json               EvaluationReport (promotion job)
     models/champion/..., evaluation/champion/...     copies of the promoted model
+    rankers/<ranker_id>/model.txt                    LightGBM text dump of a ranker (spec 9)
+    rankers/<ranker_id>/metadata.json                RankerMetadata
+    evaluation/rankers/<ranker_id>/ranker.json       RankerReport (`python -m steam_training rank`)
 """
 
 from __future__ import annotations
@@ -199,3 +202,75 @@ class TrackingRecord(_Frozen):
     popularity: RetrievalDiagnostics
     item_embeddings: EmbeddingHealth
     user_embeddings: EmbeddingHealth
+
+
+# ---- ranker (spec 9) ----
+
+
+class RankingMetrics(_Frozen):
+    """Ranking quality of one ordering of the test groups (one held-out game per group).
+    `recall[k]` = share of groups with the game in the top k (precision@k = recall@k / k);
+    groups whose game the retriever missed count as misses."""
+
+    groups: int = Field(ge=0)
+    recall: dict[int, Recall]
+    ndcg: dict[int, Recall]
+
+
+class RankerWindow(_Frozen):
+    """Time split of a ranker: its candidates come from a retriever trained before
+    `retriever_cutoff` (T1); groups in [T1, t2) train it (the last share by time stops early),
+    groups in [t2, end] test it."""
+
+    retriever_cutoff: datetime
+    t2: datetime
+    end: datetime
+    train_groups: int = Field(ge=0)
+    early_stopping_groups: int = Field(ge=0)
+    test_groups: int = Field(ge=0)
+
+
+class RankerComparison(_Frozen):
+    """Retrieval order vs ranker order on the same test groups."""
+
+    retrieval: RankingMetrics
+    ranker: RankingMetrics
+
+
+class RankerMetadata(_Frozen):
+    ranker_id: str
+    created_at: datetime
+    # the retriever whose candidates trained it (candidates and windows depend on it; no
+    # feature does)
+    retriever_id: str
+    feature_schema_version: int
+    feature_names: list[str]
+    candidates: int = Field(ge=1)
+    top_k: int = Field(ge=1)
+    history_length: int = Field(ge=1)
+    window: RankerWindow
+    snapshots: dict[str, int | None]
+    hyperparameters: dict[str, object]
+    best_iteration: int = Field(ge=0)
+    test: RankerComparison
+
+
+class RankerReport(_Frozen):
+    """evaluation/rankers/<ranker_id>/ranker.json: the ranker on its test window."""
+
+    ranker_id: str
+    retriever_id: str
+    evaluated_at: datetime
+    top_k: int
+    window: RankerWindow
+    # share of test groups whose game is among the retriever's candidates (the ceiling)
+    candidate_recall: Recall
+    test: RankerComparison
+    # the same, split by the length of the user's history (short: < history_length games)
+    by_history: dict[str, RankerComparison]
+    # share of the total split gain per feature
+    importances: dict[str, float]
+    # recall@top_k change when a feature family is left out (retrained without it)
+    ablation: dict[str, float]
+    gate_passed: bool
+    reason: str

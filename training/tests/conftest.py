@@ -3,7 +3,7 @@ user likes one cluster (positive reviews inside it, negative reviews outside).""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pyarrow as pa
@@ -32,6 +32,11 @@ def _no_ssm(monkeypatch) -> None:
 
 def game_cluster(game_idx: int) -> int:
     return (game_idx - FIRST_GAME) // GAMES_PER_CLUSTER
+
+
+def game_id(game_idx):
+    """Steam appid of a synthetic game_idx."""
+    return game_idx * 10 + 1000
 
 
 def _item_row(game_idx: int, ratio: float) -> dict:
@@ -105,17 +110,56 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
             ]
         ),
     )
+    # spec 9: reviews per game and ISO week (Monday), as the dbt mart counts them
+    weekly: dict[tuple[int, date], list[int]] = {}
+    for row in rows:
+        monday = row["timestamp"].date() - timedelta(days=row["timestamp"].weekday())
+        counts = weekly.setdefault((row["game_idx"], monday), [0, 0])
+        counts[0] += int(row["is_positive"])
+        counts[1] += 1
+    popularity = pa.Table.from_pylist(
+        [
+            {
+                "game_id": game_id(g),
+                "game_idx": g,
+                "week_start": week,
+                "positives": pos,
+                "reviews": total,
+            }
+            for (g, week), (pos, total) in sorted(weekly.items())
+        ]
+    )
     lookup = lambda n: pa.table({"id": pa.array(range(FIRST_GAME, FIRST_GAME + n), pa.int64())})  # noqa: E731
     return {
         "interactions": pa.Table.from_pylist(rows),
         "game_features": pa.Table.from_pylist(game_features),
-        "lkp_games": pa.table({"game_idx": pa.array(games, pa.int64())}),
+        "lkp_games": pa.table(
+            {
+                "game_idx": pa.array(games, pa.int64()),
+                "game_id": pa.array(game_id(games), pa.int64()),
+            }
+        ),
+        # spec 9 ranker: price + release date (the last game has neither)
+        "game_details": pa.table(
+            {
+                "game_id": pa.array(game_id(games), pa.int64()),
+                "game_price": pa.array(
+                    [float(g % 4) * 10 for g in games[:-1]] + [None], pa.float64()
+                ),
+                "game_release_date": pa.array(
+                    [f"Mar {1 + int(g) % 28}, {2015 + int(g) % 8}" for g in games[:-1]]
+                    + ["Coming soon"],
+                    pa.string(),
+                ),
+            }
+        ),
         "lkp_developers": lookup(7),
         "lkp_publishers": lookup(5),
         "lkp_genres": lookup(N_CLUSTERS),
         "lkp_categories": lookup(5),
         "lkp_tags": lookup(6),
         "game_tags": game_tags,
+        "game_popularity_weekly": popularity,
     }
 
 

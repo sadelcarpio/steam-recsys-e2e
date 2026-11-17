@@ -6,6 +6,7 @@ two-tower and ranking models should use (spec 17). Local only; nothing here depl
 | Notebook | What |
 |---|---|
 | `01_feature_questions` | Spec 17 questions, each tested against a null model and ending in a verdict; findings table at the end |
+| `02_ranking_features` | Spec 9 ranker feature screening: a proxy retriever's top 100 per positive review after the champion's cutoff, within-group AUC per feature, LightGBM `lambdarank` vs retrieval order, family ablations |
 
 ## Get the data
 
@@ -54,6 +55,12 @@ reviews = load_reviews(fraction=0.05)  # 5% of users, every column but the revie
 `signals.py` holds the analysis building blocks: per-user label concentration, leave-one-out
 profile fit, lag similarity of a history, null models (`shuffle_games`, `shuffle_order`), binned
 means, AUC / Spearman / Gini. `nlp.py` holds the text models with their fallbacks.
+
+`ranking.py` holds the ranking screen (`02`): game arrays, popularity as of t
+(`WeeklyPopularity`), user sequences, query groups (`build_groups`, warm rows only), the proxy
+retriever (SVD embeddings + recent popularity), `group_features` (only reviews before t) and
+`ranking_metrics` / `group_auc`. The proxy is not the champion's towers: read the order of the
+feature families, not the absolute gains.
 
 ## Develop
 

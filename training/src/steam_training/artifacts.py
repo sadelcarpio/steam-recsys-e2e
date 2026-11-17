@@ -10,7 +10,13 @@ import torch
 from botocore.exceptions import ClientError
 
 from steam_training.config import CHAMPION
-from steam_training.contracts import EvaluationReport, ModelMetadata, TrackingRecord
+from steam_training.contracts import (
+    EvaluationReport,
+    ModelMetadata,
+    RankerMetadata,
+    RankerReport,
+    TrackingRecord,
+)
 from steam_training.export import encode_user_tower
 from steam_training.model import TwoTowerModel
 
@@ -34,6 +40,19 @@ def model_prefix(model_id: str) -> str:
 
 def metrics_key(model_id: str) -> str:
     return f"evaluation/{model_id}/{METRICS}"
+
+
+# rankers (spec 9): rankers/<ranker_id>/{model.txt, metadata.json}
+RANKER_MODEL = "model.txt"
+RANKER_REPORT = "ranker.json"
+
+
+def ranker_prefix(ranker_id: str) -> str:
+    return f"rankers/{ranker_id}/"
+
+
+def ranker_report_key(ranker_id: str) -> str:
+    return f"evaluation/rankers/{ranker_id}/{RANKER_REPORT}"
 
 
 def checkpoint_key(model_id: str) -> str:
@@ -139,6 +158,39 @@ class ArtifactStore:
 
     def checkpoints(self, model_id: str) -> S3Checkpoints:
         return S3Checkpoints(self, model_id)
+
+    # ---- rankers (spec 9) ----
+
+    def save_ranker(self, model_text: str, metadata: RankerMetadata) -> None:
+        prefix = ranker_prefix(metadata.ranker_id)
+        self._put(prefix + RANKER_MODEL, model_text.encode(), "text/plain")
+        # metadata last: its presence marks a complete ranker
+        self._put(
+            prefix + METADATA, metadata.model_dump_json(indent=2).encode(), "application/json"
+        )
+        log.info("saved ranker to s3://%s/%s", self.bucket, prefix)
+
+    def load_ranker_metadata(self, ranker_id: str) -> RankerMetadata | None:
+        body = self._get(ranker_prefix(ranker_id) + METADATA)
+        return RankerMetadata.model_validate_json(body) if body is not None else None
+
+    def load_ranker(self, ranker_id: str) -> tuple[str, RankerMetadata]:
+        """(LightGBM model text, metadata) of a saved ranker."""
+        metadata = self.load_ranker_metadata(ranker_id)
+        body = self._get(ranker_prefix(ranker_id) + RANKER_MODEL)
+        if metadata is None or body is None:
+            raise FileNotFoundError(f"no ranker at s3://{self.bucket}/{ranker_prefix(ranker_id)}")
+        return body.decode(), metadata
+
+    def write_ranker_report(self, report: RankerReport) -> str:
+        key = ranker_report_key(report.ranker_id)
+        self._put(key, report.model_dump_json(indent=2).encode(), "application/json")
+        log.info("wrote s3://%s/%s", self.bucket, key)
+        return key
+
+    def read_ranker_report(self, ranker_id: str) -> RankerReport | None:
+        body = self._get(ranker_report_key(ranker_id))
+        return RankerReport.model_validate_json(body) if body is not None else None
 
     # ---- evaluation + promotion ----
 

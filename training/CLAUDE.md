@@ -1,6 +1,6 @@
 # training
 
-Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
+Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human docs: `README.md`.
 
 ## Layout
 
@@ -33,9 +33,15 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
     `embeddings/`, `epoch/`, `curves/`)
   - `export.py`: the numpy user tower (`user_tower.npz`, `USER_TOWER_ARRAYS`), which the
     serving Lambda runs without torch
-  - `__main__.py`: SageMaker entry (`python -m steam_training {train,promote}`), plus
+  - `__main__.py`: SageMaker entry (`python -m steam_training {train,promote,rank}`), plus
     `export --model-id` (local backfill of `user_tower.npz`), `track --model-id [--alias]`
     (replay `tracking.json` into MLflow, champion / challenger aliases)
+  - `ranker/` (spec 9): `features.py` (`FEATURES` / `FAMILIES`, `FEATURE_SCHEMA_VERSION`,
+    `GameTable`, `PopularityTable` / `PopularityCounter`, `compute_features`, pure numpy),
+    `data.py` (`load_ranker_data`: groups after a retriever's cutoff via `load_training_data`,
+    per-user cap, one extra pass for weekly popularity + later positives, `game_details`),
+    `model.py` (`Groups`, `build_groups`, `fit_lambdarank`, `target_positions`,
+    `ranking_metrics`), `pipeline.py` (`run_ranking`: `python -m steam_training rank`)
   - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary);
     `METRIC_DEFINITIONS` (log regexes -> CloudWatch curves in the SageMaker console)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
@@ -110,6 +116,15 @@ Spec: `specs/3-training-pipeline.md`. Human docs: `README.md`.
   `Reviews.histories`) at the model's `history_length`. Promotion loads the longer history of
   candidate and champion; `evaluation.model_scores` feeds each model its own prefix (most
   recent first, so the prefix is that model's history).
+- Ranker (spec 9): every ranker feature at time t uses only the user's liked games before t
+  (at most `RANKER_HISTORY_LENGTH`, what an online request carries) and game counts of the weeks
+  before t's week; no feature depends on a retriever version (retrieval enters as rank /
+  percentile / normalized gap, never the raw score or tower embeddings). Change a feature's
+  definition → bump `FEATURE_SCHEMA_VERSION`. Ranker settings live in `RankerSettings` (never
+  in `TrainingSettings`, so they don't touch retriever fingerprints or metadata). A ranker's
+  groups come after its retriever's cutoff (the retriever never saw their labels). Naive UTC
+  datetimes go through `ranker.data.epoch_seconds` (never `datetime.timestamp()`, which applies
+  the local timezone).
 - `DATA_CACHE_DIR` (local runs): `iceberg_batches` reads through `data.CachingFileIO`, which
   copies each remote data / delete file once (`<dir>/<scheme>/<bucket>/<key>`, `.part` +
   rename) and serves it from disk. Safe because Iceberg files are immutable. It relies on

@@ -227,6 +227,68 @@ NOT_FINGERPRINTED = {
 }
 
 
+class RankerSettings(_SsmSettings):
+    """Settings of `python -m steam_training rank` (spec 9): train a ranker on a retriever's
+    candidates after that retriever's cutoff. Separate from `TrainingSettings`, so ranker
+    settings never change a retriever's checkpoint fingerprint or metadata."""
+
+    model_artifacts_bucket: str = Field(pattern=BUCKET_PATTERN)
+    # the ranker's id (rankers/<ranker_id>/): the commit sha in CD, local-<sha>-<suffix> locally
+    ranker_id: str = Field(pattern=MODEL_ID_PATTERN)
+    # the retriever whose candidates train the ranker (`champion` = the current champion)
+    retriever_id: str = Field(CHAMPION, pattern=MODEL_ID_PATTERN)
+    glue_database: str = "steam_marts"
+    aws_region: str = "us-east-1"
+    data_cache_dir: str | None = None
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    eval_batch_size: int = Field(4096, ge=1)
+    seed: int = 42
+
+    # ---- groups ----
+    # candidates per group (RETRIEVAL_CANDIDATES at inference) and the ranker's list length
+    ranker_candidates: int = Field(100, ge=2)
+    ranker_top_k: int = Field(20, ge=1)
+    # liked games the user-side features read (MAX_LIKED_GAMES online)
+    ranker_history_length: int = Field(20, ge=1, le=512)
+    # share of the window's groups (by time) before T2: train; the rest: test
+    ranker_train_fraction: float = Field(0.7, gt=0, lt=1)
+    # last share (by time) of the training groups used for early stopping
+    ranker_early_stopping_fraction: float = Field(0.2, gt=0, lt=1)
+    ranker_max_groups_per_user: int = Field(20, ge=1)
+    # positive rows of the window read (uniform sample) before the per-user cap
+    ranker_max_rows: int = Field(2_000_000, ge=1)
+    ranker_max_train_groups: int = Field(300_000, ge=1)
+    ranker_max_test_groups: int = Field(100_000, ge=1)
+    ranker_min_groups: int = Field(5000, ge=1)
+    # weekly game popularity: the `game_popularity_weekly` mart, or the same counts computed
+    # from `interactions` (marts deployed before the mart existed)
+    ranker_popularity_source: Literal["mart", "interactions"] = "mart"
+
+    # ---- model (LightGBM lambdarank) ----
+    ranker_num_leaves: int = Field(31, ge=2)
+    ranker_learning_rate: float = Field(0.05, gt=0)
+    ranker_max_rounds: int = Field(500, ge=1)
+    ranker_early_stopping_rounds: int = Field(30, ge=1)
+    ranker_min_data_in_leaf: int = Field(100, ge=1)
+    ranker_feature_fraction: float = Field(0.8, gt=0, le=1)
+    num_threads: int = Field(0, ge=0)  # 0 = LightGBM default
+
+    # ---- report / gate ----
+    # retrain without each feature family and report the recall@top_k change
+    ranker_ablation: bool = True
+    # the ranker must beat retrieval order's recall@top_k by this much (absolute)
+    ranker_min_gain: float = Field(0.005, ge=0)
+    log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _check(self) -> RankerSettings:
+        if self.ranker_id == CHAMPION:
+            raise ValueError(f"ranker_id '{CHAMPION}' is reserved")
+        if self.ranker_top_k > self.ranker_candidates:
+            raise ValueError("RANKER_TOP_K must be <= RANKER_CANDIDATES")
+        return self
+
+
 class LaunchSettings(_SsmSettings):
     """Settings of the CD launcher that starts SageMaker jobs from GitHub Actions."""
 

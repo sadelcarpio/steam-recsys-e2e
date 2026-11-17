@@ -401,6 +401,49 @@ through its stored metrics. Every job runs the image of the model's own commit
 (`training:<sha>`), unless `image_tag` says otherwise (a model trained locally has no image of
 its own).
 
+## Ranker (spec 9)
+
+The second stage re-orders the retriever's top 100 and keeps 20. It is a LightGBM
+`lambdarank` model over hand-built features (`steam_training/ranker/features.py`): popularity as
+of t (lifetime, 30 and 90 days), positive ratio, price, game age, tag affinity with the liked
+games, developer / publisher shares, genre / category overlap, and the retrieval rank
+(positions only, never the raw score). Every user-side feature reads only the
+last 20 liked games, so the same model can serve the batch and the online paths, and no feature
+depends on a retriever version.
+
+Train one on the champion's candidates (or any retriever, `--retriever-id`):
+
+```bash
+MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> RANKER_ID=local-<sha>-rank1 \
+DATA_CACHE_DIR=~/.cache/steam-recsys/iceberg \
+  uv run python -m steam_training rank --retriever-id champion
+```
+
+- **Groups:** one per positive review after the retriever's cutoff T1 whose user has a liked
+  game before it, at most `RANKER_MAX_GROUPS_PER_USER` per user. Candidates: the retriever's
+  top `RANKER_CANDIDATES`, games reviewed before t excluded, games the user likes later
+  dropped. T2 splits the groups by time (`RANKER_TRAIN_FRACTION`): train before, test after.
+  The last `RANKER_EARLY_STOPPING_FRACTION` of the training groups stops boosting early.
+- **Report** (`evaluation/rankers/<id>/ranker.json`): recall@{10, `RANKER_TOP_K`} and NDCG of
+  retrieval order vs ranker order on the test groups, the candidates' recall (the ceiling), a
+  split by history size, gain importances and, with `RANKER_ABLATION`, the recall change when
+  each feature family is left out.
+- **Gate:** recall@`RANKER_TOP_K` must beat retrieval order by `RANKER_MIN_GAIN`. The ranker is
+  saved either way (`rankers/<id>/model.txt` + `metadata.json`), and the report says whether
+  it passed. Pair promotion and serving come in later phases (spec 9, "Delivery sequence").
+
+```
+  rankers/<id>/model.txt                      LightGBM text dump
+  rankers/<id>/metadata.json                  RankerMetadata: retriever, window (T1, T2), features, snapshots
+  evaluation/rankers/<id>/ranker.json         RankerReport
+```
+
+Popularity comes from the `game_popularity_weekly` mart (reviews per game and ISO week; a
+lookup at t reads the weeks before t's week). `RANKER_POPULARITY_SOURCE=interactions` counts the
+same weeks from `interactions` instead (marts deployed before the mart existed; a test checks
+both agree). Prices and release dates come from `game_details` (the price at the last scrape,
+not as of t).
+
 ## Configuration
 
 Pydantic settings (`steam_training.config`). Precedence: env vars > SSM `/training/<ENV_VAR>`

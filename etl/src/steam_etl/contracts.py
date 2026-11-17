@@ -111,6 +111,25 @@ class InteractionRow(_GameFeatures, _Row):
     is_positive: bool
 
 
+class GamePopularityWeeklyRow(_Row):
+    """game_popularity_weekly (spec 9): reviews of a game written in one ISO week (Monday UTC).
+    Point in time: consumers at time t read only weeks before t's week."""
+
+    game_id: int
+    game_idx: Id
+    week_start: date
+    positives: Annotated[int, Field(ge=0)]
+    reviews: Annotated[int, Field(ge=1)]
+
+    @model_validator(mode="after")
+    def _counts(self) -> GamePopularityWeeklyRow:
+        if self.week_start.weekday() != 0:
+            raise ValueError("week_start must be a Monday")
+        if self.positives > self.reviews:
+            raise ValueError("positives must be <= reviews")
+        return self
+
+
 class UserIndexRow(_Row):
     """user_index (spec 13): demo rank of a user, 1 = most reviews. Rebuilt every run, so
     `user_idx` is not stable across runs: never a join key."""
@@ -139,5 +158,6 @@ MART_CONTRACTS: dict[str, type[_Row]] = {
     "game_details": GameDetailsRow,
     "game_tags": GameTagsRow,
     "interactions": InteractionRow,
+    "game_popularity_weekly": GamePopularityWeeklyRow,
     "user_index": UserIndexRow,
 }
