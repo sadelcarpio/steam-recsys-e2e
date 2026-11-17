@@ -1,4 +1,4 @@
-## Spec 9: Ranking model for existing users (batch path)
+## Spec 9: Ranking model (batch and online paths)
 
 ### Problem
 
@@ -11,17 +11,22 @@ the 2026-05-01 cutoff) it reaches, on warm rows, recall@30 ≈ 17%, recall@50 �
 recall@100 ≈ 30%: the right game is in the top 100 almost twice as often as in the top 30,
 and the final list is shorter still (20).
 
-For reviewers with a history (the batch path only), the pipeline becomes two stages: retrieval
-returns ~100 candidates, and a ranker re-orders them and keeps the top 20, using what the two
-towers cannot use:
+The pipeline becomes two stages: retrieval returns ~100 candidates, and a ranker re-orders
+them and keeps the top 20. **One ranker serves both paths**: the batch path (reviewers with a
+history, precomputed into DynamoDB) and the online path (`POST /recommendations`, an anonymous
+visitor's liked games, the app's main use case). It adds what the two towers cannot express:
 
-- the history beyond the last 20 positives (heavy reviewers have hundreds);
-- negative reviews as a user signal (the retriever only uses them as training hard negatives;
-  the user tower never sees them);
-- explicit user × candidate cross features (developer / publisher loyalty, price, release year
-  and popularity fit), which a dot product of two independent towers can only approximate.
+- explicit user × candidate cross features (tag affinity, developer / publisher loyalty, price,
+  release date and popularity fit), which a dot product of two independent towers can only
+  approximate;
+- popularity as of now (the last 30 / 90 days): the towers can't learn it (the logQ correction
+  removes popularity on purpose), and Steam popularity moves fast.
 
-The ceiling is recall@100 of the retriever. The online path is unchanged.
+To run online, every user-side feature is computed from what a request carries: at most 20 liked
+games (`MAX_LIKED_GAMES`), most recent first. Batch users are treated the same way (their last 20
+positive reviews), so one model, one gate and one lifecycle cover both paths. The ceiling is
+recall@100 of the retriever. Visitors with no liked game are a cold-start problem (see "Cold
+start"), not a ranking one.
 
 ### Data: time split (no leakage)
 
@@ -56,51 +61,58 @@ ranker             │  train (+ early-stopping slice)  │ test │
 
 ### Features (u at time t, candidate c; all as of strictly before t)
 
-From existing marts only (`interactions`, `game_features`, `game_tags`, `game_details`); no ETL
-change. **No feature depends on a retriever version** (no raw score, no tower embeddings): the
-retrieval stage enters only through scale-free positions, so a retriever can be retrained and
-promoted without retraining the ranker (see "MLOps").
+H = u's last 20 positive reviews before t (most recent first; online: the request's liked games,
+in the order given). Every user-side feature is a function of H only, so the same code runs in
+training, batch inference and the serving Lambda. **No feature depends on a retriever version**
+(no raw score, no tower embeddings): retrieval enters only through scale-free positions, so a
+retriever can be retrained and promoted without retraining the ranker (see "MLOps").
 
 | Group      | Features                                                                                   |
 |------------|--------------------------------------------------------------------------------------------|
-| Retrieval  | rank, score percentile in the group, score − the group's top score divided by the group's score spread (scale-free) |
-| Candidate  | log positive reviews as of t (lifetime, last 30 days, last 90 days), reviews ratio, is_free, price, game age at t (days since release) |
-| Affinity   | cosine(u's tag profile, c's weighted tags), over the full history and over the tower's last 20; share of u's positives with c's developer / publisher; genre / category overlap |
-| History    | max and mean tag cosine of c to each of u's positives: full history and the older part beyond the tower's last 20 (separately, so the ranker can tell what the tower already saw) |
-| Negatives  | tag cosine of c to u's negatively reviewed games (an interest signal, not avoidance: see below) |
-| Fit        | c popularity / mean popularity of u's positives; c release date − median of u's positives; c price − median of u's positives |
-| User       | positive and negative counts, positive rate, days since last review, history longer than the tower's `history_length` (only useful through splits with candidate features) |
+| Retrieval  | rank, score percentile in the group, (score − the group's top score) / the group's score spread |
+| Candidate  | log positive reviews as of t (lifetime, last 30 days, last 90 days), smoothed positive ratio as of t, is_free, log price, game age at t (days since release) |
+| Affinity   | cosine(tag profile of H, c's weighted tags); share of H with c's developer / publisher; genre / category overlap of c with H |
+| Similarity | max and mean tag cosine of c to each game of H                                              |
+| Fit        | c log popularity − mean of H's; c release date − median of H's (years); c log price − median of H's; share of free games in H |
+| User       | \|H\| (only useful through splits with candidate features)                                 |
+| Language   | share of c's reviews in u's language (batch: u's dominant review language; online: the browser locale). Needs `language` in `interactions` (ETL follow-up below) |
+
+Batch-only signals the EDA measured are left out to keep one model for both paths: similarity to
+negatively reviewed games (−0.003 recall@20 when dropped), history older than the last 20
+(−0.001) and user activity features (−0.001). A batch-only extension can add them back as a
+second model if a gate shows it is worth one.
 
 Developer / publisher / genre enter as user × candidate interactions (shares, overlaps), not as
 embeddings: a tree splits one dimension at a time and an embedding's axes mean nothing (and move
 on every retrain); the retriever already consumes those embeddings, and what the ranker adds is
-"this user keeps reviewing this developer". Learned embeddings in the ranker are the neural
+"this user keeps liking this developer". Learned embeddings in the ranker are the neural
 follow-up's business (see "Model"), through a pinned embedding artifact, never borrowed from the
 current retriever.
+
+**Popularity is a mart, defined once.** `steam_marts.game_popularity_weekly` (game_id, game_idx,
+week, positives, reviews), incremental, point-in-time by construction. Consumers: ranker training
+(as-of lookups: the weeks strictly before t's week), batch inference (the latest weeks: ranker
+features, the `__popular__` list, spec 15's popularity), and the online export (the current
+game-side table). Until it ships, training computes the same aggregation from `interactions`
+(same definition, `ranker.popularity`), so switching is a source change.
 
 Evidence (`notebooks/02_ranking_features`, public dataset, a proxy retriever since the towers
 don't run there; family ranking, not absolute gains):
 
 - Recent popularity as of t is the strongest single feature (30-day count: within-group AUC
-  0.67, top gain); lifetime popularity 0.57. The towers can't learn it (logQ correction removes
-  popularity on purpose), so it belongs to the ranker. Computed from `interactions`, no ETL change.
-- Similarity to negatively reviewed games *raises* the odds (tag cosine AUC 0.61), as in spec 17
-  Q7: negative reviews sit in the user's taste region. The ranker learns the sign; the family is
-  not a "dislike" filter. Embedding similarity and developer share of negatives add nothing.
+  0.67, top gain); lifetime popularity 0.57.
 - Tag profile cosine is the main affinity feature (AUC 0.65; weaker with the champion, whose
-  user tower already reads a tag profile). History beyond the last 20 has some signal (AUC 0.56)
-  but only for the ~8% of groups that have it. Users with more than 20 positives are where
-  retrieval is worst and the ranker gains most.
-- Most of the ranker's value is in retriever-independent families (drop one, Δ recall@20:
-  candidate −0.0066, language −0.0053, negatives −0.0029; embedding history −0.0013; the raw score
-  ~2% of gain): decoupling costs an estimated 0.001–0.003 recall@20, to re-check on the champion.
-- Game age at t beats release year; developer loyalty is weak per candidate (few candidates share
-  a developer with the history).
+  user tower already reads a tag profile).
+- Language is the second most useful family (AUC 0.61, −0.005 recall@20 when dropped).
+- Most of the ranker's value is in retriever-independent families; decoupling from the raw score
+  costs an estimated 0.001–0.003 recall@20, to re-check on the champion.
+- On the proxy, groups with ≤ 20 positives (the online case) went from 0.098 to 0.137 recall@20.
+- Game age at t beats release year; developer loyalty is weak per candidate.
 
-Profiles are built from u's reviews before t. The same code computes them at training and at
-inference (one `ranker.features` module), so there is no train / serve skew. The tower's history
-length is read from the retriever's `ModelConfig`, never hard-coded. `FEATURE_SCHEMA_VERSION`
-(in `RankerMetadata`) changes whenever a feature's definition does.
+The same code computes the features at training and at inference (`steam_training.ranker.
+features`, pure numpy, imported by inference; the serving Lambda has a numpy port with a parity
+test). `FEATURE_SCHEMA_VERSION` (in `RankerMetadata`) changes whenever a feature's definition
+does. `game_price` is the price at scrape time (not as of t) in training.
 
 ### Model
 
@@ -150,20 +162,50 @@ The follow-up would read learned item / attribute embeddings from a pinned artif
 
 ### Inference
 
+Batch (`steam_inference`):
+
 - `RETRIEVAL_CANDIDATES` (default 100) retrieved with the champion's tower (history length and
   encoder from its metadata); when a champion ranker exists, `RANKER_MODE` is `on` and the
   serving pair is valid (see "MLOps"), the ranker re-orders them and the top `RANKER_TOP_K`
   (default 20) is kept, else the retrieval top `TOP_K` (30) as today. `EXPLAIN_TOP_N` must be ≤
   `RANKER_TOP_K`.
-- The ranker's profiles reuse the reviews inference already derives the tower histories from
-  (full history, positives and negatives), for the users scored in the run (the 200k most
-  active, spec 14).
+- H = the user's last 20 positive reviews (inference already derives them for the tower), for
+  the users scored in the run (the 200k most active, spec 14); popularity = the latest complete
+  weeks of the mart.
 - The LLM rerank / explanations run on the ranker's top 20, unchanged (spec 7 can then default to
   explain-only).
-- Only users with at least `RANKER_MIN_REVIEWS` (default 1) reviews are ranked; the popularity
-  fallback and the DynamoDB item shape do not change. A ranker failure on a batch falls back to
-  retrieval order for that batch (logged, the run goes on). The summary logs ranker time, users
-  ranked and overlap@20 between retrieval and ranker order.
+- A ranker failure on a batch falls back to retrieval order for that batch (logged, the run goes
+  on). The summary logs ranker time, users ranked and overlap@20 between retrieval and ranker
+  order. The popularity fallback and the DynamoDB item shape do not change.
+- Every run also exports the game-side feature table next to the online catalog
+  (`serving/online/game_features.npz`: per catalog game the candidate features as of the run,
+  tags, developer / publisher / genre / category ids), named in the online manifest.
+
+Online (`serving`, `POST /recommendations`):
+
+- Retrieval top 100 (as today, exact top K over the online catalog), then the ranker: user
+  features from the request's liked games, game features from `game_features.npz` (loaded at
+  cold start like the catalog), language from `Accept-Language`, then the top 20.
+- The ranker runs as a **numpy tree evaluator** (`rankers/<id>/ranker.npz`: per tree the split
+  feature, threshold, children, leaf values, exported from the LightGBM dump), so the Lambda
+  needs no LightGBM. Parity with LightGBM's predictions is tested (as `test_online_parity.py`
+  does for the user tower). Budget: 100 candidates × a few hundred trees, a few ms.
+- Response `source` stays `online`; the ranker id is logged. No ranker (or `RANKER_MODE` not
+  `on`, or a pair mismatch): retrieval order, as today.
+
+### Cold start (no liked game)
+
+Not a ranking problem: there is no H. Evidence (2026-11-12, warm vs cold rows after the
+champion's cutoff): on empty histories, popularity of the last 2–26 weeks reaches recall@50
+0.30–0.32 vs 0.17 for the champion's constant cold query and 0.175 for all-time popularity.
+
+- `/popular` and the `__popular__` fallback stay recent popularity (`POPULAR_WINDOW_DAYS`),
+  read from the popularity mart once it ships.
+- Next (with the language ETL): one popular list per language (`__popular__#<language>`),
+  chosen from `Accept-Language`, falling back to the global list. Language is the cheapest
+  personal signal an anonymous visitor carries.
+- The app asks for liked games early (the frontend already does): from one liked game on, the
+  visitor is on the ranked path.
 
 ### MLOps: two models, one evaluated pair
 
@@ -176,16 +218,19 @@ evaluation at promotion, not by retraining.
   written (bucket versioning is on). `models/champion/` and `rankers/champion/` hold the current
   copies; `evaluation/champion/pair.json` names the serving pair (retriever id, ranker id or none,
   the window and metrics it was evaluated on). Inference refuses a champion ranker that is not
-  the one in `pair.json` (writes retrieval order and logs why). MLflow (spec 18): registered
+  the one in `pair.json` (writes retrieval order and logs why); the online manifest names the
+  pair too, and serving applies the same rule. MLflow (spec 18): registered
   models `steam-two-tower` and `steam-ranker`, each with `champion` / `challenger` aliases; the
   ranker run is tagged with the retriever its candidates came from.
 - **Lifecycles.**
   - New retriever → retriever gate (as today: warm recall@50 vs champion), plus warm
-    recall@100 >= champion (the ranker's ceiling never drops), then a **compatibility check**: the
-    champion ranker re-orders the new retriever's candidates on a window both have not trained
-    on (no retraining). If the ranker still beats retrieval order by `RANKER_MIN_GAIN`, the new
-    pair is promoted with it; if not, the retriever is promoted alone (`pair.json` with no ranker)
-    and a ranker retrain is due.
+    recall@100 >= champion (the ranker's ceiling never drops). Then two candidate pairs are
+    evaluated on a window none of the models saw: (new retriever, champion ranker) and (new
+    retriever, a ranker retrained on the new retriever's candidates; minutes on CPU). The better
+    pair is promoted if it passes the final-list gate against the champion pair; otherwise
+    nothing is promoted. A retriever that wins at retrieval but loses as a pair is not served.
+    The first pair's result says whether the champion ranker generalises to the new candidates
+    (reported, not a branch).
   - New ranker (features, params, a newer window) → `rank` against the champion retriever →
     ranker gate → final-list gate vs the champion pair.
   - Both at once (a full retrain) is the same two steps in order.
@@ -195,7 +240,8 @@ evaluation at promotion, not by retraining.
   cutoffs). With one held-out game per group, precision@20 = recall@20 / 20, so the recall gate is
   also the precision gate. The report adds top-20 churn vs the champion (share of users' lists
   that change).
-- **Promote / rollback.** Promotion copies the changed model(s) into their `champion/` folders,
+- **Promote / rollback.** Promotion copies the changed model(s) into their `champion/` folders
+  (the ranker with its `ranker.npz`),
   writes `pair.json`, and appends `evaluation/champion/history.jsonl` (one line per promotion:
   pair, metrics, actor, time). Rollback = `training promote ROLLBACK=1` (restores the previous
   line's pair; either model alone or both), then an inference run (DynamoDB keeps the current
@@ -213,22 +259,53 @@ evaluation at promotion, not by retraining.
   ranker serves. Rolling windows (each cycle moves T1 forward: retriever ≤ T1, ranker T1..now)
   are the follow-up.
 - **Orchestration.** Two pipelines, not one job: retriever training (GPU) → retriever gate →
-  compatibility check; ranker training (CPU) → ranker gate → final-list gate. A training Step
-  Function chaining them (with a manual approval before the champion changes, as for deploys) is
-  a follow-up; until then both are manual workflows (`training-cd.yml`, a new
-  `training-rank.yml`, `training-promote.yml`).
+  pair evaluation; ranker training (CPU) → ranker gate → final-list gate. Manual workflows first
+  (`training-cd.yml`, a new `training-rank.yml`, `training-promote.yml`), then a training Step
+  Function (see "Delivery sequence").
+- **Without a live MLflow server.** S3 is the registry: immutable `models/<id>/` and
+  `rankers/<id>/`, the `champion/` copies, `pair.json`, `history.jsonl` and every report under
+  `evaluation/`. MLflow stays optional: runs are replayed into it (`track`), and promotion sets
+  the `champion` / `challenger` aliases when `MLFLOW_TRACKING_URI` is set.
+
+### Delivery sequence
+
+Each phase ships on its own (CI, docs, deploy), in this order:
+
+1. **Ranker experiments** (`training/src/steam_training/ranker/`): groups from a retriever's
+   candidates after its cutoff, the feature module, LightGBM `lambdarank`, the report (retrieval
+   vs ranker order, drop-one-family deltas, history-length split), artifacts under
+   `rankers/<id>/`, `python -m steam_training rank --retriever-id <id>` locally and as a CPU job.
+   Popularity computed from `interactions`.
+2. **ETL: popularity mart** (`game_popularity_weekly`); training, inference's `__popular__` and
+   spec 15 read it.
+3. **Pair evaluation and promotion** (no live MLflow): ranker gate, pair evaluation of a new
+   retriever (both rankers), final-list gate, `pair.json`, `history.jsonl`, `ROLLBACK=1`,
+   `training-rank.yml` and `training-promote.yml` changes, the numpy `ranker.npz` export.
+4. **Batch inference**: the ranker in `RANKER_MODE=shadow`, then `on`; the delayed-label check.
+5. **Online serving**: `game_features.npz` export, the numpy tree evaluator in the Lambda,
+   parity test; deploy serving before promoting a ranker that serving must read.
+6. **Language**: `language` in `interactions` (ETL), the language feature (a
+   `FEATURE_SCHEMA_VERSION` bump and a ranker retrain), per-language popular lists.
+7. **Training orchestration**: a training Step Function (retriever training job → ranker job →
+   pair evaluation → manual approval → promote → inference run), started by hand or by
+   EventBridge.
+8. **Continuous training** (its own spec): a monthly cycle with rolling windows (retriever on
+   data before N − 4 weeks, ranker on [N − 4w, N − 1w), test on [N − 1w, N)); pass A warm-starts
+   the champion retriever and gates the pair on the test window; pass B fine-tunes the passed
+   retriever on the 4 held-back weeks and serves it with pass A's ranker (or one retrained on
+   pass A's candidates, never on the refreshed retriever's), after sanity checks (recall on its
+   last training week, churn vs pass A, coverage); the delayed-label check rolls back
+   automatically if live recall drops. Full retrains from scratch stay on the challenger path.
 
 ### Out of scope
 
-Online ranking (serving stays retrieval + client-side filters), review text features,
-refitting the retriever on the full data while a ranker serves, cold (empty-history) users, the
-neural ranker (see "Model"), the training Step Function.
+Review text features, refitting the retriever on the full data while a ranker serves (until the
+continuous-training spec), the neural ranker (see "Model"), batch-only features (negatives,
+history beyond 20) as a second model.
 
 Follow-ups that need an ETL change (the columns are scraped but dropped by `stg_steam__reviews`):
 
-- **Reviewer language** (first): the share of c's reviews in u's dominant language. Second most
-  useful family in the EDA (AUC 0.61; dropping it costs ~0.5 points of recall@20, more than any
-  family but Candidate). Needs `language` in `interactions`.
+- **Reviewer language** (phase 6): see "Features" and "Cold start".
 - **Playtime** (`playtime_at_review`): a playtime-weighted tag profile scores the same as the
   count-weighted one (AUC 0.649 vs 0.648), so not worth it as a feature; only graded labels (hours
   played on the target) remain untested.
@@ -236,18 +313,20 @@ Follow-ups that need an ETL change (the columns are scraped but dropped by `stg_
 ### Tests / docs / infra
 
 - Unit tests: group building (label, dropped groups, warm-only groups, per-user cap, no feature
-  from t or later), each feature family on hand-built histories (including the beyond-20 split
-  with a small `history_length`), features unchanged when the retriever's raw scores are rescaled
-  (scale-free retrieval features), the ranker gate, artifact save / load.
+  from t or later), each feature family on hand-built histories, features unchanged when the
+  retriever's raw scores are rescaled (scale-free retrieval features), popularity as of the weeks
+  before t, the ranker gate, artifact save / load, the numpy tree evaluator vs LightGBM.
 - Unit tests, promotion: retriever-only promotion keeps the champion ranker when the
   compatibility check passes and drops it when it fails, ranker-only promotion, the final-list
   gate, `pair.json` / `history.jsonl`, `ROLLBACK=1` for each case.
 - Inference: with and without a champion ranker, a ranker not in `pair.json` is ignored, shadow
   mode writes retrieval order, a ranker failure falls back per batch; with an attention champion;
-  the serving contract test still passes.
+  the serving contract test still passes. Serving: ranked and unranked online responses, a
+  ranker / pair mismatch falls back to retrieval order.
 - End to end on the synthetic marts (`conftest.py`): the ranker beats retrieval order on data
   with a signal the towers cannot see (e.g. a burst of recent popularity).
-- `uv add lightgbm` in `training` and `inference` (images only; the serving Lambda is untouched).
+- `uv add lightgbm` in `training` and `inference` (images only; the serving Lambda gets the
+  numpy evaluator, no LightGBM).
 - New settings in `TrainingSettings` / `InferenceSettings` + SSM (`infrastructure/training.tf`,
   `infrastructure/inference.tf`); `training-rank.yml` (manual, like `training-cd.yml`).
 - Re-check the feature families on the champion's real candidates (the EDA used a proxy
