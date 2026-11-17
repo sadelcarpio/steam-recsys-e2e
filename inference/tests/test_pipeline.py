@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import boto3
+import numpy as np
 import pytest
 from conftest import (
     DETAILS_TABLE,
@@ -13,6 +14,7 @@ from conftest import (
     FailingLlm,
     FakeSource,
     ReverseLlm,
+    add_recency,
     add_tags,
     make_metadata,
     make_model,
@@ -297,3 +299,36 @@ def test_an_a3_model_reads_its_longer_history(settings, source, store, tmp_path)
     items = _items()
     assert all(1 <= len(item["liked"]) <= 5 for item in items.values())
     assert (tmp_path / "online" / "manifest.json").exists()  # format 3 user tower: published
+
+
+def test_an_a6_model_embeds_the_catalog_with_recency(settings, marts, store, tmp_path):
+    """A6: the online catalog's item embeddings are the item tower over the catalog with recency
+    as of the newest review (serving reads them as they are)."""
+    from steam_training.evaluation import embed_catalog
+
+    from steam_inference.features import load_inference_data
+    from steam_inference.online import LocalBundleStore
+
+    model = make_model(item_recency=True)
+    store.save_model(model, make_metadata(model, "a6"))
+    settings = settings.model_copy(update={"model_id": "a6"})
+    source = FakeSource(add_recency(marts))
+    bundle = LocalBundleStore(str(tmp_path / "online"))
+    summary = run_inference(
+        settings, source, store, _writer(settings), None, bundle_store=bundle, now=NOW
+    )
+    assert summary.model_id == "a6" and summary.users == 4
+    assert (tmp_path / "online" / "manifest.json").exists()
+    with pytest.raises(RuntimeError, match="item recency"):
+        run_inference(settings, FakeSource(marts), store, _writer(settings), None, now=NOW)
+    catalog = load_inference_data(source, with_recency=True).games.catalog
+    with np.load(tmp_path / "online" / "catalog.npz") as npz:
+        published = dict(zip(npz["item_game_idx"].tolist(), npz["item_embeddings"], strict=True))
+    expected = embed_catalog(model, catalog, 64).numpy()
+    rows = catalog.rows(np.array(sorted(published)))
+    np.testing.assert_allclose(
+        np.stack([published[g] for g in sorted(published)]), expected[rows], atol=1e-5
+    )
+    # recency moves the embeddings: an older week gives other ones
+    older = embed_catalog(model, catalog.at_day(catalog.as_of_day - 21), 64).numpy()
+    assert not np.array_equal(older[rows], expected[rows])

@@ -42,7 +42,7 @@ from steam_training.contracts import (
     RankerMetadata,
 )
 from steam_training.data import TableSource
-from steam_training.evaluation import CatalogIndex, model_scores, top_candidates
+from steam_training.evaluation import CatalogIndex, weekly_scores, weekly_top_candidates
 from steam_training.ranker.data import epoch_seconds, load_ranker_data
 from steam_training.ranker.features import FEATURE_SCHEMA_VERSION, SECONDS_PER_DAY
 from steam_training.ranker.lists import candidate_lists, evaluate_lists, snapshots
@@ -116,6 +116,8 @@ def run_pair(
         popularity_source=settings.pair_popularity_source,
         t2=start,
         list_users=settings.pair_list_users,
+        # A6 retrievers score against the catalog as of each row's week; others ignore recency
+        with_recency=any(m.config.item_recency for m, _ in retrievers.values()),
     )
     rows = data.rows
     if len(rows) > settings.pair_max_groups:
@@ -134,24 +136,30 @@ def run_pair(
     )
     scored: dict[str, tuple] = {}
     for rid, (model, _) in retrievers.items():
-        score_fn = model_scores(model, data.catalog, settings.eval_batch_size, device)
-        candidates, scores = top_candidates(
-            score_fn, rows.history, index, k, settings.eval_batch_size, exclude=rows.reviewed
+        scores_at = weekly_scores(model, data.catalog, settings.eval_batch_size, device)
+        candidates, scores = weekly_top_candidates(
+            scores_at,
+            rows.history,
+            rows.seconds,
+            index,
+            k,
+            settings.eval_batch_size,
+            exclude=rows.reviewed,
         )
         groups = build_groups(
             rows, candidates, scores, data.games, data.popularity, settings.pair_history_length
         )
-        scored[rid] = (score_fn, groups)
+        scored[rid] = (scores_at, groups)
 
     def evaluate(pair: Pair) -> PairEvaluation:
-        score_fn, groups = scored[pair.retriever_id]
+        scores_at, groups = scored[pair.retriever_id]
         fit = rankers_[pair.ranker_id][0] if pair.ranker_id else None
         retrieval = target_positions(retrieval_score(groups), groups)
         final = target_positions(fit.predict(groups), groups) if fit else retrieval
         user_lists = None
         if data.list_reviews is not None and len(data.list_reviews) and times:
             rank = candidate_lists(
-                score_fn, index, k, settings.eval_batch_size, settings.pair_history_length,
+                scores_at, index, k, settings.eval_batch_size, settings.pair_history_length,
                 data.games, data.popularity, fit.predict_features if fit else None,
             )  # fmt: skip
             length = rows.history.shape[1]

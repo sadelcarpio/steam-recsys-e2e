@@ -14,12 +14,15 @@ model's vocabularies map to OOV inside the model, so a new game is scored from i
 features. Each game's Steam user tags (`game_tags`, spec 8) are joined when the mart exists: a
 model trained with tags needs them, and the prompt / adult filter use their names. Each game's
 release status comes from `game_details` (spec 10: unreleased games are never published).
+For a model that reads item recency (A6), the catalog carries each game's recency as of the
+run's newest review (`game_popularity_weekly`: only the full ISO weeks before it, as training
+reads it), so the batch lists and the online catalog's item embeddings both include it.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pyarrow as pa
@@ -27,14 +30,17 @@ import pyarrow.compute as pc
 from pyiceberg.exceptions import NoSuchTableError
 from steam_training.contracts import PADDING_ID, USER_HISTORY_LENGTH
 from steam_training.data import (
+    DAY_SECONDS,
     GAME_FEATURE_COLUMNS,
     GAME_TAG_COLUMNS,
+    RECENCY_TABLES,
     Catalog,
     Ragged,
     TableSource,
     attach_game_tags,
     catalog_from_table,
     latest_game_rows,
+    load_recency,
 )
 
 from steam_inference.contracts import clean_text
@@ -191,11 +197,12 @@ def load_inference_data(
     description_chars: int = 0,
     require_tags: bool = False,
     history_length: int = USER_HISTORY_LENGTH,
+    with_recency: bool = False,
 ) -> InferenceData:
     """`description_chars` > 0 also loads the games' short descriptions (for the rerank
     prompt), truncated to that many characters. `require_tags`: fail when the tag marts are
     missing (the model was trained with tags). `history_length`: the model's
-    (`ModelConfig.history_length`).
+    (`ModelConfig.history_length`). `with_recency`: the model reads item recency (A6).
 
     Memory follows the kept users, not the size of the marts: `interactions` is read twice (the
     activity of every user, then the reviews of the selected users only)."""
@@ -205,6 +212,8 @@ def load_inference_data(
         raise RuntimeError(f"the model uses Steam tags but {TAG_TABLES} are missing: run the ETL")
     games = load_games(source, snapshots, description_chars)
     activity = review_activity(source, snapshots["interactions"])
+    if with_recency:
+        games = with_recency_as_of(games, source, snapshots, activity.newest)
     selected = activity.most_active(max_users)
     popular_since = activity.newest - popular_window_days * DAY_MICROS
     review_users, reviews, popular = collect_reviews(
@@ -271,6 +280,29 @@ def load_games(
         tag_names=tag_names,
         coming_soon=details.coming_soon,
     )
+
+
+def with_recency_as_of(
+    games: Games, source: TableSource, snapshots: dict[str, int | None], micros: int
+) -> Games:
+    """The games with their A6 recency as of the day of `micros` (the newest review; today
+    without reviews). Adds the snapshots read to `snapshots`."""
+    for table in RECENCY_TABLES:
+        if table not in snapshots:
+            try:
+                snapshots[table] = source.snapshot_id(table)
+            except NoSuchTableError as error:
+                raise RuntimeError(
+                    f"the model reads item recency (A6) but mart {table} is missing: run the ETL"
+                ) from error
+    if micros > 0:
+        day = micros // (DAY_SECONDS * 1_000_000)
+    else:
+        day = int(np.datetime64("today", "D").astype(np.int64))
+    recency = load_recency(source, snapshots, len(games.catalog.row_of))
+    catalog = replace(games.catalog, recency=recency).at_day(int(day))
+    log.info("item recency as of day %d (%s)", day, np.datetime64(int(day), "D"))
+    return replace(games, catalog=catalog)
 
 
 def _optional_snapshots(source: TableSource, tables: list[str]) -> dict[str, int | None]:

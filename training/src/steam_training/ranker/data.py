@@ -102,12 +102,15 @@ def load_ranker_data(
     t2: datetime | None = None,
     train_fraction: float = 0.7,
     list_users: int = 0,
+    with_recency: bool = False,
 ) -> RankerData:
     """`popularity_source`: "mart" (`game_popularity_weekly`) or "interactions" (the same
     weekly counts, counted in the extra pass; for marts without the popularity mart). `t2`:
     where the test window starts (the retriever's split end with time-based windows); None =
     after `train_fraction` of the groups. `list_users`: users of the test window whose every
-    review is kept for the per-user list metrics (0 = none)."""
+    review is kept for the per-user list metrics (0 = none). `with_recency`: the catalog
+    carries A6 recency (as of the cutoff, refreshed weekly by `evaluation.weekly_scores`), for
+    an A6 retriever."""
     data = load_training_data(
         source,
         validation_fraction=0.1,  # unused: the cutoff is given
@@ -118,6 +121,7 @@ def load_ranker_data(
         with_train_rows=False,
         with_tags=True,
         history_length=history_length,
+        with_recency=with_recency,
     )
     val = data.validation
     if val.user_id is None or val.timestamp is None or val.reviewed is None:

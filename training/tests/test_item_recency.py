@@ -244,7 +244,7 @@ def store(aws_env):
         yield ArtifactStore(BUCKET, s3)
 
 
-def test_train_with_recency_is_not_promotable(settings, source, store):
+def test_train_and_promote_with_recency(settings, source, store):
     settings = settings.model_copy(update={"model_id": "a6", "epochs": 2, "item_recency": True})
     metadata = run_training(settings, source, store)
     assert metadata.config.item_recency
@@ -253,8 +253,56 @@ def test_train_with_recency_is_not_promotable(settings, source, store):
     assert model.item_tower.numeric_dim == NUM_NUMERIC_FEATURES + NUM_RECENCY_FEATURES
     record = store.load_tracking("a6")
     assert record is not None and record.recent_popularity is not None
-    with pytest.raises(ValueError, match="not promotable"):
-        run_promotion(settings, source, store)
+    # promotion scores each row against the catalog as of its week, like training's evaluation
+    report = run_promotion(settings, source, store)
+    assert report.promoted
+    assert report.candidate.metrics.warm.recall[5] == pytest.approx(
+        metadata.validation.warm.recall[5], abs=0.05
+    )
+
+
+def test_weekly_scores_refresh_only_recency_models(loaded):
+    _, data, _ = loaded
+    catalog = data.catalog
+    assert catalog.as_of_day is not None
+    start = int(week_of_day(catalog.as_of_day))
+    history = torch.from_numpy(data.validation.history[:4])
+    for item_recency in (False, True):
+        model = _model(item_recency=item_recency)
+        scores_at = evaluation.weekly_scores(model, catalog, batch_size=16)
+        assert scores_at(start - 2) is scores_at(start)  # earlier weeks keep the catalog's
+        later = scores_at(start + 20)
+        assert (later is scores_at(start)) == (not item_recency)
+        if item_recency:
+            assert later is scores_at(start + 20)  # cached
+            assert not torch.allclose(later(history), scores_at(start)(history))
+
+
+def test_weekly_top_candidates_score_each_row_as_of_its_week(loaded):
+    _, data, _ = loaded
+    rows = data.validation.take(np.arange(12))
+    index = evaluation.CatalogIndex.of(data.catalog)
+    calls = []
+
+    def scores_at(week):
+        calls.append(week)
+
+        # week w prefers catalog row w % len: each row's top game tells its week
+        def score(history, language=None):
+            out = torch.zeros(len(history), len(index))
+            out[:, week % len(index)] = 1.0
+            return out
+
+        return score
+
+    seconds = (week_start_day(np.arange(3000, 3012) // 4 * 4) * 86_400).astype(np.int64)
+    games, _ = evaluation.weekly_top_candidates(
+        scores_at, np.zeros_like(rows.history), seconds, index, 3, batch_size=5
+    )
+    weeks = week_of_day(seconds // 86_400)
+    assert sorted(calls) == sorted(set(weeks.tolist()))
+    expected = index.game_idx[torch.from_numpy(weeks % len(index))].numpy()
+    assert np.array_equal(games[:, 0], expected)
 
 
 def test_time_buckets_are_iso_weeks_with_sparse_old_weeks_merged():

@@ -113,6 +113,37 @@ def test_pair_lifecycle(settings, store):
         run_pair(PairSettings(model_artifacts_bucket=BUCKET, rollback=True), source, store)
 
 
+def test_a6_retriever_through_ranker_and_pair(settings, store):
+    """An A6 retriever (item recency) challenges a plain serving retriever: its ranker trains on
+    candidates scored as of each group's week, and the pair evaluation does the same."""
+    source = FakeSource(make_marts(n_users=600, reviews_per_user=10, seed=1))
+    plain = settings.model_copy(update={"holdout_weeks": 16, "test_weeks": 6, "epochs": 2})
+    run_training(plain, source, store)
+    run_promotion(plain, source, store)
+    a6 = plain.model_copy(update={"model_id": "a6", "item_recency": True})
+    run_training(a6, source, store)
+    ranker = RankerSettings(
+        model_artifacts_bucket=BUCKET, ranker_id="k6", retriever_id="a6",
+        device="cpu", ranker_candidates=15, ranker_top_k=5, ranker_history_length=5,
+        ranker_min_groups=10, ranker_min_data_in_leaf=5, ranker_max_rounds=20,
+        ranker_ablation=False, ranker_list_users=50, eval_batch_size=128,
+    )  # fmt: skip
+    ranked = run_ranking(ranker, source, store)
+    assert ranked.user_lists is not None
+    pair = PairSettings(
+        model_artifacts_bucket=BUCKET, retriever_id="a6", ranker_id="k6", device="cpu",
+        pair_candidates=15, pair_top_k=5, pair_retrieval_k=10, pair_history_length=5,
+        pair_list_users=50, eval_batch_size=128, force_promotion=True,
+    )  # fmt: skip
+    report = run_pair(pair, source, store)
+    assert report.promoted and report.chosen.retriever_id == "a6"
+    assert {(c.retriever_id, c.ranker_id) for c in report.challengers} == {
+        ("a6", "k6"),
+        ("a6", None),
+    }
+    assert (store.read_pair().retriever_id, store.read_pair().ranker_id) == ("a6", "k6")
+
+
 def test_launcher_modes():
     assert set(launch.MODES) == {"train", "promote", "rank", "pair"}
     line = (

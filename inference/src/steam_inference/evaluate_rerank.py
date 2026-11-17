@@ -40,6 +40,7 @@ from steam_inference.features import (
     review_activity,
     review_rows,
     users_of,
+    with_recency_as_of,
 )
 from steam_inference.pipeline import rerank_request
 from steam_inference.rerank import BedrockRerankLlm, RerankLlm, blend, llm_ranking
@@ -136,6 +137,8 @@ def evaluate_rerank(
     cutoff = to_micros(metadata.split.cutoff)
     snapshots = {table: source.snapshot_id(table) for table in TABLES}
     games = load_games(source, snapshots, settings.rerank_description_chars)
+    if metadata.config.item_recency:  # A6: recency as of the cutoff, like the histories
+        games = with_recency_as_of(games, source, snapshots, cutoff)
     cohort = sample_cohort(
         source,
         snapshots["interactions"],

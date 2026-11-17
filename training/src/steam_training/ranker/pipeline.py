@@ -30,7 +30,7 @@ from steam_training.contracts import (
     UserListComparison,
 )
 from steam_training.data import TableSource
-from steam_training.evaluation import CatalogIndex, model_scores, top_candidates
+from steam_training.evaluation import CatalogIndex, weekly_scores, weekly_top_candidates
 from steam_training.ranker.data import epoch_seconds, from_epoch_seconds, load_ranker_data
 from steam_training.ranker.features import (
     FAMILIES,
@@ -76,6 +76,7 @@ def run_ranking(
         t2=retriever_meta.split.end,
         train_fraction=settings.ranker_train_fraction,
         list_users=settings.ranker_list_users,
+        with_recency=retriever.config.item_recency,
     )
     rows = data.rows
     cut, t2 = data.test_start, data.t2
@@ -86,14 +87,21 @@ def run_ranking(
     test_idx = _subsample(np.arange(cut, len(rows)), settings.ranker_max_test_groups, rng)
 
     device = resolve_device(settings.device)
-    score_fn = model_scores(retriever, data.catalog, settings.eval_batch_size, device)
+    # A6: each group's candidates as of its ISO week
+    scores_at = weekly_scores(retriever, data.catalog, settings.eval_batch_size, device)
     index = CatalogIndex.of(data.catalog, device)
     k = settings.ranker_candidates
 
     def groups_of(idx: np.ndarray) -> Groups:
         part = rows.take(idx)
-        candidates, scores = top_candidates(
-            score_fn, part.history, index, k, settings.eval_batch_size, exclude=part.reviewed
+        candidates, scores = weekly_top_candidates(
+            scores_at,
+            part.history,
+            part.seconds,
+            index,
+            k,
+            settings.eval_batch_size,
+            exclude=part.reviewed,
         )
         return build_groups(
             part, candidates, scores, data.games, data.popularity, settings.ranker_history_length
@@ -141,7 +149,7 @@ def run_ranking(
     )
     user_lists = None
     if data.list_reviews is not None and len(data.list_reviews):
-        user_lists = _user_lists(settings, data, fit, score_fn, index, ks)
+        user_lists = _user_lists(settings, data, fit, scores_at, index, ks)
     by_history = {}
     full = test.history_size >= settings.ranker_history_length
     for name, mask in (("short", ~full), ("full", full)):
@@ -228,7 +236,7 @@ def metrics_line(report: RankerReport) -> str:
     )
 
 
-def _user_lists(settings, data, fit, score_fn, index, ks) -> UserListComparison:
+def _user_lists(settings, data, fit, scores_at, index, ks) -> UserListComparison:
     """Per-user lists at weekly snapshots of the test window (`ranker.lists`)."""
     horizon = settings.ranker_list_horizon_days * SECONDS_PER_DAY
     times = list_snapshots(
@@ -238,7 +246,7 @@ def _user_lists(settings, data, fit, score_fn, index, ks) -> UserListComparison:
         settings.ranker_list_max_snapshots,
     )
     rank = candidate_lists(
-        score_fn,
+        scores_at,
         index,
         settings.ranker_candidates,
         settings.eval_batch_size,

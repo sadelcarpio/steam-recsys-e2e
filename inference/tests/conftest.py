@@ -152,6 +152,31 @@ def add_tags(marts: dict[str, pa.Table], tags_of=None) -> dict[str, pa.Table]:
     }
 
 
+def add_recency(marts: dict[str, pa.Table]) -> dict[str, pa.Table]:
+    """A6 marts: `lkp_games` with Steam appids (release dates join through them) and
+    `game_popularity_weekly` (reviews per game and ISO week, counted from `interactions`)."""
+    games = marts["lkp_games"]["game_idx"].to_pylist()
+    weekly: dict[tuple[int, object], int] = {}
+    for row in marts["interactions"].to_pylist():
+        monday = row["timestamp"].date() - timedelta(days=row["timestamp"].weekday())
+        weekly[(row["game_idx"], monday)] = weekly.get((row["game_idx"], monday), 0) + 1
+    return {
+        **marts,
+        "lkp_games": pa.table(
+            {
+                "game_idx": pa.array(games, pa.int64()),
+                "game_id": pa.array([1000 + g for g in games], pa.int64()),
+            }
+        ),
+        "game_popularity_weekly": pa.Table.from_pylist(
+            [
+                {"game_idx": g, "week_start": week, "reviews": n}
+                for (g, week), n in sorted(weekly.items())
+            ]
+        ),
+    }
+
+
 def details_table(games: Iterable[int], coming_soon: Iterable[int] = ()) -> pa.Table:
     """Mart game_details (strings as scraped: HTML entities, blanks); `coming_soon`: game_idx
     of the unreleased games."""
@@ -216,6 +241,7 @@ def make_model(
     tag_profile: bool = False,
     history_length: int = 5,
     attention_layers: int = 0,
+    item_recency: bool = False,
 ) -> TwoTowerModel:
     """`attention_layers` > 0: the A3 attention encoder (2 heads), its parameters randomized so
     every LayerNorm / projection matters in parity tests."""
@@ -234,6 +260,7 @@ def make_model(
         history_encoder="attention" if attention_layers else "mean",
         attention_heads=2,
         attention_layers=max(attention_layers, 1),
+        item_recency=item_recency,
     )
     model = TwoTowerModel(config)
     if attention_layers:

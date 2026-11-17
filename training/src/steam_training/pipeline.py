@@ -346,11 +346,6 @@ def run_promotion(
             f"{settings.model_id} reads the user's language (A7): not promotable, inference and "
             "serving don't compute it"
         )
-    if candidate.config.item_recency:
-        raise ValueError(
-            f"{settings.model_id} reads item recency features (A6): not promotable, inference "
-            "embeds the catalog without them"
-        )
     champion, champion_meta = _load_champion(store, settings.model_id)
     now = datetime.now(UTC)
 
@@ -381,7 +376,8 @@ def run_promotion(
         with_tags=with_tags,
         # the longest history of the two (each model reads its own prefix, `model_scores`)
         history_length=max(m.config.history_length for m in (candidate, champion) if m),
-        with_recency=False,
+        # A6: each row scored against the catalog as of its week (other models ignore recency)
+        with_recency=any(m is not None and m.config.item_recency for m in (candidate, champion)),
     )
     if len(data.validation) == 0:
         raise ValueError(f"no positive interactions after {max(cutoffs)} to evaluate on")

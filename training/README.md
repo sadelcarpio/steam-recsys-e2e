@@ -253,7 +253,7 @@ snapshot and split. Models are `local-<sha>-…` in the bucket and runs are in M
 | 2026-11-17 | A1 re-test on the current recipe | **rejected** (no effect; explicit negatives stay on) | +1.6% / −1.7% on two seeds, mean −0.1%; epochs ~4% faster without them |
 | 2026-11-17 | A6: item recency as of t (reviews in the last 30 / 90 days, game age), one week per batch | **accepted** | +25% / +43% on two seeds (mean +34%), third seed +21%; all-rows recall@50 0.20 → 0.31; the first try (mixed weeks per batch) learned a date shortcut, −16% |
 | 2026-11-17 | A7: language of the user's previous review | **accepted** | +2.6% / +4.0% on two seeds (mean +3.3%) |
-| 2026-11-17 | A6 + A7 together | **accepted** (next recipe, not promotable yet) | +5.4% / +2.1% over A6 alone on the same seeds; +39% over the control; above the control in every activity bucket |
+| 2026-11-17 | A6 + A7 together | **accepted** (next recipe; A6 alone promotable, A7 pending) | +5.4% / +2.1% over A6 alone on the same seeds; +39% over the control; above the control in every activity bucket |
 
 Before 2026-11-14 each arm ran on one seed. Gains of +3.7% and more are far outside the
 ~0.8% seed noise; A1, the one small single-seed verdict, was re-tested with two seeds.
@@ -469,13 +469,19 @@ the most active 1% get 0.076 / 0.074 (control 0.071 / 0.067, A6 0.052 / 0.070), 
 0.151 / 0.167, so the combination is at or above the control in every bucket on both seeds.
 Overall +39% warm recall@50 over the champion's recipe (0.3066 vs 0.2201, mean of two seeds).
 
-Not promotable yet (`run_promotion` refuses both settings, and no `user_tower.npz` is written
-with a language). What it needs: recency from `game_popularity_weekly` (done); the language
-from the `review_languages` mart instead of the raw files; inference computing both (catalog recency as of
-its run, each user's last review language); the numpy user tower and serving port with the
-language input (unknown for `POST /recommendations`, which the dropout trains for); then a
-confirming two-seed run on those sources and a pair evaluation with a ranker trained on its
-candidates.
+A6 is promotable: `promote`, `rank` and `pair` score each row against the catalog as of its
+ISO week (`evaluation.weekly_scores`, as training's evaluation does), and inference embeds the
+catalog with recency as of its newest review (serving reads those embeddings, so it needs no
+change; the user tower is unchanged). A7 is not yet (`run_promotion` refuses it, and no
+`user_tower.npz` is written with a language): it needs the language from the
+`review_languages` mart instead of the raw files, inference reading each user's last review
+language, and the numpy user tower and serving port with the language input (unknown for
+`POST /recommendations`, which the dropout trains for).
+
+Promoting an A6 retriever while a ranker serves: train it (`ITEM_RECENCY=true`), train a ranker
+on its candidates (`rank`, `RETRIEVER_ID`), then `pair` with `RETRIEVER_ID` / `RANKER_ID` and
+`PAIR_DRY_RUN=true`, then `APPLY_REPORT`, then an inference run. Deploy the inference image
+with A6 support before that run.
 
 ## Evaluation
 
@@ -753,7 +759,7 @@ forwards them to the job:
 | `HISTORY_LENGTH` | 5 | games in the user history: the last N positives strictly before each row, derived from `interactions` (A3: 20 / 50); inference derives the same |
 | `HISTORY_ENCODER` | mean | A3: `mean`, or `attention` (adds a self-attention summary of the history to the mean). numpy user tower format 3 |
 | `ATTENTION_HEADS` / `ATTENTION_LAYERS` / `ATTENTION_DROPOUT` | 2 / 1 / 0.1 | the attention encoder (heads must divide `GAME_EMBEDDING_DIM`) |
-| `ITEM_RECENCY` | false | A6 (experiment, not promotable): item features as of an ISO week (log reviews in the 4 / 13 weeks before it from `game_popularity_weekly`, log days since release from `game_details`, release known). Batches come from one ISO week each with logQ per week (mixed-date batches let the model reject candidates by their date); evaluation refreshes the catalog per ISO week and adds a recent-popularity baseline |
+| `ITEM_RECENCY` | false | A6 (accepted, promotable; inference computes it as of its run): item features as of an ISO week (log reviews in the 4 / 13 weeks before it from `game_popularity_weekly`, log days since release from `game_details`, release known). Batches come from one ISO week each with logQ per week (mixed-date batches let the model reject candidates by their date); evaluation refreshes the catalog per ISO week and adds a recent-popularity baseline |
 | `USER_LANGUAGE` / `RAW_REVIEWS_URI` | false / unset | A7 (experiment, not promotable): the language of the user's previous review as a user tower embedding (10% dropout to unknown), read from the raw reviews (`rec_id`, `language`; cached per file under `DATA_CACHE_DIR`) until a mart has it |
 | `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |
 | `GIT_COMMIT` | `git rev-parse HEAD` | lineage tag (set by the launcher on SageMaker jobs) |

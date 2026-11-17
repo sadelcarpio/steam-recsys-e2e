@@ -44,6 +44,8 @@ NOT_FOUND = torch.iinfo(torch.int64).max
 ScoreFn = Callable[..., torch.Tensor]
 # A6: the score function of a model over another catalog (recency as of another day)
 Rescore = Callable[[Catalog], ScoreFn]
+# the score function as of an ISO week (`weekly_scores`)
+WeeklyScores = Callable[[int], ScoreFn]
 CPU = torch.device("cpu")
 
 
@@ -107,6 +109,33 @@ def recency_rescore(
     if not model.config.item_recency:
         return None
     return lambda catalog: model_scores(model, catalog, batch_size, device)
+
+
+def weekly_scores(
+    model: TwoTowerModel, catalog: Catalog, batch_size: int, device: torch.device = CPU
+) -> WeeklyScores:
+    """A model's score function as of an ISO week: an A6 model scores against the catalog with
+    recency as of that week (weeks up to the catalog's own keep its recency, as `rank_rows`);
+    any other model has one score function. The last week's embeddings are cached (callers go
+    through the weeks in order)."""
+    base = model_scores(model, catalog, batch_size, device)
+    if not model.config.item_recency or catalog.as_of_day is None:
+        return lambda week: base
+    start = int(week_of_day(catalog.as_of_day))
+    cache: dict[int, ScoreFn] = {}
+
+    def at(week: int) -> ScoreFn:
+        week = int(week)
+        if week <= start:
+            return base
+        if week not in cache:
+            cache.clear()
+            cache[week] = model_scores(
+                model, catalog.at_day(int(week_start_day(week))), batch_size, device
+            )
+        return cache[week]
+
+    return at
 
 
 def recent_popularity_scores(catalog: Catalog, device: torch.device = CPU) -> ScoreFn:
@@ -257,6 +286,33 @@ def top_candidates(
         end = start + len(chunk_history)
         games[start:end] = index.game_idx[top.indices].cpu().numpy()
         scores[start:end] = top.values.float().cpu().numpy()
+    return games, scores
+
+
+def weekly_top_candidates(
+    scores_at: WeeklyScores,
+    history: np.ndarray,
+    seconds: np.ndarray,
+    index: CatalogIndex,
+    k: int,
+    batch_size: int,
+    exclude: Ragged | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """`top_candidates` with each row scored as of its ISO week (`seconds`: its time)."""
+    week = week_of_day(np.asarray(seconds, np.int64) // DAY_SECONDS)
+    k = min(k, len(index))
+    games = np.zeros((len(history), k), dtype=np.int64)
+    scores = np.zeros((len(history), k), dtype=np.float32)
+    for w in np.unique(week):
+        part = np.flatnonzero(week == w)
+        games[part], scores[part] = top_candidates(
+            scores_at(int(w)),
+            history[part],
+            index,
+            k,
+            batch_size,
+            exclude=exclude.take(part) if exclude is not None else None,
+        )
     return games, scores
 
 
