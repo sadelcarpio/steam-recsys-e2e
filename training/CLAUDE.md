@@ -47,7 +47,9 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
     `ranking_metrics`: recall / NDCG / MRR), `lists.py` (per-user lists at weekly snapshots:
     `UserReviews`, `snapshot_lists`, `ListAccumulator` precision / recall / MAP),
     `pipeline.py` (`run_ranking`: `python -m steam_training rank`; T2 = the retriever's split
-    end when it has one)
+    end when it has one), `export.py` (`ranker.npz` for the serving Lambda: flattened trees +
+    the game side of the features per catalog row, written by inference with the catalog;
+    serving's numpy port in `serving/src/steam_serving/ranker.py`)
   - `pairs.py` (spec 9, phase 3): `python -m steam_training pair` (`PairSettings`):
     `run_pair` scores the serving pair and challenger pairs on groups at or after
     `window_start` (newest retriever split end / cutoff and ranker T2), `decide_pair`
@@ -135,7 +137,9 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   percentile / normalized gap, never the raw score or tower embeddings). Change a feature's
   definition → bump `FEATURE_SCHEMA_VERSION`. Ranker settings live in `RankerSettings` (never
   in `TrainingSettings`, so they don't touch retriever fingerprints or metadata). A ranker's
-  groups come after its retriever's cutoff (the retriever never saw their labels). Naive UTC
+  groups come after its retriever's cutoff (the retriever never saw their labels). A feature change also changes serving's port
+  (`steam_serving.ranker`, parity in inference's `tests/test_online_ranker.py`); a layout
+  change of `ranker/export.py` bumps `RANKER_NUMPY_FORMAT`. Naive UTC
   datetimes go through `ranker.data.epoch_seconds` (never `datetime.timestamp()`, which applies
   the local timezone).
 - Serving pair (spec 9): `evaluation/champion/pair.json` names the serving (retriever, ranker);

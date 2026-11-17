@@ -132,3 +132,27 @@ def test_dates():
     cutoff = datetime(2026, 5, 1, 20, 13, 50)
     assert from_epoch_seconds(epoch_seconds(cutoff)) == cutoff
     assert week_of(epoch_seconds(datetime(1970, 1, 8))) == 1
+
+
+def test_online_export_game_side_matches_the_features():
+    """`ranker.export.game_arrays` (serving's game side) = compute_features' candidate columns
+    at the export time; tags / genres as CSR rows of the published catalog order."""
+    from steam_training.ranker.export import game_arrays
+
+    games = table()
+    pop = popularity([(2, 1, True), (2, 3, False), (4, 2, True), (5, 8, True)], 0, 10)
+    rows = np.array([5, 2, 4, 3])  # the published catalog's game_idx, in its row order
+    seconds = 9 * WEEK + 10
+    exported = game_arrays(games, pop, rows, seconds)
+    f = features([[3]], [rows.tolist()], [[4.0, 3.0, 2.0, 1.0]], [seconds], pop=pop)
+    for i, name in enumerate(["log_positives", "log_positives_30d", "log_positives_90d"]):
+        np.testing.assert_array_equal(exported["game_popularity"][:, i], f[name][0])
+    np.testing.assert_array_equal(exported["game_popularity"][:, 3], f["positive_ratio"][0])
+    np.testing.assert_array_equal(exported["game_is_free"], games.is_free[rows])
+    offsets, values = exported["game_tag_offsets"], exported["game_tag_values"]
+    for r, game in enumerate(rows):
+        assert (
+            values[offsets[r] : offsets[r + 1]].tolist()
+            == np.flatnonzero(games.tags[game]).tolist()
+        )
+    assert exported["game_idx"].tolist() == rows.tolist()

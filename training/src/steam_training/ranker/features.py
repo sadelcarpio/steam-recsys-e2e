@@ -215,6 +215,26 @@ class PopularityCounter:
         )
 
 
+# candidate features read from the popularity table (the online export precomputes them per game)
+POPULARITY_FEATURES = ["log_positives", "log_positives_30d", "log_positives_90d", "positive_ratio"]
+
+
+def popularity_features(
+    popularity: PopularityTable, games: np.ndarray, row: np.ndarray
+) -> dict[str, np.ndarray]:
+    """`POPULARITY_FEATURES` of `games` at table rows `row` (broadcast; `PopularityTable.row`
+    of t's week), float32."""
+    lifetime = popularity.positives[row, games].astype(np.float32)
+    reviews = popularity.reviews[row, games].astype(np.float32)
+    out = {"log_positives": np.log1p(lifetime)}
+    for name, weeks in RECENT_WEEKS.items():
+        earlier = popularity.positives[np.maximum(row - weeks, 0), games]
+        out[name] = np.log1p(lifetime - earlier).astype(np.float32)
+    out["positive_ratio"] = (lifetime + 1) / (reviews + 2)
+    assert list(out) == POPULARITY_FEATURES
+    return out
+
+
 def compute_features(
     history: np.ndarray,
     candidates: np.ndarray,
@@ -249,13 +269,8 @@ def compute_features(
 
     # candidate, as of t (the weeks before t's week)
     row = popularity.row(week_of(seconds))[:, None]
-    lifetime = popularity.positives[row, cand].astype(np.float32)
-    reviews = popularity.reviews[row, cand].astype(np.float32)
-    out[..., col["log_positives"]] = np.log1p(lifetime)
-    for name, weeks in RECENT_WEEKS.items():
-        earlier = popularity.positives[np.maximum(row - weeks, 0), cand]
-        out[..., col[name]] = np.log1p(lifetime - earlier)
-    out[..., col["positive_ratio"]] = (lifetime + 1) / (reviews + 2)
+    for name, values in popularity_features(popularity, cand, row).items():
+        out[..., col[name]] = values
     out[..., col["is_free"]] = games.is_free[cand]
     out[..., col["log_price"]] = games.log_price[cand]
     day = (seconds / SECONDS_PER_DAY).astype(np.float32)[:, None]
