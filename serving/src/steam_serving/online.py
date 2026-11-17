@@ -343,12 +343,16 @@ class OnlineModel:
         return self._name_bytes[start:end].decode()
 
     def recommend(
-        self, liked_game_ids: list[int], k: int, now_seconds: float | None = None
+        self,
+        liked_game_ids: list[int],
+        k: int,
+        now_seconds: float | None = None,
+        ranked_k: int | None = None,
     ) -> OnlineResult:
         """Top k catalog games for a history of liked games (most recent first). Liked games are
         never recommended; unknown ones are ignored. Empty when no liked game is known. With a
         ranker, its top `candidates` retrieved games are re-ordered (as of `now_seconds`,
-        default now)."""
+        default now); a ranked list keeps at most `ranked_k` games."""
         tower = self.user_tower
         liked = np.asarray(list(dict.fromkeys(liked_game_ids)), dtype=np.int64)
         rows = self.rows_of(liked)
@@ -368,6 +372,7 @@ class OnlineModel:
             ranked = self._rank(rows[known], top, scores[top], now_seconds)
             if ranked is not None and mode == "on":
                 top, ranker_id = ranked, self.ranker.ranker_id
+                k = min(k, ranked_k or k)
             elif ranked is not None:
                 overlap = len(set(top[:k].tolist()) & set(ranked[:k].tolist())) / len(top[:k])
                 log.info("ranker shadow: overlap@%d %.2f", k, overlap)

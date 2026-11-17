@@ -67,6 +67,9 @@ curl "$URL/users/12/recommendations?limit=3"
 }
 ```
 
+- `ranker_id` (spec 9): the ranker that ordered the list, also on stored lists (written by
+  inference with `RANKER_MODE=on`; such a list has the ranker's top 20). Omitted when the list
+  is in the retriever's order.
 - `liked` (personalized lists only): the user's last liked games, most recent first, with their
   `details` when requested (same BatchGetItem as the recommendations). Omitted for the popular
   list and for items written before the field existed.
@@ -117,7 +120,7 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
   `ignored_game_ids`. Every liked game is excluded from the results.
 - **Ranker (spec 9).** When the manifest names a ranker (the serving pair's, published by
   inference with the catalog: `serving/online/ranker.npz`), the top `candidates` (100) retrieved
-  games are re-ordered by it and the first `limit` returned; `ranker_id` says which ranker
+  games are re-ordered by it and the first `limit` returned, at most `RANKER_TOP_K` (20); `ranker_id` says which ranker
   ordered the list (absent: retrieval order). Its mode is inference's `RANKER_MODE`: `on`
   re-orders, `shadow` only logs the overlap with retrieval order, `off` publishes no ranker.
   The user side of its features comes from the first 20 known liked games, the game side
@@ -195,6 +198,11 @@ Lambda).
 | `USER_INDEX_PREFIX` | `serving/users` | SSM. Demo user index (spec 13) |
 | `USER_INDEX_REFRESH_SECONDS` | 300 | Its manifest re-check interval |
 | `MAX_LIKED_GAMES` | 100 | |
+| `RANKER_TOP_K` | 20 | Spec 9: an online list ordered by the ranker returns at most this many games, whatever `limit` (batch writes the ranker's top 20); retrieval-order lists keep `limit` |
+
+Every request logs one JSON line (`steam_serving.app`): `method`, `path`, `status`, `ms`, and
+for recommendation responses `source`, `model_id`, `ranker_id` (null: retrieval order),
+`results` and, online, `liked_used` (liked games that formed the history).
 
 ## Development
 

@@ -53,6 +53,11 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
   every (game, week) touched by new `interactions` rows (late backfilled reviews land in old
   weeks); `_batch_at` = the newest counted row. Week = `date_trunc('week')` (Monday UTC), the
   same week the training ranker uses (`steam_training.ranker.features.week_of`).
+- `review_languages` (spec 17, A7): one row per `review_id` with a language, deduplicated
+  from staging like `int_reviews__deduplicated` (first seen copy **with a language**: the null
+  filter runs before the dedup, so incremental equals full refresh), watermark its own
+  `scrape_date`. Consumers join it to `interactions` on `review_id`; never add `language` to
+  `interactions` instead (a schema change of the largest mart).
 - `game_tags` (spec 8) is one row per catalog game with tags, merged on `game_id` only when a
   newer scrape (`scraped_at`) arrives, so a rerun writes nothing. `lkp_tags` covers the tags
   of `int_games__deduplicated` games only.

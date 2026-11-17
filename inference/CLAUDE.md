@@ -121,7 +121,9 @@ Human docs: `README.md`.
 - Online ranker (spec 9): `ranker.npz` is published only with the catalog, for the rows
   `build_catalog` keeps (same order), before the catalog and pinned in the same manifest
   (`ranker_*` fields, optional: older serving deploys ignore them). Its mode is this run's
-  `RANKER_MODE`. Serving's port must match training's features and LightGBM:
+  `RANKER_MODE`. Stored items carry `ranker_id` (in `content_hash`, only when set, so lists
+  without a ranker keep their hash) for the users the ranker ordered (`RankerStats.ranked`:
+  not a failed chunk). Serving's port must match training's features and LightGBM:
   `tests/test_online_ranker.py`.
 - The search index (`SearchIndex`, `SEARCH_INDEX_FORMAT`) is read by the frontend
   (`frontend/src/api.ts`): change both together. It is published only with the online catalog,

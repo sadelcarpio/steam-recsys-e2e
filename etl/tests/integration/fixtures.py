@@ -116,7 +116,7 @@ def _game(appid, name, *, scrape_date, type_="game", devs=(), pubs=(), genres=()
     }
 
 
-def _review(rec_id, user, appid, positive, dt, *, scrape_date, updated=None):
+def _review(rec_id, user, appid, positive, dt, *, scrape_date, updated=None, language="english"):
     return {
         "rec_id": rec_id,
         "user_id": user,
@@ -124,7 +124,7 @@ def _review(rec_id, user, appid, positive, dt, *, scrape_date, updated=None):
         "voted_up": positive,
         "timestamp_created": T0 + dt,
         "timestamp_updated": T0 + (updated if updated is not None else dt),
-        "language": "english",
+        "language": language,
         "scrape_date": scrape_date,
     }
 
@@ -184,10 +184,10 @@ BATCH1_REVIEWS = [
     _review(1, 100, 10, True, 1000, **_d1),  # re-emitted after a flush split
     _review(13, 100, 10, True, 1010, **_d1),  # double post: new id, same user and game as 1
     _review(2, 100, 21, True, 2000, **_d1),
-    _review(3, 200, 10, False, 1500, **_d1),
+    _review(3, 200, 10, False, 1500, language="schinese", **_d1),
     _review(4, 100, 20, True, 2500, **_d1),  # game 20 loses the name dedup
-    _review(5, 200, 21, True, 3000, **_d1),
-    _review(6, 300, 10, True, 1500, **_d1),  # same second as review 3
+    _review(5, 200, 21, True, 3000, language=" Russian ", **_d1),  # normalized
+    _review(6, 300, 10, True, 1500, language=None, **_d1),  # same second as review 3; no language
     _review(7, 400, 50, True, 2000, **_d1),  # game 50 is only scraped in batch 2
     _review(99, 999, 10, None, 1200, **_d1),  # no vote: dropped in staging
     *[_review(900 + k, 900, 100 + k, True, 100 * k, **_d1) for k in range(1, 8)],
@@ -218,10 +218,11 @@ BATCH2_GAMES = [
 BATCH2_REVIEWS = [
     _review(8, 100, 50, True, 5000, **_d2),
     _review(10, 500, 10, True, 6000, **_d2),
-    _review(11, 600, 21, False, 6000, **_d2),
+    _review(11, 600, 21, False, 6000, language="", **_d2),  # empty: no language
     _review(12, 100, 60, True, 5500, **_d2),  # dropped game
     _review(14, 200, 21, False, 7000, **_d2),  # user 200 already reviewed game 21 (review 5)
-    _review(2, 100, 21, False, 2000, updated=5800, **_d2),  # edited later: first seen wins
+    # edited later: first seen wins (vote and language)
+    _review(2, 100, 21, False, 2000, updated=5800, language="spanish", **_d2),
 ]
 
 

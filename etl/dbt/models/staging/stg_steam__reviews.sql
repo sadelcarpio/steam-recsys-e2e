@@ -7,6 +7,8 @@ select
     cast(user_id as bigint) as user_id,
     cast(appid as bigint) as game_id,
     voted_up as is_positive,
+    -- Steam API language name (english, schinese, ...); review_languages only
+    nullif(lower(trim(language)), '') as language,
     cast(from_unixtime(timestamp_created) as timestamp) as reviewed_at,
     cast(from_unixtime(coalesce(timestamp_updated, timestamp_created)) as timestamp) as updated_at,
     scrape_date

@@ -130,6 +130,15 @@ class GamePopularityWeeklyRow(_Row):
         return self
 
 
+class ReviewLanguageRow(_Row):
+    """review_languages (spec 17, A7): the language a review was written in (Steam API name,
+    lower case). Join to interactions on review_id."""
+
+    review_id: int
+    language: Annotated[str, Field(min_length=1, pattern=r"^[a-z]+$")]
+    scrape_date: date
+
+
 class UserIndexRow(_Row):
     """user_index (spec 13): demo rank of a user, 1 = most reviews. Rebuilt every run, so
     `user_idx` is not stable across runs: never a join key."""
@@ -159,5 +168,6 @@ MART_CONTRACTS: dict[str, type[_Row]] = {
     "game_tags": GameTagsRow,
     "interactions": InteractionRow,
     "game_popularity_weekly": GamePopularityWeeklyRow,
+    "review_languages": ReviewLanguageRow,
     "user_index": UserIndexRow,
 }
