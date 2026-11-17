@@ -76,18 +76,16 @@ def test_popularity_counts_only_weeks_before_t():
     assert f["positive_ratio"][0, 0] == pytest.approx((2 + 1) / (3 + 2))
 
 
-def test_affinity_and_similarity():
+def test_affinity():
     # history: games 2 (tag 2, dev 0) and 5 (tag 2, dev 1) and 3 (tag 0, dev 1); pad
     f = features([[2, 5, 3, 0]], [[4, 6, 7]], [[3.0, 2.0, 1.0]], [WEEK * 5])
     # candidate 4 (tag 1, dev 0), 6 (tag 0, dev 0), 7 (no tags, no dev)
     profile = np.array([1, 0, 2]) / np.sqrt(5)
     assert f["tag_cosine"][0].tolist() == pytest.approx([0, profile[0], 0])
-    assert f["tag_cosine_max"][0].tolist() == pytest.approx([0, 1, 0])
-    assert f["tag_cosine_mean"][0].tolist() == pytest.approx([0, 1 / 3, 0])
     assert f["developer_share"][0].tolist() == pytest.approx([1 / 3, 1 / 3, 0])
-    assert f["history_size"][0].tolist() == [3, 3, 3]
-    assert f["free_share"][0, 0] == pytest.approx(2 / 3)  # games 2 and 5 are free
-    assert f["release_fit_years"][0, 0] == pytest.approx((400 - 300) / 365)
+    # genres = eye(8, 2): only games 0 and 1 have one, so no overlap here
+    assert f["genre_overlap"][0].tolist() == pytest.approx([0, 0, 0])
+    assert f["age_days"][0, 0] == pytest.approx(35 - 400)
 
 
 def test_retrieval_features_are_scale_free():
@@ -101,7 +99,7 @@ def test_retrieval_features_are_scale_free():
 
 def test_no_history_and_missing_candidates():
     f = features([[0, 1]], [[3, 4]], [[0.5, -np.inf]], [WEEK * 5])
-    assert np.isnan(f["tag_cosine"][0, 0]) and np.isnan(f["free_share"][0, 0])
+    assert np.isnan(f["tag_cosine"][0, 0]) and np.isnan(f["developer_share"][0, 0])
     assert not np.isnan(f["log_positives"][0, 0])  # candidate features stay
     assert all(np.isnan(f[name][0, 1]) for name in FEATURES)  # no candidate in slot 1
 

@@ -405,9 +405,9 @@ its own).
 
 The second stage re-orders the retriever's top 100 and keeps 20. It is a LightGBM
 `lambdarank` model over hand-built features (`steam_training/ranker/features.py`): popularity as
-of t (lifetime, 30 and 90 days), tag affinity and similarity to the liked games, developer /
-publisher shares, genre / category overlap, price / release / popularity fit, and the
-retrieval rank (positions only, never the raw score). Every user-side feature reads only the
+of t (lifetime, 30 and 90 days), positive ratio, price, game age, tag affinity with the liked
+games, developer / publisher shares, genre / category overlap, and the retrieval rank
+(positions only, never the raw score). Every user-side feature reads only the
 last 20 liked games, so the same model can serve the batch and the online paths, and no feature
 depends on a retriever version.
 

@@ -13,7 +13,6 @@ weeks strictly before t's week). Pure numpy: no torch, no LightGBM.
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -23,7 +22,10 @@ from steam_training.data import Catalog, Ragged
 
 # Bump when a feature's definition (or the list) changes: a ranker only runs with the schema it
 # was trained on.
-FEATURE_SCHEMA_VERSION = 1
+# 2: similarity (tag cosine max / mean), fit (popularity / release / price fit, free share) and
+#    user (history size) families removed: no recall effect on the champion's candidates
+#    (ablation of ranker local-3acaec2-rank1, 2026-11-17)
+FEATURE_SCHEMA_VERSION = 2
 
 FAMILIES: dict[str, list[str]] = {
     "retrieval": ["rank", "score_percentile", "score_gap"],
@@ -43,9 +45,6 @@ FAMILIES: dict[str, list[str]] = {
         "genre_overlap",
         "category_overlap",
     ],
-    "similarity": ["tag_cosine_max", "tag_cosine_mean"],
-    "fit": ["popularity_fit", "release_fit_years", "price_fit", "free_share"],
-    "user": ["history_size"],
 }
 FEATURES = [f for features in FAMILIES.values() for f in features]
 
@@ -272,27 +271,8 @@ def compute_features(
         overlap = np.einsum("bkl,bl->bk", cand_labels, hist_share)
         out[..., col[name]] = overlap / np.maximum(cand_labels.sum(axis=2), 1)
 
-    # similarity to each liked game
-    pair = np.einsum("bkt,bht->bkh", cand_tags, hist_tags)  # cosine (rows are unit or zero)
-    masked = np.where(valid[:, None, :], pair, -np.inf)
-    out[..., col["tag_cosine_max"]] = masked.max(axis=2)
-    out[..., col["tag_cosine_mean"]] = (pair * valid[:, None, :]).sum(axis=2) / denom
-
-    # fit: the candidate relative to H
-    hist_pop = np.log1p(popularity.positives[row, hist].astype(np.float32))  # [b, h]
-    mean_pop = (hist_pop * valid).sum(axis=1, keepdims=True) / denom
-    out[..., col["popularity_fit"]] = out[..., col["log_positives"]] - mean_pop
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows: NaN, as intended
-        median_release = np.nanmedian(np.where(valid, games.release_day[hist], np.nan), axis=1)
-        median_price = np.nanmedian(np.where(valid, games.log_price[hist], np.nan), axis=1)
-    out[..., col["release_fit_years"]] = (games.release_day[cand] - median_release[:, None]) / 365
-    out[..., col["price_fit"]] = games.log_price[cand] - median_price[:, None]
-    out[..., col["free_share"]] = ((games.is_free[hist] * valid).sum(axis=1) / denom[:, 0])[:, None]
-    out[..., col["history_size"]] = n_hist[:, None]
-
     # no history: user-side features are undefined; no candidate: everything is
-    user_side = [col[f] for f in FAMILIES["affinity"] + FAMILIES["similarity"] + FAMILIES["fit"]]
+    user_side = [col[f] for f in FAMILIES["affinity"]]
     if not has_hist.all():
         idx = np.flatnonzero(~has_hist)
         out[np.ix_(idx, np.arange(k), np.array(user_side))] = np.nan

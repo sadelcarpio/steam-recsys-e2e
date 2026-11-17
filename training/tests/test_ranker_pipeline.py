@@ -94,14 +94,7 @@ def test_rank_end_to_end(settings, store):
     assert report.window.test_groups > 0 and report.window.train_groups > 0
     assert 0 < report.candidate_recall <= 1
     assert set(report.test.ranker.recall) == {5, 10}
-    assert set(report.ablation) == {
-        "retrieval",
-        "candidate",
-        "affinity",
-        "similarity",
-        "fit",
-        "user",
-    }
+    assert set(report.ablation) == {"retrieval", "candidate", "affinity"}
     assert sum(report.importances.values()) == pytest.approx(1)
     assert "ranker_recall_at_k=" in metrics_line(report)
     # a miss for retrieval is a miss for the ranker: the ceiling bounds both

@@ -72,10 +72,13 @@ retriever can be retrained and promoted without retraining the ranker (see "MLOp
 | Retrieval  | rank, score percentile in the group, (score − the group's top score) / the group's score spread |
 | Candidate  | log positive reviews as of t (lifetime, last 30 days, last 90 days), smoothed positive ratio as of t, is_free, log price, game age at t (days since release) |
 | Affinity   | cosine(tag profile of H, c's weighted tags); share of H with c's developer / publisher; genre / category overlap of c with H |
-| Similarity | max and mean tag cosine of c to each game of H                                              |
-| Fit        | c log popularity − mean of H's; c release date − median of H's (years); c log price − median of H's; share of free games in H |
-| User       | \|H\| (only useful through splits with candidate features)                                 |
 | Language   | share of c's reviews in u's language (batch: u's dominant review language; online: the browser locale). Needs `language` in `interactions` (ETL follow-up below) |
+
+Pruned after the first real run (ranker `local-3acaec2-rank1` on the champion's candidates,
+2026-11-17, test groups after 2026-09-17; `FEATURE_SCHEMA_VERSION` 2): leaving out the
+similarity (max / mean tag cosine to each liked game), fit (popularity, release date and price
+relative to H, free share) and user (|H|) families changed recall@20 by +0.0002, +0.0008 and
++0.0008, within noise, while candidate cost −0.022, retrieval −0.008 and affinity −0.001.
 
 Batch-only signals the EDA measured are left out to keep one model for both paths: similarity to
 negatively reviewed games (−0.003 recall@20 when dropped), history older than the last 20
