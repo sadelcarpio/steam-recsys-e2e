@@ -1,5 +1,8 @@
 """SageMaker job entry point: `python -m steam_training {train,promote,rank}`.
 
+`pair` (spec 9) evaluates challenger (retriever, ranker) pairs against the serving pair and
+promotes the best one (RETRIEVER_ID / RANKER_ID), or rolls back (ROLLBACK=true).
+
 `rank` (spec 9) trains a ranker on the candidates of `RETRIEVER_ID` (default the champion) after
 that retriever's cutoff, writes rankers/<RANKER_ID>/ and evaluation/rankers/<RANKER_ID>/ranker.json.
 
@@ -19,12 +22,14 @@ import logging
 from steam_training.artifacts import ArtifactStore
 from steam_training.config import (
     ExportSettings,
+    PairSettings,
     RankerSettings,
     TrackSettings,
     TrainingSettings,
     configure_logging,
 )
 from steam_training.data import IcebergSource
+from steam_training.pairs import run_pair
 from steam_training.pipeline import run_promotion, run_training
 from steam_training.ranker.pipeline import run_ranking
 from steam_training.tracking import ALIASES, MlflowSink
@@ -34,7 +39,7 @@ log = logging.getLogger("steam_training")
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="steam_training")
-    parser.add_argument("mode", choices=["train", "promote", "export", "track", "rank"])
+    parser.add_argument("mode", choices=["train", "promote", "export", "track", "rank", "pair"])
     parser.add_argument("--model-id", help="export / track: the model (e.g. champion)")
     parser.add_argument(
         "--alias", choices=ALIASES, help="track: point this registered model alias at the run"
@@ -82,6 +87,19 @@ def main(argv: list[str] | None = None) -> None:
             ArtifactStore(ranker_settings.model_artifacts_bucket),
         )
         log.info("ranker %s: gate %s (%s)", report.ranker_id, report.gate_passed, report.reason)
+        return
+
+    if args.mode == "pair":
+        pair_settings = PairSettings()
+        configure_logging(pair_settings.log_level)
+        result = run_pair(
+            pair_settings,
+            IcebergSource(
+                pair_settings.glue_database, pair_settings.aws_region, pair_settings.data_cache_dir
+            ),
+            ArtifactStore(pair_settings.model_artifacts_bucket),
+        )
+        log.info("pair: %s", result.model_dump_json())
         return
 
     settings = TrainingSettings()

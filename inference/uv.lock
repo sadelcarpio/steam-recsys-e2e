@@ -1429,12 +1429,12 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pyiceberg", extras = ["glue", "pyarrow"], specifier = ">=0.10" },
-    { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "steam-training", extra = "cpu" } },
-    { name = "torch", marker = "extra == 'cu128'", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "steam-training", extra = "cu128" } },
 ]
-provides-extras = ["cpu", "cu128", "tracking"]
+provides-extras = ["tracking"]
 
 [package.metadata.requires-dev]
+cpu = [{ name = "torch", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "steam-training", group = "cpu" } }]
+cu128 = [{ name = "torch", specifier = ">=2.8", index = "https://download.pytorch.org/whl/cu128", conflict = { package = "steam-training", group = "cu128" } }]
 dev = [
     { name = "mlflow", specifier = ">=3.18.0" },
     { name = "moto", extras = ["s3", "sagemaker", "ssm"], specifier = ">=5.0" },

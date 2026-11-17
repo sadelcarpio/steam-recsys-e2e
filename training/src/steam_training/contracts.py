@@ -9,6 +9,10 @@ S3 layout (bucket `model-artifacts-<acct>`):
     rankers/<ranker_id>/model.txt                    LightGBM text dump of a ranker (spec 9)
     rankers/<ranker_id>/metadata.json                RankerMetadata
     evaluation/rankers/<ranker_id>/ranker.json       RankerReport (`python -m steam_training rank`)
+    rankers/champion/...                             copy of the serving ranker (none: deleted)
+    evaluation/pairs/<retriever>__<ranker>.json      PairReport (`python -m steam_training pair`)
+    evaluation/champion/pair.json                    PairRecord: the serving (retriever, ranker)
+    evaluation/champion/history.jsonl                one PairRecord per promotion / rollback
 """
 
 from __future__ import annotations
@@ -215,6 +219,9 @@ class RankingMetrics(_Frozen):
     groups: int = Field(ge=0)
     recall: dict[int, Recall]
     ndcg: dict[int, Recall]
+    # mean of 1 / position (1-based) when the game is in the top k, else 0: average precision@k
+    # with one relevant game
+    mrr: dict[int, Recall] = Field(default_factory=dict)
 
 
 class RankerWindow(_Frozen):
@@ -235,6 +242,30 @@ class RankerComparison(_Frozen):
 
     retrieval: RankingMetrics
     ranker: RankingMetrics
+
+
+class ListMetrics(_Frozen):
+    """Per-user list metrics: one list per (user, snapshot T) built from the history before T,
+    relevant = the games the user reviews positively in [T, T + horizon) (not reviewed before
+    T). Averaged over (user, snapshot) pairs, so every user weighs the same at each snapshot."""
+
+    lists: int = Field(ge=0)
+    # hits in the top k / k
+    precision: dict[int, Recall]
+    # hits in the top k / min(k, relevant games)
+    recall: dict[int, Recall]
+    # average precision@k: mean over the hits of precision at their position, / min(k, relevant)
+    map: dict[int, Recall]
+
+
+class UserListComparison(_Frozen):
+    """Retrieval order vs ranker order of the same per-user lists (the batch path's view: one
+    list written per run, judged against what the user does until the next run)."""
+
+    snapshots: list[datetime]
+    horizon_days: int = Field(ge=1)
+    retrieval: ListMetrics
+    ranker: ListMetrics
 
 
 class RankerMetadata(_Frozen):
@@ -266,6 +297,10 @@ class RankerReport(_Frozen):
     # share of test groups whose game is among the retriever's candidates (the ceiling)
     candidate_recall: Recall
     test: RankerComparison
+    # the same, only the test groups whose game is among the candidates (the ranker's own skill)
+    conditional: RankerComparison | None = None
+    # per-user lists at weekly snapshots of the test window (None: not computed)
+    user_lists: UserListComparison | None = None
     # the same, split by the length of the user's history (short: < history_length games)
     by_history: dict[str, RankerComparison]
     # share of the total split gain per feature
@@ -274,3 +309,45 @@ class RankerReport(_Frozen):
     ablation: dict[str, float]
     gate_passed: bool
     reason: str
+
+
+# ---- serving pair (spec 9, phase 3) ----
+
+
+class PairEvaluation(_Frozen):
+    """One (retriever, ranker) on the common test groups. `final` = the list the pair serves
+    (ranker order, or retrieval order without a ranker); `retrieval` = the retriever's own order
+    (its recall@K is the ranker's ceiling)."""
+
+    retriever_id: str
+    ranker_id: str | None
+    final: RankingMetrics
+    retrieval: RankingMetrics
+    user_lists: ListMetrics | None = None
+
+
+class PairReport(_Frozen):
+    """evaluation/pairs/<retriever>__<ranker>.json: a promotion decision between the champion
+    pair and challenger pairs, all on groups at or after `window_start` (no compared model
+    trained on them)."""
+
+    evaluated_at: datetime
+    window_start: datetime
+    top_k: int
+    candidates: int
+    champion: PairEvaluation | None
+    challengers: list[PairEvaluation]
+    chosen: PairEvaluation | None
+    promoted: bool
+    reason: str
+
+
+class PairRecord(_Frozen):
+    """evaluation/champion/pair.json (and one line of history.jsonl): the pair being served."""
+
+    retriever_id: str
+    ranker_id: str | None
+    promoted_at: datetime
+    reason: str
+    window_start: datetime | None = None
+    final: RankingMetrics | None = None

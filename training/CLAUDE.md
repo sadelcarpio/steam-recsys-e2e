@@ -5,7 +5,10 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
 ## Layout
 
 - `src/steam_training/` (uv project, hatchling, py3.12; torch only through the `cpu` / `cu128`
-  extras, so always `uv sync --extra cpu` or `--extra cu128`)
+  dependency groups. `cu128` is a default group, so a plain `uv sync` / `uv run` / `uv add`
+  keeps a local GPU venv on CUDA torch; CI and the CPU image use `uv sync --no-group cu128
+  --group cpu` and then `uv run --no-sync` (a plain `uv run` would re-sync cu128). Never sync
+  a developer's venv with `--group cpu`.)
   - `config.py`: `TrainingSettings` (jobs, hyperparameters) and `LaunchSettings` (CD launcher),
     env > SSM `/training/*` when `USE_SSM=true`
   - `contracts.py`: Pydantic artifacts contract (`ModelConfig`, `ModelMetadata`,
@@ -41,9 +44,18 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
     `data.py` (`load_ranker_data`: groups after a retriever's cutoff via `load_training_data`,
     per-user cap, one extra pass for weekly popularity + later positives, `game_details`),
     `model.py` (`Groups`, `build_groups`, `fit_lambdarank`, `target_positions`,
-    `ranking_metrics`), `pipeline.py` (`run_ranking`: `python -m steam_training rank`)
-  - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary);
-    `METRIC_DEFINITIONS` (log regexes -> CloudWatch curves in the SageMaker console)
+    `ranking_metrics`: recall / NDCG / MRR), `lists.py` (per-user lists at weekly snapshots:
+    `UserReviews`, `snapshot_lists`, `ListAccumulator` precision / recall / MAP),
+    `pipeline.py` (`run_ranking`: `python -m steam_training rank`; T2 = the retriever's split
+    end when it has one)
+  - `pairs.py` (spec 9, phase 3): `python -m steam_training pair` (`PairSettings`):
+    `run_pair` scores the serving pair and challenger pairs on groups at or after
+    `window_start` (newest retriever split end / cutoff and ranker T2), `decide_pair`
+    (retriever gate, then final-list gate), `promote_pair`, `rollback`; `serving_pair`
+    bootstraps from `models/champion/` before the first `pair.json`
+  - `launch.py`: CD launcher for `train`, `promote`, `rank`, `pair` (creates and watches the
+    SageMaker job, writes the job summary); `METRIC_DEFINITIONS` (log regexes -> CloudWatch
+    curves in the SageMaker console)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
   (streams small batches). Unit tests, train → promote end to end with moto S3, and a bitwise
   resumed-equals-uninterrupted checkpoint test.
@@ -125,6 +137,13 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   groups come after its retriever's cutoff (the retriever never saw their labels). Naive UTC
   datetimes go through `ranker.data.epoch_seconds` (never `datetime.timestamp()`, which applies
   the local timezone).
+- Serving pair (spec 9): `evaluation/champion/pair.json` names the serving (retriever, ranker);
+  a pair promotion copies the changed models (`copy_model_to_champion`,
+  `copy_ranker_to_champion`, None deletes `rankers/champion/`), appends `history.jsonl`, and
+  writes `pair.json` last. `run_promotion` (retriever alone) refuses while a ranker serves.
+  Pair comparisons use only groups none of the compared models trained or selected on; a
+  ranker must have passed its gate and match `FEATURE_SCHEMA_VERSION`. A rollback steps one
+  promotion back (the pair before the current one's last non-rollback promotion).
 - `DATA_CACHE_DIR` (local runs): `iceberg_batches` reads through `data.CachingFileIO`, which
   copies each remote data / delete file once (`<dir>/<scheme>/<bucket>/<key>`, `.part` +
   rename) and serves it from disk. Safe because Iceberg files are immutable. It relies on
@@ -143,21 +162,25 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   doesn't install it. Tracking settings are in `NOT_FINGERPRINTED` and out of the metadata
   hyperparameters. A new metric goes in `contracts.RetrievalDiagnostics` (or `EmbeddingHealth`)
   and `tracking.final_metrics`. `EvalRows.user_id` / `activity` are optional (None = unknown).
-- Splits: `data.split_window` turns `VALIDATION_FRACTION` / `TEST_FRACTION` / `FIT_ON` into
+- Splits: `data.split_window` turns `VALIDATION_FRACTION` / `TEST_FRACTION` / `FIT_ON`, or the
+  time-based `HOLDOUT_WEEKS` / `TEST_WEEKS` (counted back from the newest row; spec 9), into
   (cutoff, end, evaluation). Rows at or after `SplitInfo.end` are never used (only pass 1 sees their timestamps: no training, no
   evaluation, no popularity counts). With `evaluation == "test"` there is no per-epoch
-  monitoring. Diagram of every split case: `docs/splits.svg` (keep it in sync).
+  monitoring. Diagram of every split case: `docs/splits.svg` (keep it in sync; the time-based windows are drawn in spec 9 "Time windows"
+and not in the svg yet).
 - Evaluation excludes `EvalRows.reviewed` (every game reviewed before the row) on top of the
   5-game history; scores of models evaluated before that change (stored champion metrics of an
   older architecture) are not comparable with newer ones.
 
 ## Commands
 
-`uv sync --extra cpu && uv run pytest && uv run ruff check . && uv run ruff format --check .`
-Add deps only with `uv add` (never edit the lock). torch is routed per extra to the
+`uv sync && uv run pytest && uv run ruff check . && uv run ruff format --check .` (GPU torch, the
+default group; CPU only: `uv sync --no-group cu128 --group cpu` + `uv run --no-sync ...`)
+Add deps only with `uv add` (never edit the lock). torch is routed per dependency group to the
 `pytorch-cpu` / `pytorch-cu128` indexes in `[tool.uv.sources]` (a tool section). Note that
 `uv remove torch` deletes that routing, so restore it before re-adding torch.
 
 Infra for this component: `infrastructure/training.tf`. Workflows: `training-ci.yml`,
-`training-cd.yml`, `training-promote.yml`, `training-image-cd.yml` (CPU image on merges, via
+`training-cd.yml`, `training-promote.yml` (modes retriever / pair / rollback),
+`training-rank.yml` (ranker job), `training-image-cd.yml` (CPU image on merges, via
 `cd.yml`; no training job).

@@ -33,7 +33,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: training/uv.lock
-      - run: uv sync --frozen --extra cpu && uv run pytest -q
+      - run: uv sync --frozen --no-group cu128 --group cpu && uv run --no-sync pytest -q
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:

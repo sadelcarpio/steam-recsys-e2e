@@ -27,11 +27,19 @@ from steam_training.contracts import (
     RankerMetadata,
     RankerReport,
     RankerWindow,
+    UserListComparison,
 )
 from steam_training.data import TableSource
 from steam_training.evaluation import CatalogIndex, model_scores, top_candidates
-from steam_training.ranker.data import from_epoch_seconds, load_ranker_data
-from steam_training.ranker.features import FAMILIES, FEATURE_SCHEMA_VERSION, FEATURES
+from steam_training.ranker.data import epoch_seconds, from_epoch_seconds, load_ranker_data
+from steam_training.ranker.features import (
+    FAMILIES,
+    FEATURE_SCHEMA_VERSION,
+    FEATURES,
+    SECONDS_PER_DAY,
+)
+from steam_training.ranker.lists import candidate_lists, evaluate_lists
+from steam_training.ranker.lists import snapshots as list_snapshots
 from steam_training.ranker.model import (
     FitResult,
     Groups,
@@ -65,12 +73,14 @@ def run_ranking(
         max_groups_per_user=settings.ranker_max_groups_per_user,
         seed=settings.seed,
         popularity_source=settings.ranker_popularity_source,
+        t2=retriever_meta.split.end,
+        train_fraction=settings.ranker_train_fraction,
+        list_users=settings.ranker_list_users,
     )
     rows = data.rows
-    if len(rows) < 2:
-        raise ValueError(f"no ranker groups after {cutoff}")
-    cut = int(len(rows) * settings.ranker_train_fraction)
-    t2 = from_epoch_seconds(int(rows.seconds[cut]))
+    cut, t2 = data.test_start, data.t2
+    if cut < 1 or cut >= len(rows):
+        raise ValueError(f"no ranker groups on both sides of T2 {t2} (cutoff {cutoff})")
     rng = np.random.default_rng(settings.seed)
     train_idx = _subsample(np.arange(cut), settings.ranker_max_train_groups, rng)
     test_idx = _subsample(np.arange(cut, len(rows)), settings.ranker_max_test_groups, rng)
@@ -124,6 +134,14 @@ def run_ranking(
         retrieval=ranking_metrics(retrieval_position, ks),
         ranker=ranking_metrics(ranker_position, ks),
     )
+    found = test.has_target
+    conditional = RankerComparison(
+        retrieval=ranking_metrics(retrieval_position[found], ks),
+        ranker=ranking_metrics(ranker_position[found], ks),
+    )
+    user_lists = None
+    if data.list_reviews is not None and len(data.list_reviews):
+        user_lists = _user_lists(settings, data, fit, score_fn, index, ks)
     by_history = {}
     full = test.history_size >= settings.ranker_history_length
     for name, mask in (("short", ~full), ("full", full)):
@@ -161,6 +179,8 @@ def run_ranking(
         window=window,
         candidate_recall=float(test.has_target.mean()) if len(test) else 0.0,
         test=comparison,
+        conditional=conditional,
+        user_lists=user_lists,
         by_history=by_history,
         importances=dict(sorted(importances.items(), key=lambda kv: -kv[1])),
         ablation=ablation,
@@ -199,6 +219,42 @@ def metrics_line(report: RankerReport) -> str:
         f"retrieval_ndcg_at_k={t.retrieval.ndcg[k]:.6f} "
         f"ranker_ndcg_at_k={t.ranker.ndcg[k]:.6f} "
         f"candidate_recall={report.candidate_recall:.6f}"
+        + (
+            f" ranker_list_map_at_k={report.user_lists.ranker.map[k]:.6f}"
+            f" retrieval_list_map_at_k={report.user_lists.retrieval.map[k]:.6f}"
+            if report.user_lists is not None
+            else ""
+        )
+    )
+
+
+def _user_lists(settings, data, fit, score_fn, index, ks) -> UserListComparison:
+    """Per-user lists at weekly snapshots of the test window (`ranker.lists`)."""
+    horizon = settings.ranker_list_horizon_days * SECONDS_PER_DAY
+    times = list_snapshots(
+        epoch_seconds(data.t2),
+        int(data.rows.seconds[-1]),
+        horizon,
+        settings.ranker_list_max_snapshots,
+    )
+    rank = candidate_lists(
+        score_fn,
+        index,
+        settings.ranker_candidates,
+        settings.eval_batch_size,
+        settings.ranker_history_length,
+        data.games,
+        data.popularity,
+        fit.predict_features,
+    )
+    length = data.rows.history.shape[1]
+    retrieval, ranker = evaluate_lists(data.list_reviews, times, horizon, length, ks, rank)
+    log.info("per-user lists: %d (user, snapshot) lists, %d snapshots", ranker.lists, len(times))
+    return UserListComparison(
+        snapshots=[from_epoch_seconds(t) for t in times],
+        horizon_days=settings.ranker_list_horizon_days,
+        retrieval=retrieval,
+        ranker=ranker,
     )
 
 

@@ -43,8 +43,10 @@ re-mined per epoch and by `EVAL_MAX_ROWS`. Training itself grows linearly: about
 per 2.7M interactions on 16 CPU cores.
 
 **Devices.** `DEVICE=auto` uses CUDA when present, otherwise the CPU. torch comes from one of two
-uv extras: `cpu` (default image, CI) or `cu128` (GPU image, built with
-`--build-arg TORCH_VARIANT=cu128` and tagged `<sha>-cu128`). The cu128 index stops at torch 2.11
+uv dependency groups: `cu128` (the default group: a plain `uv sync` / `uv run` / `uv add` keeps
+a local venv on CUDA torch; the GPU image, built with `--build-arg TORCH_VARIANT=cu128` and
+tagged `<sha>-cu128`) or `cpu` (the default image and CI: `uv sync --no-group cu128 --group
+cpu`, then `uv run --no-sync`). The cu128 index stops at torch 2.11
 while cpu has 2.14. Artifacts are plain state dicts, so they load in either.
 
 **Checkpoints.** After every epoch the full training state (model, optimizer, mined negatives,
@@ -278,6 +280,17 @@ VALIDATION_FRACTION=0.075 TEST_FRACTION=0.075 ...      VALIDATION_FRACTION=0.075
 
 ![Temporal splits for experiments, promotion and keeping a champion fresh](docs/splits.svg)
 
+**Time-based windows** (spec 9, "Time windows"; not in the diagram yet). `HOLDOUT_WEEKS=6`
+replaces the fractions with windows counted back from the newest interaction N: train before
+`N - 6w`, validate on `[N - 6w, N - TEST_WEEKS)`, and the last `TEST_WEEKS` (default 2) are
+never read by training: they are the test window the pair gates use. A ranker trained on that
+retriever (`rank --retriever-id`) uses the retriever's validation weeks for its own training
+(the retriever never trained on them) and starts its test at the same `N - TEST_WEEKS`.
+
+```bash
+HOLDOUT_WEEKS=6 TEST_WEEKS=2 ...        # instead of VALIDATION_FRACTION / TEST_FRACTION
+```
+
 Promotion (step 4) ignores these fractions: it trains nothing and scores both models on every
 row after both cutoffs. A model trained with a held-out test window and then promoted is
 therefore judged partly on that window too. A refit on all rows for serving (step 3) and
@@ -320,7 +333,7 @@ min / max activity is in `tracking.json`.
 
 ```bash
 docker compose -f training/mlflow/compose.yaml up -d      # http://localhost:5000
-cd training && uv sync --extra cu128 --extra tracking      # mlflow-skinny client (cpu works too)
+cd training && uv sync --extra tracking                   # + the mlflow-skinny client
 MLFLOW_TRACKING_URI=http://localhost:5000 AWS_PROFILE=admin AWS_REGION=us-east-1 \
   MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> MODEL_ID=local-$(git rev-parse --short HEAD)-a1 \
   EXPLICIT_NEGATIVES=false uv run python -m steam_training train
@@ -424,18 +437,50 @@ DATA_CACHE_DIR=~/.cache/steam-recsys/iceberg \
   top `RANKER_CANDIDATES`, games reviewed before t excluded, games the user likes later
   dropped. T2 splits the groups by time (`RANKER_TRAIN_FRACTION`): train before, test after.
   The last `RANKER_EARLY_STOPPING_FRACTION` of the training groups stops boosting early.
-- **Report** (`evaluation/rankers/<id>/ranker.json`): recall@{10, `RANKER_TOP_K`} and NDCG of
-  retrieval order vs ranker order on the test groups, the candidates' recall (the ceiling), a
-  split by history size, gain importances and, with `RANKER_ABLATION`, the recall change when
-  each feature family is left out.
+- **Report** (`evaluation/rankers/<id>/ranker.json`), retrieval order vs ranker order:
+  - per review (one relevant game per group): recall@{10, `RANKER_TOP_K`}, NDCG, MRR (=
+    average precision with one relevant game); end to end (`test`, a game outside the
+    candidates is a miss) and `conditional` (only groups whose game is among them: the
+    ranker's own skill); the candidates' recall (the ceiling); a split by history size;
+  - per user (`user_lists`, the batch path's view): at weekly snapshots T of the test window,
+    one list per sampled user (`RANKER_LIST_USERS`) from the history before T, judged against
+    every game they like in `[T, T + RANKER_LIST_HORIZON_DAYS)`: precision@k, recall@k (hits /
+    min(k, relevant)), MAP@k;
+  - gain importances and, with `RANKER_ABLATION`, the recall change when each feature family
+    is left out.
+- **T2**: the retriever's split end when it was trained with `HOLDOUT_WEEKS`, else after
+  `RANKER_TRAIN_FRACTION` of the groups.
 - **Gate:** recall@`RANKER_TOP_K` must beat retrieval order by `RANKER_MIN_GAIN`. The ranker is
   saved either way (`rankers/<id>/model.txt` + `metadata.json`), and the report says whether
-  it passed. Pair promotion and serving come in later phases (spec 9, "Delivery sequence").
+  it passed. Serving it is a pair promotion (below).
+
+**Pair promotion and rollback** (`python -m steam_training pair`, *training promote* with
+`mode=pair` / `rollback`). The serving pair is `evaluation/champion/pair.json` (before the
+first one: the champion retriever alone). `RANKER_ID` and / or `RETRIEVER_ID` name the
+challengers; with a new retriever, the pairs (it + `RANKER_ID`), (it + the serving ranker) and
+(it alone) are all scored. Every pair is scored on the same groups, from the newest of the
+compared retrievers' split ends (cutoffs) and rankers' T2, so nothing compared was trained or
+selected on them:
+
+1. a new retriever: retrieval recall@`PAIR_RETRIEVAL_K` (50) must beat the serving one's by
+   `RETRIEVER_MIN_IMPROVEMENT`, and recall@`PAIR_CANDIDATES` (100, the ranker's ceiling) must
+   not drop;
+2. the best challenger's final recall@`PAIR_TOP_K` (20) must beat the serving pair's by
+   `MIN_IMPROVEMENT`, with NDCG@20 not lower.
+
+The report (`evaluation/pairs/<retriever>__<ranker>.json`) has every pair's final and
+retrieval metrics and per-user lists. A ranker that failed its own gate is refused (unless
+`FORCE_PROMOTION=true`). `ROLLBACK=true` restores the pair that served before the current
+one. While a ranker serves, `promote` (a retriever alone) refuses.
 
 ```
   rankers/<id>/model.txt                      LightGBM text dump
   rankers/<id>/metadata.json                  RankerMetadata: retriever, window (T1, T2), features, snapshots
   evaluation/rankers/<id>/ranker.json         RankerReport
+  rankers/champion/…                          the serving ranker (deleted when none serves)
+  evaluation/pairs/<retriever>__<ranker>.json PairReport (a pair promotion)
+  evaluation/champion/pair.json               PairRecord: the serving (retriever, ranker)
+  evaluation/champion/history.jsonl           one PairRecord per promotion / rollback
 ```
 
 Popularity comes from the `game_popularity_weekly` mart (reviews per game and ISO week; a
@@ -458,6 +503,7 @@ forwards them to the job:
 | `TEMPERATURE` | 0.05 | softmax temperature on cosine similarity |
 | `GAME_EMBEDDING_DIM` / `ATTRIBUTE_EMBEDDING_DIM` / `HIDDEN_DIM` / `OUTPUT_DIM` | 64 / 16 / 128 / 64 | |
 | `VALIDATION_FRACTION` / `TEST_FRACTION` | 0.1 / 0 | shares of interactions (by time) held out: `[train \| validation \| test]` |
+| `HOLDOUT_WEEKS` / `TEST_WEEKS` | unset / 2 | time-based windows instead of the fractions: validation `[N − HOLDOUT, N − TEST)`, test `[N − TEST, N)` (spec 9) |
 | `FIT_ON` | train | `train` (evaluate on validation) or `train+validation` (evaluate on test; needs `TEST_FRACTION` > 0) |
 | `COLD_ROW_FRACTION` | 0.1 | share of empty-history rows trained on |
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |
@@ -487,7 +533,8 @@ forwards them to the job:
 
 ```bash
 cd training
-uv sync --extra cpu      # or --extra cu128 on a CUDA machine; + --extra tracking for MLflow
+uv sync                  # CUDA torch (default group); CPU only: --no-group cu128 --group cpu
+                         # (then `uv run --no-sync`); + --extra tracking for MLflow
 uv run pytest            # unit tests + train/promote end to end on synthetic marts (moto S3)
 uv run ruff check . && uv run ruff format --check .
 ```
