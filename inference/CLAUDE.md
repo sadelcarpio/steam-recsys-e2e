@@ -65,6 +65,9 @@ Human docs: `README.md`.
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
   - `__main__.py`: SageMaker Processing entry point (`python -m steam_inference`)
+- `scripts/publish_online_ranker.py` (spec 9): `ranker.npz` for the catalog already in S3
+  (`S3BundleStore.publish_ranker`: the ranker, then the same manifest + ranker fields), without
+  an inference run; tested in `tests/test_online_ranker.py`
 - `scripts/publish_search_index.py`: publishes the search index from the catalog already in
   S3 (+ review counts from one Athena query), without an inference run; drops adult games
   from both (republishing the catalog when it had any)

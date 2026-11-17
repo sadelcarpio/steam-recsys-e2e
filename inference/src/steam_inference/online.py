@@ -199,6 +199,31 @@ class S3BundleStore:
         log.info("online catalog: %.1f MB, manifest %s", len(payload) / 1e6, uri)
         return uri
 
+    def publish_ranker(self, manifest: OnlineBundleManifest, ranker: RankerPayload) -> str:
+        """Only the ranker: ranker.npz, then `manifest` (the published one, same catalog
+        version) with the ranker's fields (`scripts/publish_online_ranker.py`)."""
+        key = f"{self.prefix}/{RANKER_NAME}"
+        put = self.s3.put_object(Bucket=self.bucket, Key=key, Body=ranker.payload)
+        updated = manifest.model_copy(
+            update={
+                "ranker_id": ranker.ranker_id,
+                "ranker_mode": ranker.mode,
+                "ranker_key": key,
+                "ranker_version_id": put.get("VersionId"),
+                "ranker_sha256": hashlib.sha256(ranker.payload).hexdigest(),
+            }
+        )
+        manifest_key = f"{self.prefix}/{MANIFEST_NAME}"
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=manifest_key,
+            Body=updated.model_dump_json(indent=2).encode(),
+            ContentType="application/json",
+        )
+        mb = len(ranker.payload) / 1e6
+        log.info("online ranker %s (%s): %.1f MB", ranker.ranker_id, ranker.mode, mb)
+        return f"s3://{self.bucket}/{manifest_key}"
+
     def publish_search_index(self, payload: bytes) -> str:
         # Served as is by CloudFront: browsers decompress it (Content-Encoding), and caches
         # revalidate hourly (the index changes once per pipeline run).

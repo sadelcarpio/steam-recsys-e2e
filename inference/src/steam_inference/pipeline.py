@@ -112,7 +112,12 @@ def run_inference(
     ranker, ranker_reason = None, "RANKER_MODE=off"
     if settings.ranker_mode != "off":
         ranker, ranker_reason = load_serving_ranker(
-            source, store, data, metadata.model_id, as_of=now
+            source,
+            store,
+            data.games.catalog,
+            metadata.model_id,
+            as_of=now,
+            history_length=data.users.history.shape[1],
         )
     log.info("ranker: %s", ranker_reason)
     retrieved = retrieve(
@@ -173,8 +178,7 @@ def run_inference(
                 try:
                     ranker_payload = online_ranker(
                         ranker,
-                        data,
-                        keep=~excluded,
+                        data.games.catalog.items.game_idx[~excluded],
                         retriever_id=metadata.model_id,
                         candidates=settings.retrieval_candidates,
                         mode=settings.ranker_mode,

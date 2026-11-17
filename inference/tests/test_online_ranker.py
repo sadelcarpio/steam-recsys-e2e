@@ -270,3 +270,86 @@ def test_ranker_arrays_name_the_pair(settings, store, champion):
     online = OnlineRanker.from_bytes(encode_ranker(arrays))
     assert (online.ranker_id, online.model_id, online.candidates) == ("k9", "abc123", 100)
     assert online.rows == 6 and online.trees.num_trees == 3
+
+
+def _script():
+    import importlib.util
+
+    path = Path(__file__).parents[1] / "scripts" / "publish_online_ranker.py"
+    spec = importlib.util.spec_from_file_location("publish_online_ranker", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_publish_script_adds_the_ranker_to_the_published_catalog(
+    settings, store, champion, tmp_path, monkeypatch, caplog
+):
+    """A catalog published without a ranker (an older run), then a pair promotion: the script
+    adds ranker.npz and the manifest's ranker fields, the catalog version stays, and serving's
+    loader applies it."""
+    from steam_serving.online import BundleLoader
+
+    from steam_inference.online import S3BundleStore
+
+    bundles = S3BundleStore(store.bucket, "serving/online", region="us-east-1")
+    run_inference(
+        settings.model_copy(update={"ranker_mode": "off"}),
+        FakeSource(ranker_marts()),
+        store,
+        JsonlWriter(str(tmp_path / "off.jsonl")),
+        None,
+        bundle_store=bundles,
+        now=NOW,
+        save_online_lists=False,
+    )
+    key = "serving/online/manifest.json"
+    before = json.loads(store.s3.get_object(Bucket=store.bucket, Key=key)["Body"].read())
+    assert before["ranker_id"] is None
+    serve_ranker(store)
+
+    script = _script()
+    monkeypatch.setattr(script, "IcebergSource", lambda *a, **k: FakeSource(ranker_marts()))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["publish_online_ranker.py", "--bucket", store.bucket, "--liked", "1002", "1004"],
+    )
+    with caplog.at_level("INFO"):
+        script.main()
+    assert "checks passed" in caplog.text
+
+    after = json.loads(store.s3.get_object(Bucket=store.bucket, Key=key)["Body"].read())
+    assert after["ranker_id"] == "k1" and after["ranker_mode"] == "on"
+    assert after["catalog_version_id"] == before["catalog_version_id"]
+    assert after["catalog_sha256"] == before["catalog_sha256"]
+
+    model = BundleLoader(
+        store.bucket, "serving/online", region="us-east-1", refresh_seconds=0
+    ).get()
+    assert model.ranker is not None and model.ranker_mode == "on"
+    result = model.recommend([1002, 1004], 5)
+    assert result.ranker_id == "k1"
+    free = [(g - 1000) % 3 == 0 for g in result.game_ids]
+    assert free == sorted(free, reverse=True)
+
+
+def test_publish_script_refuses_without_a_serving_ranker(
+    settings, store, champion, tmp_path, monkeypatch
+):
+    from steam_inference.online import S3BundleStore
+
+    run_inference(
+        settings.model_copy(update={"ranker_mode": "off"}),
+        FakeSource(ranker_marts()),
+        store,
+        JsonlWriter(str(tmp_path / "off.jsonl")),
+        None,
+        bundle_store=S3BundleStore(store.bucket, "serving/online", region="us-east-1"),
+        now=NOW,
+        save_online_lists=False,
+    )
+    script = _script()
+    monkeypatch.setattr(script, "IcebergSource", lambda *a, **k: FakeSource(ranker_marts()))
+    monkeypatch.setattr("sys.argv", ["publish_online_ranker.py", "--bucket", store.bucket])
+    with pytest.raises(SystemExit, match="no ranker to publish"):
+        script.main()
