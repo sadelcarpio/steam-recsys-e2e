@@ -76,6 +76,8 @@ def main() -> None:
         reranker,
         details_writer=details_writer,
         bundle_store=bundle_store,
+        # dry runs (OUTPUT_PATH) leave the delayed-label sample of the real runs alone
+        save_online_lists=settings.output_path is None,
     )
     if reranker is not None:
         for stage, usage in reranker.usage.items():

@@ -72,6 +72,7 @@ resource "aws_ssm_parameter" "inference" {
     RERANK_ENABLED_STAGES  = var.inference_rerank_stages
     RERANK_BLEND_WEIGHT    = tostring(var.inference_rerank_blend_weight)
     RERANK_SHUFFLE         = tostring(var.inference_rerank_shuffle)
+    RANKER_MODE            = var.inference_ranker_mode
   }
   name  = "${local.inference_ssm_prefix}/${each.key}"
   type  = "String"
@@ -129,9 +130,20 @@ data "aws_iam_policy_document" "inference" {
     resources = ["${aws_s3_bucket.processed_steam_data.arn}/iceberg/*"]
   }
   statement {
-    sid       = "ReadModels"
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.model_artifacts.arn}/models/*"]
+    sid     = "ReadModels"
+    actions = ["s3:GetObject"]
+    # spec 9: the serving pair names the ranker that runs with the champion retriever
+    resources = [
+      "${aws_s3_bucket.model_artifacts.arn}/models/*",
+      "${aws_s3_bucket.model_artifacts.arn}/rankers/*",
+      "${aws_s3_bucket.model_artifacts.arn}/evaluation/champion/pair.json",
+    ]
+  }
+  statement {
+    sid     = "DelayedLabelCheck"
+    actions = ["s3:GetObject", "s3:PutObject"]
+    # spec 9: each run scores the previous run's saved lists and saves its own
+    resources = ["${aws_s3_bucket.model_artifacts.arn}/evaluation/online/*"]
   }
   statement {
     sid     = "PublishOnlineBundle"

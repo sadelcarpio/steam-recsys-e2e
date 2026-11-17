@@ -1,7 +1,7 @@
 # inference
 
 Specs: `specs/4-inference-pipeline.md`, `specs/7-rerank-two-stage.md` (two-stage rerank +
-evaluation), `specs/10-coming-soon-games.md` (unreleased games),
+evaluation), `specs/9-ranking-model.md` (the ranker, delayed-label check), `specs/10-coming-soon-games.md` (unreleased games),
 `specs/13-anonymize-user-ids.md` (pseudonymous user ids, demo user index).
 Human docs: `README.md`.
 
@@ -24,6 +24,13 @@ Human docs: `README.md`.
     even beyond the model vocab), lookup names, `Games.info` / `describe` (prompt lines),
     truncated short descriptions and the release status (`Games.coming_soon`)
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
+  - `ranking.py` (spec 9): stage 2b. `load_serving_ranker` (pair.json must name this run's
+    retriever and `rankers/champion/` that ranker; game table from the catalog +
+    `game_details`, popularity from `game_popularity_weekly` as of the run), `apply_ranker`
+    (per-chunk failure isolation, overlap with retrieval order), `cut`
+  - `online_check.py` (spec 9): the delayed-label check (`ListsSample` saved per run,
+    `check` scores the previous run's sample against the reviews since; uses
+    `Reviews.micros`)
   - `rerank.py`: stage 3, two calls per user. `llm_ranking` (shuffled prompt,
     `permutation_error` + one retry, else retrieval order), `blend`, then explanations of the
     final top N checked by `explanation_problem` (no candidate name, grounded, length), one
@@ -121,6 +128,13 @@ Human docs: `README.md`.
   user of `interactions`), the kept users' reviewed game ids, users x K candidates, one score
   chunk (`USER_BATCH_SIZE` x games) and the stored hashes (a dict with one entry per item,
   about 150 MB at 1.4M users). Never load a whole mart when a per-batch filter will do.
+- Ranker (spec 9): it only runs as part of the serving pair (`evaluation/champion/pair.json`
+  names this run's retriever, `rankers/champion/` holds the named ranker with the current
+  `FEATURE_SCHEMA_VERSION`); otherwise retrieval order, with `ranker_reason` in the summary.
+  Features come from `steam_training.ranker.features` only (never re-implemented here) and are
+  as of the run time. `RANKER_MODE=shadow` must write exactly what `off` writes. The LLM rerank
+  and explanations run on the written list (the ranker's top `RANKER_TOP_K` when `on`). The
+  delayed-label sample is saved only by real runs (`save_online_lists`, off for dry runs).
 - The Bedrock model id lives in Terraform (`inference_bedrock_model_id`), because IAM grants
   exactly that model. Changing it only via env would get AccessDenied in AWS.
 

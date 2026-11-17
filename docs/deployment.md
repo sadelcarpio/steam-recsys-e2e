@@ -459,6 +459,22 @@ aws s3 cp s3://model-artifacts-${ACCT}/serving/users/index.json -      # demo us
 The job's last log line (`inference done: {...}`) has the summary: users, written / unchanged /
 deleted, reranked, `game_details_written`, `online_bundle`.
 
+**Ranker (spec 9).** Once a pair promotion (step 9, *training promote* `mode=pair`) has put a
+ranker in `evaluation/champion/pair.json`, inference runs it in `RANKER_MODE` (Terraform
+`inference_ranker_mode`, default `shadow`). Rollout:
+
+1. Deploy (*infrastructure CD*: the role's reads of `rankers/*` / `pair.json` and
+   `evaluation/online/*`, and the SSM `RANKER_MODE`; then *inference CD*).
+2. A run in `shadow` writes retrieval order as before. Its summary has `ranker_id`,
+   `ranked_users`, `ranker_failures` and `ranker_overlap` (how much of the top 20 changes);
+   `ranker_reason` says why the ranker did not run, if it did not.
+3. The next run's `online_check` (and `evaluation/online/<run>.json`) scores the previous run's
+   lists against the reviews written since: `written` (retrieval order) vs `alternative` (the
+   ranker's lists), precision / recall / MAP@{10, 20}.
+4. Switch it on: `inference_ranker_mode = "on"` (infrastructure CD), or for the next run only
+   `aws ssm put-parameter --name /inference/RANKER_MODE --value on --overwrite` (the next
+   apply sets it back to the Terraform value). `off` is the kill switch, the same way.
+
 ## 11. Serving API
 
 `recsys-serving` is a Lambda behind a Lambda Function URL. It reads the tables of step 10, so it

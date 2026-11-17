@@ -256,6 +256,16 @@ variable "inference_rerank_shuffle" {
   default     = true
 }
 
+variable "inference_ranker_mode" {
+  description = "Spec 9 ranker in batch inference: off, shadow (computed and compared, retrieval order written) or on (its top RANKER_TOP_K is written). Only runs when evaluation/champion/pair.json names a ranker for the champion retriever."
+  type        = string
+  default     = "shadow"
+  validation {
+    condition     = contains(["off", "shadow", "on"], var.inference_ranker_mode)
+    error_message = "inference_ranker_mode must be off, shadow or on."
+  }
+}
+
 # ---- serving -------------------------------------------------------------------------------
 
 variable "serving_auth_type" {
