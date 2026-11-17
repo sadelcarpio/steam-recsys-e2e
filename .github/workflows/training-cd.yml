@@ -51,7 +51,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: training/uv.lock
-      - run: uv sync --frozen --extra cpu && uv run pytest -q
+      - run: uv sync --frozen --no-group cu128 --group cpu && uv run --no-sync pytest -q
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -84,6 +84,6 @@ jobs:
           IMAGE_TAG: ${{ steps.image.outputs.tag }}
           INSTANCE: ${{ inputs.instance_type }}
         run: |
-          uv run python -m steam_training.launch train --model-id "$GITHUB_SHA" \
+          uv run --no-sync python -m steam_training.launch train --model-id "$GITHUB_SHA" \
             --image-tag "$IMAGE_TAG" ${INSTANCE:+--instance-type "$INSTANCE"} \
             --env "$OVERRIDES" --wait-minutes "$WAIT_MINUTES" --summary "$GITHUB_STEP_SUMMARY"
