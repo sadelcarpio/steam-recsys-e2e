@@ -139,20 +139,8 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
                 "game_id": pa.array(game_id(games), pa.int64()),
             }
         ),
-        # spec 9 ranker: price + release date (the last game has neither)
-        "game_details": pa.table(
-            {
-                "game_id": pa.array(game_id(games), pa.int64()),
-                "game_price": pa.array(
-                    [float(g % 4) * 10 for g in games[:-1]] + [None], pa.float64()
-                ),
-                "game_release_date": pa.array(
-                    [f"Mar {1 + int(g) % 28}, {2015 + int(g) % 8}" for g in games[:-1]]
-                    + ["Coming soon"],
-                    pa.string(),
-                ),
-            }
-        ),
+        # A6 release dates + spec 9 ranker prices
+        "game_details": game_details(games),
         "lkp_developers": lookup(7),
         "lkp_publishers": lookup(5),
         "lkp_genres": lookup(N_CLUSTERS),
@@ -161,6 +149,33 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
         "game_tags": game_tags,
         "game_popularity_weekly": popularity,
     }
+
+
+def release_date(game_idx: int) -> str | None:
+    """Steam's raw release date strings: mostly exact days, a few unparseable ones."""
+    if game_idx % 10 == 7:
+        return "Coming soon"
+    if game_idx % 10 == 8:
+        return "2027"
+    if game_idx % 10 == 9:
+        return None
+    day = START - timedelta(days=30 * (game_idx % 6))
+    return f"{day:%b} {day.day}, {day.year}"
+
+
+def game_details(games) -> pa.Table:
+    """A6: release dates (exact, "Coming soon", year only, missing); spec 9 ranker: prices (the
+    games without a release date have none either)."""
+    games = [int(g) for g in games]
+    return pa.table(
+        {
+            "game_id": pa.array([game_id(g) for g in games], pa.int64()),
+            "game_price": pa.array(
+                [None if g % 10 == 9 else float(g % 4) * 10 for g in games], pa.float64()
+            ),
+            "game_release_date": pa.array([release_date(g) for g in games], pa.string()),
+        }
+    )
 
 
 class FakeSource:

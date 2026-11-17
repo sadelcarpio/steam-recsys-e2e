@@ -89,6 +89,15 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   that do not change training go in `NOT_FINGERPRINTED`.
 - Device: models, batches and scoring tensors move to `resolve_device(DEVICE)`; saved state dicts
   are always CPU tensors. Keep numpy in data / collate and torch in the scoring loops.
+- Training step on CUDA has no per-step host sync: batches come pinned from the loader
+  (`TensorTree.pin_memory`, a new batch container subclasses `model.TensorTree`) and move with
+  `non_blocking=True`, Adam is fused, the loss is summed on the device. Don't add `.item()`,
+  `bool(tensor)` or data-dependent shapes to the step (the A4 tag profile's `repeat_interleave`
+  is the one left).
+- Experiments: every approach tried, accepted or rejected, gets a row in README "Experiment
+  log" (+ a detailed section with the numbers and how it worked). An arm runs seeds 42 and 43
+  against the shared controls on the same `interactions` snapshot (the seed noise is ~0.8%).
+  A rejected approach's code is removed, not left behind a setting.
 - Artifact writes: `metadata.json` is written last for a model, and
   `evaluation/champion/metrics.json` last for a promotion. The checkpoint is kept after the
   model is saved (a finished run is extended with more `EPOCHS`; lifecycle expires it in 14 d).

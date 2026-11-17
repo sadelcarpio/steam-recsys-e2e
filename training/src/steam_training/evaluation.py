@@ -8,6 +8,12 @@ recall@K is the hit rate. Rows are reported as warm (non-empty history, the infe
 population), cold (empty history) and all. Validation rows are a uniform sample (at most
 `EVAL_MAX_ROWS`), so every segment is unbiased.
 
+A6 (item recency): inference re-embeds the catalog on every run, so recency features as of the
+cutoff would be months stale for most validation rows. A model that reads them scores each
+row against the catalog as of the row's ISO week (Monday UTC), from the reviews of the weeks
+before it (`game_popularity_weekly`), as a weekly inference run would. Other models (and the
+popularity baseline) score as before.
+
 The scoring loops (evaluation and hard-negative mining) are pure torch and run on `device`;
 numpy only appears at the entry points.
 """
@@ -22,13 +28,22 @@ import torch
 
 from steam_training.batching import to_item_batch
 from steam_training.contracts import RecallMetrics, SegmentRecall
-from steam_training.data import Catalog, EvalRows, Ragged
+from steam_training.data import (
+    DAY_SECONDS,
+    Catalog,
+    EvalRows,
+    Ragged,
+    week_of_day,
+    week_start_day,
+)
 from steam_training.model import TwoTowerModel
 
 NOT_FOUND = torch.iinfo(torch.int64).max
-# history chunk [b, 5] (on device) -> fresh (writable) scores [b, catalog]; callers mask them
-# in place
-ScoreFn = Callable[[torch.Tensor], torch.Tensor]
+# history chunk [b, 5] (on device) [, A7: language ids [b]] -> fresh (writable) scores
+# [b, catalog]; callers mask them in place
+ScoreFn = Callable[..., torch.Tensor]
+# A6: the score function of a model over another catalog (recency as of another day)
+Rescore = Callable[[Catalog], ScoreFn]
 CPU = torch.device("cpu")
 
 
@@ -77,12 +92,40 @@ def model_scores(
     length = model.user_tower.history_length
 
     @torch.no_grad()
-    def score(history: torch.Tensor) -> torch.Tensor:
+    def score(history: torch.Tensor, language: torch.Tensor | None = None) -> torch.Tensor:
         # histories are most recent first: a model with a shorter history reads the prefix
         # (promotion scores models of different lengths on the same rows)
-        return model.score(model.user_tower(history[:, :length]), item_embeddings)
+        return model.score(model.user_tower(history[:, :length], language), item_embeddings)
 
     return score
+
+
+def recency_rescore(
+    model: TwoTowerModel, batch_size: int, device: torch.device = CPU
+) -> Rescore | None:
+    """For a model that reads item recency (A6): its scores over a refreshed catalog."""
+    if not model.config.item_recency:
+        return None
+    return lambda catalog: model_scores(model, catalog, batch_size, device)
+
+
+def recent_popularity_scores(catalog: Catalog, device: torch.device = CPU) -> ScoreFn:
+    """A6 baseline: every user gets the games with the most reviews in the 4 weeks before the
+    catalog's ISO week (13 weeks break ties). With `recent_popularity_rescore` the catalog is
+    refreshed weekly, like an A6 model's: "what's trending this week", no model."""
+    recency = catalog.items.recency
+    if recency is None:
+        raise ValueError("recent popularity needs a catalog with recency features (A6)")
+    item_scores = torch.tensor(recency[:, 0] + 1e-3 * recency[:, 1], device=device)
+
+    def score(history: torch.Tensor, language: torch.Tensor | None = None) -> torch.Tensor:
+        return item_scores.repeat(len(history), 1)
+
+    return score
+
+
+def recent_popularity_rescore(device: torch.device = CPU) -> Rescore:
+    return lambda catalog: recent_popularity_scores(catalog, device)
 
 
 def popularity_scores(
@@ -97,7 +140,7 @@ def popularity_scores(
         inside, counts[games.clamp(max=len(counts) - 1)], torch.zeros_like(games)
     ).float()
 
-    def score(history: torch.Tensor) -> torch.Tensor:
+    def score(history: torch.Tensor, language: torch.Tensor | None = None) -> torch.Tensor:
         return item_scores.repeat(len(history), 1)
 
     return score
@@ -159,6 +202,7 @@ def target_ranks(
     batch_size: int,
     exposure: Exposure | None = None,
     exclude: Ragged | None = None,
+    language: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """0-based rank of each row's target in its top `max_k`, history excluded (NOT_FOUND when
     outside). Chunks move to the index's device; ranks come back on the CPU. `exposure` given:
@@ -170,7 +214,11 @@ def target_ranks(
     for start in range(0, len(target), batch_size):
         chunk = slice(start, start + batch_size)
         chunk_history = history[chunk].to(device)
-        scores = mask_games(score_fn(chunk_history), chunk_history, index)
+        if language is None:
+            raw = score_fn(chunk_history)
+        else:  # A7: the user's language
+            raw = score_fn(chunk_history, language[chunk].to(device))
+        scores = mask_games(raw, chunk_history, index)
         if exclude is not None:
             _mask_ragged(scores, exclude, start, start + len(chunk_history), index)
         top_rows = torch.topk(scores, k, dim=1).indices
@@ -233,8 +281,9 @@ def evaluate(
     ks: list[int],
     batch_size: int,
     device: torch.device = CPU,
+    rescore: Rescore | None = None,
 ) -> RecallMetrics:
-    ranks, _ = rank_rows(score_fn, rows, catalog, max(ks), batch_size, device)
+    ranks, _ = rank_rows(score_fn, rows, catalog, max(ks), batch_size, device, rescore)
     return recall_from_ranks(ranks, torch.from_numpy(rows.is_warm), ks)
 
 
@@ -245,20 +294,36 @@ def rank_rows(
     max_k: int,
     batch_size: int,
     device: torch.device = CPU,
+    rescore: Rescore | None = None,
 ) -> tuple[torch.Tensor, Exposure]:
-    """Target ranks of `rows` (CPU) and what the scoring pass retrieved (`Exposure`)."""
+    """Target ranks of `rows` (CPU) and what the scoring pass retrieved (`Exposure`).
+    `rescore` (an A6 model's, `recency_rescore`): each row is scored against the catalog with
+    recency as of its ISO week (rows of the catalog's own week keep `score_fn`)."""
     index = CatalogIndex.of(catalog, device)
     exposure = Exposure.empty(index)
-    ranks = target_ranks(
-        score_fn,
-        torch.from_numpy(rows.history),
-        torch.from_numpy(rows.target),
-        index,
-        max_k,
-        batch_size,
-        exposure,
-        rows.reviewed,
-    )
+
+    def ranks_of(fn: ScoreFn, part: EvalRows) -> torch.Tensor:
+        return target_ranks(
+            fn,
+            torch.from_numpy(part.history),
+            torch.from_numpy(part.target),
+            index,
+            max_k,
+            batch_size,
+            exposure,
+            part.reviewed,
+            torch.from_numpy(part.language.astype(np.int64)) if part.language is not None else None,
+        )
+
+    if rescore is None or catalog.as_of_day is None or rows.timestamp is None:
+        return ranks_of(score_fn, rows), exposure
+    start = int(week_of_day(catalog.as_of_day))
+    week = np.maximum(week_of_day(np.asarray(rows.timestamp) // DAY_SECONDS), start)
+    ranks = torch.full((len(rows),), NOT_FOUND, dtype=torch.int64)
+    for w in np.unique(week):
+        part = np.flatnonzero(week == w)
+        fn = score_fn if w == start else rescore(catalog.at_day(int(week_start_day(w))))
+        ranks[torch.from_numpy(part)] = ranks_of(fn, rows.take(part))
     return ranks, exposure
 
 

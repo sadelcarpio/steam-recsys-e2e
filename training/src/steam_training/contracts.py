@@ -18,9 +18,9 @@ S3 layout (bucket `model-artifacts-<acct>`):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Reserved ids of every lkp_* vocabulary (see etl/src/steam_etl/contracts.py).
 PADDING_ID = 0
@@ -30,6 +30,15 @@ FIRST_ID = 2
 # inference and serving read today. Longer histories (A3) are derived in training from
 # `interactions` (`data.HistoryIndex`) and set per model (`ModelConfig.history_length`).
 USER_HISTORY_LENGTH = 5
+# A7: Steam API review languages; id = index + FIRST_ID (0 padding, 1 = OOV: unknown / none).
+# Append only: the ids are part of a trained model.
+STEAM_LANGUAGES = (
+    "english", "schinese", "tchinese", "japanese", "koreana", "thai", "bulgarian", "czech",
+    "danish", "german", "spanish", "latam", "greek", "french", "italian", "indonesian",
+    "hungarian", "dutch", "norwegian", "polish", "portuguese", "brazilian", "romanian",
+    "russian", "finnish", "swedish", "turkish", "vietnamese", "ukrainian",
+)  # fmt: skip
+NUM_LANGUAGE_IDS = FIRST_ID + len(STEAM_LANGUAGES)
 
 # Bump when the model layout changes so an older champion is not loaded into new code.
 ARCHITECTURE_VERSION = 1
@@ -53,6 +62,10 @@ class VocabSizes(_Frozen):
     tags: int | None = Field(None, ge=FIRST_ID)
 
 
+# history time gaps (rejected, code removed): unset in the models saved while it existed
+_RETIRED_FIELDS = ("history_gap_seconds",)
+
+
 class ModelConfig(_Frozen):
     architecture_version: int = ARCHITECTURE_VERSION
     vocab: VocabSizes
@@ -70,6 +83,24 @@ class ModelConfig(_Frozen):
     history_encoder: Literal["mean", "attention"] = "mean"
     attention_heads: int = Field(2, ge=1)
     attention_layers: int = Field(1, ge=1)
+    # A6 (spec 17): the item tower also reads recency features as of the review / catalog day
+    # (log1p reviews in the last 30 / 90 days, log1p days since release, release known);
+    # False for older models
+    item_recency: bool = False
+    # A7 (spec 17): the user tower also reads the language of the user's previous review
+    # (an embedding of STEAM_LANGUAGES, OOV when unknown); False for older models
+    user_language: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired(cls, data: Any) -> Any:
+        """Experiment fields whose code was removed (rejected arms) are accepted while unset,
+        so the saved models that carry them (e.g. the shared A3 controls) still load."""
+        if isinstance(data, dict) and any(data.get(k) is not None for k in _RETIRED_FIELDS):
+            raise ValueError(f"model uses a retired experiment input: {_RETIRED_FIELDS}")
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k not in _RETIRED_FIELDS}
+        return data
 
 
 class SplitInfo(_Frozen):
@@ -206,6 +237,8 @@ class TrackingRecord(_Frozen):
     popularity: RetrievalDiagnostics
     item_embeddings: EmbeddingHealth
     user_embeddings: EmbeddingHealth
+    # A6 runs: the weekly recent-popularity baseline (`evaluation.recent_popularity_scores`)
+    recent_popularity: RetrievalDiagnostics | None = None
 
 
 # ---- ranker (spec 9) ----

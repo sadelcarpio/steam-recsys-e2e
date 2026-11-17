@@ -91,6 +91,8 @@ USER_TOWER_ARRAYS = (
 
 
 def user_tower_arrays(model: TwoTowerModel, model_id: str) -> dict[str, np.ndarray]:
+    if model.config.user_language:
+        raise ValueError("no numpy user tower for the user's language (A7) yet")
     tower = model.user_tower
     first, second = tower.mlp[0], tower.mlp[2]
     assert isinstance(first, nn.Linear) and isinstance(second, nn.Linear), tower.mlp
