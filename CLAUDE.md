@@ -101,6 +101,10 @@ Order: EventBridge → 1 → 2 → 3 → 4
 
 - S3 (Iceberg, read with pyiceberg) → SageMaker training job (`training CD`) → S3 `model-artifacts-<account-id>/models/<sha>/`
   (user + item tower, plus the user tower as numpy for online serving); `training promote` evaluates it vs `models/champion/` and swaps it in when better
+- Spec 9: `training rank` → `rankers/<id>/`; pairs (retriever, ranker) are promoted together
+  (`evaluation/champion/pair.json`). State machine `steam-recsys-training` (manual or monthly):
+  retriever job → ranker job → pair dry run → approval (`training approve` workflow) → promotion →
+  inference job
 
 ### Batch inference (4)
 

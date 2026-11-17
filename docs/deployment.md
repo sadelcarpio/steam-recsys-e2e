@@ -369,6 +369,26 @@ pair: a ranker only serves with a retriever it was evaluated with.
 While a ranker serves, `mode=retriever` refuses: promote retrievers with `mode=pair` (with
 `model_id`), so the serving ranker is re-evaluated on the new retriever's candidates.
 
+**Training Step Function (spec 9, phase 7).** `steam-recsys-training` chains it all: train a
+retriever (the champion's recipe on time-based windows), train its ranker, evaluate the pairs as
+a dry run, wait for an approval, promote, run inference. After the *infrastructure CD* apply
+that creates it:
+
+```bash
+ARN=$(aws stepfunctions list-state-machines \
+  --query "stateMachines[?name=='steam-recsys-training'].stateMachineArn" --output text)
+aws stepfunctions start-execution --state-machine-arn "$ARN" --name ct-2026-11 --input '{}'
+# GPU retriever: '{"retriever_image_tag": "<sha>-cu128", "retriever_instance_type": "ml.g4dn.xlarge"}'
+```
+
+The name (letters, digits, hyphens, ≤ 40) names everything it makes: models `ct-<name>` /
+`ct-<name>-rank`, the report `evaluation/pairs/runs/<name>.json`. When a challenger pair wins,
+the execution waits at `AwaitApproval` (up to 7 days): run *training approve* with the
+execution name and `approve` (the summary shows the pairs' metrics) or `reject`. When nothing
+wins, it ends at `NothingToPromote`. `training_pipeline_schedule_enabled = true` starts it
+monthly (each run still waits for an approval). Training jobs need the SageMaker training
+quota of their instance types (step 9 above).
+
 **Time-based windows.** `HOLDOUT_WEEKS=6` (`env_overrides` of *training CD*) trains a retriever
 on everything up to 6 weeks before the newest review instead of the last 10% of rows; the last
 `TEST_WEEKS` (2) stay unread for the pair gates (spec 9, "Time windows").

@@ -435,7 +435,10 @@ Each phase ships on its own (CI, docs, deploy), in this order:
    `FEATURE_SCHEMA_VERSION` bump and a ranker retrain), per-language popular lists.
 7. **Training orchestration**: a training Step Function (retriever training job → ranker job →
    pair evaluation → manual approval → promote → inference run), started by hand or by
-   EventBridge.
+   EventBridge. Done on `feature/training-step-function`: `steam-recsys-training`
+   (`infrastructure/training_pipeline.tf`), `pair` split into `PAIR_DRY_RUN` and
+   `APPLY_REPORT`, the approval answered by `training-approve.yml` (prod environment), the
+   monthly schedule off by default.
 8. **Continuous training** (its own spec, following "Time windows" 2): the monthly pass A /
    pass B cycle with the evaluation and serving lineages, the no-regression gate, sanity checks
    and the delayed-label automatic rollback. Full retrains from scratch stay on the challenger

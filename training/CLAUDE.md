@@ -51,8 +51,9 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   - `pairs.py` (spec 9, phase 3): `python -m steam_training pair` (`PairSettings`):
     `run_pair` scores the serving pair and challenger pairs on groups at or after
     `window_start` (newest retriever split end / cutoff and ranker T2), `decide_pair`
-    (retriever gate, then final-list gate), `promote_pair`, `rollback`; `serving_pair`
-    bootstraps from `models/champion/` before the first `pair.json`
+    (retriever gate, then final-list gate), `promote_pair`, `rollback`, `apply_report`
+    (`APPLY_REPORT`: promote a `PAIR_DRY_RUN` report's choice if the serving pair is unchanged);
+    `serving_pair` bootstraps from `models/champion/` before the first `pair.json`
   - `launch.py`: CD launcher for `train`, `promote`, `rank`, `pair` (creates and watches the
     SageMaker job, writes the job summary); `METRIC_DEFINITIONS` (log regexes -> CloudWatch
     curves in the SageMaker console)
@@ -182,5 +183,6 @@ Add deps only with `uv add` (never edit the lock). torch is routed per dependenc
 
 Infra for this component: `infrastructure/training.tf`. Workflows: `training-ci.yml`,
 `training-cd.yml`, `training-promote.yml` (modes retriever / pair / rollback),
-`training-rank.yml` (ranker job), `training-image-cd.yml` (CPU image on merges, via
+`training-rank.yml` (ranker job), `training-approve.yml` (the training Step Function's approval),
+`training-image-cd.yml` (CPU image on merges, via
 `cd.yml`; no training job).

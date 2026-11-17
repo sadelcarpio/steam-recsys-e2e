@@ -132,3 +132,51 @@ def test_ranker_settings_take_the_launchers_model_id(monkeypatch):
     monkeypatch.setenv("MODEL_ID", "abc")
     monkeypatch.setenv("MODEL_ARTIFACTS_BUCKET", BUCKET)
     assert RankerSettings().ranker_id == "abc"
+
+
+def test_dry_run_then_apply(settings, store):
+    """The training Step Function: evaluate without promoting, approve, apply the decision."""
+    source = FakeSource(make_marts(n_users=600, reviews_per_user=10, seed=1))
+    retriever = settings.model_copy(update={"holdout_weeks": 16, "test_weeks": 6})
+    run_training(retriever, source, store)
+    run_promotion(retriever, source, store)
+    ranker = RankerSettings(
+        model_artifacts_bucket=BUCKET, ranker_id="k1", retriever_id=settings.model_id,
+        device="cpu", ranker_candidates=15, ranker_top_k=5, ranker_history_length=5,
+        ranker_min_groups=10, ranker_min_data_in_leaf=5, ranker_max_rounds=20,
+        ranker_ablation=False, ranker_list_users=0, eval_batch_size=128,
+    )  # fmt: skip
+    run_ranking(ranker, source, store)
+    key = "evaluation/pairs/runs/exec-1.json"
+    common = dict(
+        model_artifacts_bucket=BUCKET, device="cpu", pair_candidates=15, pair_top_k=5,
+        pair_retrieval_k=10, pair_history_length=5, pair_list_users=0, eval_batch_size=128,
+    )  # fmt: skip
+    report = run_pair(
+        PairSettings(
+            **common,
+            ranker_id="k1",
+            force_promotion=True,
+            pair_dry_run=True,
+            pair_report_key=key,
+        ),  # fmt: skip
+        source,
+        store,
+    )
+    assert report.dry_run and not report.promoted and report.chosen.ranker_id == "k1"
+    assert store.read_pair() is None  # nothing promoted
+    assert store.read_pair_report(key) == report
+
+    record = run_pair(PairSettings(**common, apply_report=key), source, store)
+    assert (record.retriever_id, record.ranker_id) == ("abc123", "k1")
+    assert record.reason.startswith("approved")
+    assert [r.ranker_id for r in store.read_history()] == [None, "k1"]
+    # applying again: the serving pair is no longer the one the report compared
+    with pytest.raises(ValueError, match="evaluate again"):
+        run_pair(PairSettings(**common, apply_report=key), source, store)
+
+
+def test_pair_modes_are_exclusive():
+    with pytest.raises(ValueError, match="exclusive"):
+        PairSettings(model_artifacts_bucket=BUCKET, rollback=True, pair_dry_run=True)
+    assert PairSettings(model_artifacts_bucket=BUCKET, apply_report="k").apply_report == "k"

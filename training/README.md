@@ -473,6 +473,12 @@ retrieval metrics and per-user lists. A ranker that failed its own gate is refus
 `FORCE_PROMOTION=true`). `ROLLBACK=true` restores the pair that served before the current
 one. While a ranker serves, `promote` (a retriever alone) refuses.
 
+`PAIR_DRY_RUN=true` evaluates and writes the decision (`chosen` = the pair that would be
+promoted; `PAIR_REPORT_KEY` sets the report's key) without promoting; `APPLY_REPORT=<key>`
+later promotes exactly that pair, without re-evaluating, and refuses when the serving pair has
+changed since. The training Step Function (`infrastructure/training_pipeline.tf`) runs them
+with its approval in between.
+
 ```
   rankers/<id>/model.txt                      LightGBM text dump
   rankers/<id>/metadata.json                  RankerMetadata: retriever, window (T1, T2), features, snapshots

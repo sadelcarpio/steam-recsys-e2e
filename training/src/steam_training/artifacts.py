@@ -237,14 +237,18 @@ class ArtifactStore:
         self._put(PAIR_KEY, record.model_dump_json(indent=2).encode(), "application/json")
         log.info("serving pair: %s + %s", record.retriever_id, record.ranker_id or "no ranker")
 
-    def write_pair_report(self, report: PairReport) -> str:
+    def write_pair_report(self, report: PairReport, key: str | None = None) -> str:
         chosen = report.chosen or (report.challengers[0] if report.challengers else None)
-        key = pair_report_key(
+        key = key or pair_report_key(
             chosen.retriever_id if chosen else "none", chosen.ranker_id if chosen else None
         )
         self._put(key, report.model_dump_json(indent=2).encode(), "application/json")
         log.info("wrote s3://%s/%s", self.bucket, key)
         return key
+
+    def read_pair_report(self, key: str) -> PairReport | None:
+        body = self._get(key)
+        return PairReport.model_validate_json(body) if body is not None else None
 
     def copy_model_to_champion(self, model_id: str) -> None:
         """models/champion/ = a copy of models/<model_id>/ (metadata last). A model without the

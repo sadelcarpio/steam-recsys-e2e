@@ -74,6 +74,8 @@ def run_pair(
 ) -> PairReport | PairRecord:
     if settings.rollback:
         return rollback(store)
+    if settings.apply_report:
+        return apply_report(store, settings.apply_report)
     serving = serving_pair(store)
     champion = Pair(serving.retriever_id, serving.ranker_id)
     retriever_id = settings.retriever_id or champion.retriever_id
@@ -172,10 +174,12 @@ def run_pair(
     champion_eval = evaluate(champion)
     challenger_evals = [evaluate(p) for p in challengers]
     chosen, reason = decide_pair(champion_eval, challenger_evals, retriever_changed, settings)
-    promoted = chosen is not None
-    if not promoted and settings.force_promotion:
+    if chosen is None and settings.force_promotion:
         chosen = max(challenger_evals, key=lambda e: e.final.recall[top_k])
-        promoted, reason = True, f"forced (FORCE_PROMOTION): {reason}"
+        reason = f"forced (FORCE_PROMOTION): {reason}"
+    promoted = chosen is not None and not settings.pair_dry_run
+    if settings.pair_dry_run:
+        reason = f"dry run ({'would promote' if chosen else 'nothing to promote'}): {reason}"
     report = PairReport(
         evaluated_at=datetime.now(UTC),
         window_start=start,
@@ -186,8 +190,9 @@ def run_pair(
         chosen=chosen,
         promoted=promoted,
         reason=reason,
+        dry_run=settings.pair_dry_run,
     )
-    store.write_pair_report(report)
+    store.write_pair_report(report, settings.pair_report_key)
     log.info("pair promotion: %s (%s)", "PROMOTED" if promoted else "kept the pair", reason)
     if promoted and chosen is not None:
         if store.read_pair() is None:  # record what served before (the rollback target)
@@ -201,6 +206,37 @@ def run_pair(
             final=chosen.final,
         )
     return report
+
+
+def apply_report(store: ArtifactStore, key: str) -> PairRecord:
+    """Promote the pair a dry-run report chose, if the serving pair is still the one it was
+    compared with."""
+    report = store.read_pair_report(key)
+    if report is None:
+        raise FileNotFoundError(f"no pair report at {key}")
+    if not report.dry_run or report.chosen is None:
+        raise ValueError(f"{key} is not a dry-run report with a chosen pair: {report.reason}")
+    serving = serving_pair(store)
+    champion = report.champion
+    if champion is None or (serving.retriever_id, serving.ranker_id) != (
+        champion.retriever_id,
+        champion.ranker_id,
+    ):
+        raise ValueError(
+            f"the serving pair is now {serving.retriever_id} + {serving.ranker_id}, the report "
+            "compared another one: evaluate again"
+        )
+    if store.read_pair() is None:
+        store.write_pair(serving)
+    chosen = report.chosen
+    return promote_pair(
+        store,
+        Pair(chosen.retriever_id, chosen.ranker_id),
+        current=Pair(serving.retriever_id, serving.ranker_id),
+        reason=f"approved ({key}): {report.reason.removeprefix('dry run (would promote): ')}",
+        window_start=report.window_start,
+        final=chosen.final,
+    )
 
 
 def decide_pair(
