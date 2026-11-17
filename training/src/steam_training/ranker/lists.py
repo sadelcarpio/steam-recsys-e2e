@@ -162,7 +162,7 @@ def evaluate_lists(
 
 
 def candidate_lists(
-    score_fn,
+    scores_at,
     index,
     k: int,
     batch_size: int,
@@ -172,15 +172,16 @@ def candidate_lists(
     predict: Callable[[np.ndarray], np.ndarray] | None = None,
     chunk: int = 256,
 ) -> Callable[[SnapshotLists, int], tuple[np.ndarray, np.ndarray]]:
-    """The `rank` callback of `evaluate_lists` for one retriever (`score_fn` over the catalog
-    `index`) and an optional ranker (`predict`: scores of a [rows, len(FEATURES)] matrix;
-    None = retrieval order for both)."""
+    """The `rank` callback of `evaluate_lists` for one retriever (`scores_at`: its score
+    function as of an ISO week, `evaluation.weekly_scores`, over the catalog `index`) and an
+    optional ranker (`predict`: scores of a [rows, len(FEATURES)] matrix; None = retrieval
+    order for both)."""
     from steam_training.evaluation import top_candidates
-    from steam_training.ranker.features import compute_features
+    from steam_training.ranker.features import compute_features, week_of
 
     def rank(lists: SnapshotLists, t: int) -> tuple[np.ndarray, np.ndarray]:
         candidates, scores = top_candidates(
-            score_fn, lists.history, index, k, batch_size, exclude=lists.reviewed
+            scores_at(int(week_of(t))), lists.history, index, k, batch_size, exclude=lists.reviewed
         )
         missing = ~np.isfinite(scores)
         by_retrieval = np.where(missing, -1, candidates)

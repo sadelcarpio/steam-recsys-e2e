@@ -7,11 +7,14 @@ from moto import mock_aws
 from steam_training import launch
 from steam_training.artifacts import ArtifactStore
 from steam_training.config import PairSettings, RankerSettings
-from steam_training.contracts import PairEvaluation, RankingMetrics
+from steam_training.contracts import OOV_ID, PairEvaluation, RankingMetrics
+from steam_training.languages import load_review_languages
 from steam_training.pairs import decide_pair, run_pair
 from steam_training.pipeline import run_promotion, run_training
+from steam_training.ranker.data import load_ranker_data
 from steam_training.ranker.pipeline import metrics_line, run_ranking
 from tests.conftest import BUCKET, FakeSource, make_marts
+from tests.test_user_language import with_languages
 
 
 @pytest.fixture
@@ -111,6 +114,48 @@ def test_pair_lifecycle(settings, store):
     assert len(store.read_history()) == 3
     with pytest.raises(ValueError, match="roll back"):
         run_pair(PairSettings(model_artifacts_bucket=BUCKET, rollback=True), source, store)
+
+
+@pytest.mark.parametrize("user_language", [False, True], ids=["a6", "a6+a7"])
+def test_a6_retriever_through_ranker_and_pair(settings, store, user_language):
+    """An A6 retriever (item recency; + A7, the user's language) challenges a plain serving
+    retriever: its ranker trains on candidates scored as of each group's week (with each
+    group's language), and the pair evaluation does the same."""
+    source = FakeSource(with_languages(make_marts(n_users=600, reviews_per_user=10, seed=1)))
+    plain = settings.model_copy(update={"holdout_weeks": 16, "test_weeks": 6, "epochs": 2})
+    run_training(plain, source, store)
+    run_promotion(plain, source, store)
+    a6 = plain.model_copy(
+        update={"model_id": "a6", "item_recency": True, "user_language": user_language}
+    )
+    run_training(a6, source, store)
+    ranker = RankerSettings(
+        model_artifacts_bucket=BUCKET, ranker_id="k6", retriever_id="a6",
+        device="cpu", ranker_candidates=15, ranker_top_k=5, ranker_history_length=5,
+        ranker_min_groups=10, ranker_min_data_in_leaf=5, ranker_max_rounds=20,
+        ranker_ablation=False, ranker_list_users=50, eval_batch_size=128,
+    )  # fmt: skip
+    ranked = run_ranking(ranker, source, store)
+    assert ranked.user_lists is not None
+    if user_language:  # groups carry their user's previous language
+        data = load_ranker_data(
+            source, cutoff=store.load_model("a6")[1].split.cutoff, history_length=5,
+            max_rows=10**6, max_groups_per_user=5, seed=0,
+            languages=load_review_languages(source),
+        )  # fmt: skip
+        assert data.rows.language is not None and (data.rows.language != OOV_ID).any()
+    pair = PairSettings(
+        model_artifacts_bucket=BUCKET, retriever_id="a6", ranker_id="k6", device="cpu",
+        pair_candidates=15, pair_top_k=5, pair_retrieval_k=10, pair_history_length=5,
+        pair_list_users=50, eval_batch_size=128, force_promotion=True,
+    )  # fmt: skip
+    report = run_pair(pair, source, store)
+    assert report.promoted and report.chosen.retriever_id == "a6"
+    assert {(c.retriever_id, c.ranker_id) for c in report.challengers} == {
+        ("a6", "k6"),
+        ("a6", None),
+    }
+    assert (store.read_pair().retriever_id, store.read_pair().ranker_id) == ("a6", "k6")
 
 
 def test_launcher_modes():

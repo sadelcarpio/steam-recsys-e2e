@@ -139,8 +139,10 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
     2 adds the A4 tag profile (game -> tags lookup, tag table, per-position weights; ~67 MB).
     Format 3 adds the A3 self-attention encoder over the history (a few hundred KB of weights;
     the tag profile arrays when the model has it); one embedding takes ~0.7 ms for a 50-game
-    history. Serving reads formats 1, 2 and 3: deploy serving before promoting a model of a
-    newer format.
+    history. Format 4 (A7) adds the user's language: an 8-d embedding per Steam language,
+    appended last (attention and tag profile present iff their arrays are). Online requests
+    don't know the language, so serving uses the unknown row. Serving reads formats 1 to 4:
+    deploy serving before promoting a model of a newer format.
   - **Catalog:** `serving/online/catalog.npz`, written by the inference job every run (item
     embeddings, plus the `game_id`, `game_idx` and name of each catalog row; about 14 MB).
   

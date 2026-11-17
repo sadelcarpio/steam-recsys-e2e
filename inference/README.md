@@ -29,7 +29,13 @@ steam_marts (Iceberg, pyiceberg)
    first (the model's length: 5, or 20 / 50 for A3; the same derivation as training). Games
    also get their Steam user tags (`game_tags` + `lkp_tags`) when those marts
    exist (required when the model was trained with tags, else only used by the prompt and the
-   adult filter). `interactions` supplies each user's reviewed games (excluded from the
+   adult filter). A model trained with item recency (A6, `ITEM_RECENCY`) gets each game's
+   recency as of the newest review: reviews in the 4 / 13 full ISO weeks before it
+   (`game_popularity_weekly`) and days since release (`game_details`), as training reads them;
+   the run fails when those marts are missing. The online catalog's item embeddings include it,
+   so serving needs nothing new. A model that reads the user's language (A7, `USER_LANGUAGE`)
+   gets the language of each user's newest review (any polarity) from `review_languages`
+   (unknown when that review has none); the run fails when the mart is missing. `interactions` supplies each user's reviewed games (excluded from the
    recommendations) and review counts. All reads are
    pinned to the snapshot current at the start of the run. Memory follows the `MAX_USERS`
    kept users, not the size of the marts: `interactions` is read twice (review counts of every

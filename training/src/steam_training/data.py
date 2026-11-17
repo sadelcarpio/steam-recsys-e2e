@@ -784,23 +784,9 @@ def load_training_data(
         tags,
     )
     if with_recency:
-        recency = Recency(
-            WeeklyReviews.from_mart(
-                source.batches(POPULARITY_MART, POPULARITY_COLUMNS, snapshots[POPULARITY_MART])
-            ),
-            release_days(
-                source.batches("game_details", GAME_DETAIL_COLUMNS, snapshots["game_details"]),
-                source.batches("lkp_games", ["game_idx", "game_id"], snapshots["lkp_games"]),
-                vocab.games,
-            ),
-        )
+        recency = load_recency(source, snapshots, vocab.games)
         catalog = replace(catalog, recency=recency).at_day(
             _seconds(np.array([cutoff_us]))[0] // DAY_SECONDS
-        )
-        log.info(
-            "recency: %d (game, week) review counts, release day known for %d games",
-            len(recency.counts.keys),
-            int((recency.release_day >= 0).sum()),
         )
     train = _concat(TrainRows, train_parts) if with_train_rows else None
     if train is not None:
@@ -1013,6 +999,30 @@ def previous_language(
     last = np.searchsorted(key, base | np.asarray(row_seconds, np.int64), side="left") - 1
     same_user = (last >= 0) & (key[np.maximum(last, 0)] >> 32 == position) & found
     return np.where(same_user, code[np.maximum(last, 0)], OOV_ID).astype(np.int8)
+
+
+RECENCY_TABLES = ["lkp_games", "game_details", POPULARITY_MART]
+
+
+def load_recency(source: TableSource, snapshots: dict[str, int | None], num_games: int) -> Recency:
+    """A6: reviews per (game, ISO week) and release days, read from `RECENCY_TABLES` at
+    `snapshots` (training, ranker, pair evaluation and inference share it)."""
+    recency = Recency(
+        WeeklyReviews.from_mart(
+            source.batches(POPULARITY_MART, POPULARITY_COLUMNS, snapshots[POPULARITY_MART])
+        ),
+        release_days(
+            source.batches("game_details", GAME_DETAIL_COLUMNS, snapshots["game_details"]),
+            source.batches("lkp_games", ["game_idx", "game_id"], snapshots["lkp_games"]),
+            num_games,
+        ),
+    )
+    log.info(
+        "recency: %d (game, week) review counts, release day known for %d games",
+        len(recency.counts.keys),
+        int((recency.release_day >= 0).sum()),
+    )
+    return recency
 
 
 def release_days(

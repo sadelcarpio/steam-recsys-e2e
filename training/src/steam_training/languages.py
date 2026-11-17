@@ -1,19 +1,15 @@
-"""A7 (spec 17): the language of every review, read straight from the raw reviews (no mart has
-it yet), for the user tower's "language of the user's previous review" input.
-
-Only `rec_id` (= the marts' `review_id`) and `language` are read from each raw parquet file.
-Raw files are immutable once written, so with a cache directory each file's pairs are kept
-locally (`<cache>/review-languages/<key>.npz`) and later runs only read the new files. If A7
-is accepted, `language` belongs in `interactions` (an ETL column), and this module goes.
+"""A7 (spec 17): the language of every review, from the `review_languages` mart (one row per
+`review_id`, the language it was first scraped with; reviews without one are absent), for the
+user tower's "language of the user's previous review" input. Training, the ranker / pair
+evaluation and inference read it; ids are `STEAM_LANGUAGES` + FIRST_ID (unknown: OOV_ID).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pyarrow as pa
@@ -21,8 +17,13 @@ import pyarrow.compute as pc
 
 from steam_training.contracts import OOV_ID, STEAM_LANGUAGES
 
+if TYPE_CHECKING:
+    from steam_training.data import TableSource
+
 log = logging.getLogger(__name__)
 
+LANGUAGE_MART = "review_languages"
+LANGUAGE_COLUMNS = ["review_id", "language"]
 _CODE = {name: i + 2 for i, name in enumerate(STEAM_LANGUAGES)}  # 0 padding, 1 unknown
 
 
@@ -43,10 +44,10 @@ class ReviewLanguages:
 
     @classmethod
     def from_batches(cls, batches: Iterable[pa.RecordBatch | pa.Table]) -> ReviewLanguages:
-        """From (`rec_id`, `language`) batches; a review scraped twice keeps one copy."""
+        """From (`review_id`, `language`) batches; a review listed twice keeps one copy."""
         ids, codes = [], []
         for batch in batches:
-            ids.append(pc.fill_null(batch["rec_id"], -1).to_numpy(zero_copy_only=False))
+            ids.append(pc.fill_null(batch["review_id"], -1).to_numpy(zero_copy_only=False))
             codes.append(language_codes(batch["language"]))
         return cls.from_arrays(
             np.concatenate(ids) if ids else np.zeros(0, np.int64),
@@ -68,51 +69,33 @@ class ReviewLanguages:
         return np.where(self.review_id[at] == review_id, self.code[at], OOV_ID).astype(np.int8)
 
 
-def load_review_languages(uri: str, region: str, cache_dir: str | None = None) -> ReviewLanguages:
-    """Every review's language under `uri` (s3://bucket/prefix/ of the raw reviews parquet)."""
-    import boto3
-    import pyarrow.parquet as pq
-    from pyarrow import fs
-
-    bucket, _, prefix = uri.removeprefix("s3://").partition("/")
-    s3 = boto3.client("s3", region_name=region)
-    keys = [
-        obj["Key"]
-        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
-        for obj in page.get("Contents", [])
-        if obj["Key"].endswith(".parquet")
-    ]
-    filesystem = fs.S3FileSystem(region=region)
-    root = Path(cache_dir, "review-languages", bucket) if cache_dir else None
-
-    def read(key: str) -> tuple[np.ndarray, np.ndarray]:
-        cached = root / f"{key}.npz" if root is not None else None
-        if cached is not None and cached.exists():
-            with np.load(cached) as npz:
-                return npz["review_id"], npz["code"]
-        table = pq.read_table(
-            f"{bucket}/{key}", columns=["rec_id", "language"], filesystem=filesystem
-        )
-        ids = pc.fill_null(table["rec_id"], -1).to_numpy(zero_copy_only=False).astype(np.int64)
-        codes = language_codes(table["language"])
-        if cached is not None:
-            cached.parent.mkdir(parents=True, exist_ok=True)
-            part = cached.with_name(cached.name + ".part.npz")
-            np.savez(part, review_id=ids, code=codes)
-            part.replace(cached)
-        return ids, codes
-
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        parts = list(pool.map(read, keys))
+def load_review_languages(
+    source: TableSource,
+    snapshot_id: int | None = None,
+    review_ids: np.ndarray | None = None,
+) -> ReviewLanguages:
+    """The `review_languages` mart (at `snapshot_id`, default: current). `review_ids` (sorted,
+    unique): keep only those reviews (inference needs one per user, not the ~100M)."""
+    if snapshot_id is None:
+        snapshot_id = source.snapshot_id(LANGUAGE_MART)
+    ids, codes = [], []
+    for batch in source.batches(LANGUAGE_MART, LANGUAGE_COLUMNS, snapshot_id):
+        review_id = pc.fill_null(batch["review_id"], -1).to_numpy(zero_copy_only=False)
+        review_id = review_id.astype(np.int64)
+        code = language_codes(batch["language"])
+        if review_ids is not None:
+            at = np.clip(np.searchsorted(review_ids, review_id), 0, max(len(review_ids) - 1, 0))
+            keep = review_ids[at] == review_id if len(review_ids) else np.zeros(0, bool)
+            review_id, code = review_id[keep], code[keep]
+        ids.append(review_id)
+        codes.append(code)
     languages = ReviewLanguages.from_arrays(
-        np.concatenate([i for i, _ in parts]) if parts else np.zeros(0, np.int64),
-        np.concatenate([c for _, c in parts]) if parts else np.zeros(0, np.int8),
+        np.concatenate(ids) if ids else np.zeros(0, np.int64),
+        np.concatenate(codes) if codes else np.zeros(0, np.int8),
     )
-    known = int((languages.code != OOV_ID).sum())
     log.info(
-        "review languages: %d reviews from %d raw files (%d with a known language)",
+        "review languages: %d reviews (%d with a known language)",
         len(languages.review_id),
-        len(keys),
-        known,
+        int((languages.code != OOV_ID).sum()),
     )
     return languages

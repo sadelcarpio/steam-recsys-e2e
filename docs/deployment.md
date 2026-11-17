@@ -585,6 +585,20 @@ this order, because each one needs the previous one live:
    drop table steam_marts.user_features;  -- Iceberg: removes its data too
    ```
 
+**Release of A6 + A7 (spec 17, 2026-11):** item recency and the user's language, in this
+order:
+1. `feature/review-languages-mart` (ETL): the `review_languages` mart. Approve the etl deploy,
+   then let one `Transform` build it (or run step 8); its first build reads every review.
+2. `feature/retrieval-improvements` (training only): `ITEM_RECENCY` / `USER_LANGUAGE` can be
+   trained.
+3. `feature/a6-promotable`: serving reads user tower format 4 (language), inference computes
+   recency (`game_popularity_weekly`) and each user's language (`review_languages`), and
+   `promote` / `rank` / `pair` evaluate both. Approve the serving deploy, then inference, and
+   only then promote: a format-4 model promoted before serving is live breaks
+   `POST /recommendations`, and an inference image without it fails the run.
+4. Train the model (training CD or locally with `image_tag`), train a ranker on it (`rank`),
+   `pair` dry run, `APPLY_REPORT`, then inference `run_now`.
+
 **Release with ARM scrapers (spec 14, 2026-11):** the scraping tasks move to Fargate Graviton
 (ARM64, ~20% cheaper, also on Spot), in two PRs merged in this order. The task definitions run
 `:latest`, so the image has to cover both architectures before any task definition switches.

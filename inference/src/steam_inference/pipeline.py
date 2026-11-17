@@ -92,6 +92,8 @@ def run_inference(
         description_chars=settings.rerank_description_chars if settings.rerank_enabled else 0,
         require_tags=metadata.config.vocab.tags is not None,
         history_length=metadata.config.history_length,
+        with_recency=metadata.config.item_recency,
+        with_language=metadata.config.user_language,
     )
     # adult and unreleased (spec 10) games: never recommended, published or searchable
     adult = adult_mask(data.games) if settings.exclude_adult else np.zeros(len(data.games), bool)

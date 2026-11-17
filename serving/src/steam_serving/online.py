@@ -19,6 +19,10 @@ summary of the history: tokens = [attn_summary, game_table[ids] + attn_position[
 non-padding slots], then per block x += MHA(LN1(x)), x += FFN(LN2(x)) (ReLU), and the summary
 token's LayerNorm-ed final state (training `HistoryAttention`; padding is masked out of every
 block there, so dropping it here is exact).
+Format 4 (A7) has each optional block iff its arrays are there (tag profile: `tag_table`,
+attention: `attn_summary`) and appends, last, language_table[language id] (the language of the
+user's previous review; online requests don't know it: oov_id, which training's dropout
+trains for).
 Scores are cosine similarities with the (already normalized) item embeddings. The inference
 test `test_online_parity.py` checks this against torch and batch retrieval.
 
@@ -49,9 +53,10 @@ log = logging.getLogger(__name__)
 SUPPORTED_MANIFEST_FORMAT = 2
 # 1: plain user tower; 2: + the A4 tag profile; 3: + the A3 attention encoder, tag profile
 # optional (training `export.py`)
-SUPPORTED_USER_TOWER_FORMATS = (1, 2, 3)
+SUPPORTED_USER_TOWER_FORMATS = (1, 2, 3, 4)
 TAG_PROFILE_FORMAT = 2
 ATTENTION_FORMAT = 3
+LANGUAGE_FORMAT = 4
 EPS = 1e-12  # torch.nn.functional.normalize
 ROUND_DECIMALS = 4  # returned scores; ranking ties at this precision go to the lowest appid
 CATALOG_ARRAYS = (
@@ -95,6 +100,7 @@ ATTENTION_ARRAYS = (
     "attn_ffn_w2",
     "attn_ffn_b2",
 )
+LANGUAGE_ARRAYS = ("language_table", "language_names")
 
 
 @dataclass(frozen=True)
@@ -188,6 +194,9 @@ class UserTower:
     tag_table: np.ndarray | None = None  # float32 [tags, dim]
     # format 3 only (A3 attention encoder), else None
     attention: HistoryAttention | None = None
+    # format 4 only (A7): float32 [language ids, dim]; names: id = index + 2 (oov_id: unknown)
+    language_table: np.ndarray | None = None
+    language_names: tuple[str, ...] = ()
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> UserTower:
@@ -199,16 +208,26 @@ class UserTower:
             )
         with np.load(io.BytesIO(payload), allow_pickle=False) as npz:
             files = set(npz.files)
-        # format 2 always has the tag profile; format 3 when its arrays are there
+        # format 2 always has the tag profile; formats 3-4 when its arrays are there
         has_profile = version == TAG_PROFILE_FORMAT or (
             version >= ATTENTION_FORMAT and "tag_table" in files
         )
+        # format 3 always has attention; format 4 when its arrays are there
+        has_attention = version == ATTENTION_FORMAT or (
+            version == LANGUAGE_FORMAT and "attn_summary" in files
+        )
+        has_language = version == LANGUAGE_FORMAT
         names = USER_TOWER_ARRAYS + (TAG_PROFILE_ARRAYS if has_profile else ())
-        if version >= ATTENTION_FORMAT:
+        if has_attention:
             names += ATTENTION_ARRAYS
+        if has_language:
+            names += LANGUAGE_ARRAYS
         arrays = _load_npz(payload, names, "user tower")
         profile: dict = {}
-        if version >= ATTENTION_FORMAT:
+        if has_language:
+            profile["language_table"] = arrays["language_table"].astype(np.float32, copy=False)
+            profile["language_names"] = tuple(str(n) for n in arrays["language_names"].tolist())
+        if has_attention:
             profile["attention"] = HistoryAttention(
                 heads=int(arrays["attn_heads"]),
                 eps=float(arrays["attn_ln_eps"]),
@@ -239,8 +258,9 @@ class UserTower:
             b2=arrays["b2"],
         )
 
-    def embed(self, history: np.ndarray) -> np.ndarray:
-        """history: int64 [history_length] game_idx, most recent first, padding-filled."""
+    def embed(self, history: np.ndarray, language: int | None = None) -> np.ndarray:
+        """history: int64 [history_length] game_idx, most recent first, padding-filled.
+        `language` (format 4): language id of the user's previous review (None: unknown)."""
         vocab = len(self.game_table)
         ids = np.where(history < vocab, history, self.oov_id)
         ids = np.where(self.seen_games[ids] | (ids == self.padding_id), ids, self.oov_id)
@@ -253,6 +273,10 @@ class UserTower:
             parts.append(self.attention.summarize(self.game_table[ids[slots]], slots))
         if self.tag_table is not None:
             parts.append(self._tag_profile(history))
+        if self.language_table is not None:
+            row = self.oov_id if language is None else int(language)
+            row = row if 0 <= row < len(self.language_table) else self.oov_id
+            parts.append(self.language_table[row])
         x = np.concatenate(parts).astype(np.float32)
         hidden = np.maximum(x @ self.w1.T + self.b1, 0.0)
         out = hidden @ self.w2.T + self.b2
