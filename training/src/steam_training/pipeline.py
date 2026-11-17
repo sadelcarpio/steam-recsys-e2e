@@ -291,6 +291,13 @@ def decide(
 def run_promotion(
     settings: TrainingSettings, source: TableSource, store: ArtifactStore
 ) -> EvaluationReport:
+    pair = store.read_pair()
+    if pair is not None and pair.ranker_id is not None:
+        raise ValueError(
+            f"the serving pair has ranker {pair.ranker_id}: promote retrievers with "
+            "`python -m steam_training pair` (RETRIEVER_ID / RANKER_ID), so a ranker never serves "
+            "with a retriever it wasn't evaluated with (spec 9)"
+        )
     candidate, candidate_meta = store.load_model(settings.model_id)
     champion, champion_meta = _load_champion(store, settings.model_id)
     now = datetime.now(UTC)

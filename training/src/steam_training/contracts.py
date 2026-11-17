@@ -9,6 +9,10 @@ S3 layout (bucket `model-artifacts-<acct>`):
     rankers/<ranker_id>/model.txt                    LightGBM text dump of a ranker (spec 9)
     rankers/<ranker_id>/metadata.json                RankerMetadata
     evaluation/rankers/<ranker_id>/ranker.json       RankerReport (`python -m steam_training rank`)
+    rankers/champion/...                             copy of the serving ranker (none: deleted)
+    evaluation/pairs/<retriever>__<ranker>.json      PairReport (`python -m steam_training pair`)
+    evaluation/champion/pair.json                    PairRecord: the serving (retriever, ranker)
+    evaluation/champion/history.jsonl                one PairRecord per promotion / rollback
 """
 
 from __future__ import annotations
@@ -305,3 +309,45 @@ class RankerReport(_Frozen):
     ablation: dict[str, float]
     gate_passed: bool
     reason: str
+
+
+# ---- serving pair (spec 9, phase 3) ----
+
+
+class PairEvaluation(_Frozen):
+    """One (retriever, ranker) on the common test groups. `final` = the list the pair serves
+    (ranker order, or retrieval order without a ranker); `retrieval` = the retriever's own order
+    (its recall@K is the ranker's ceiling)."""
+
+    retriever_id: str
+    ranker_id: str | None
+    final: RankingMetrics
+    retrieval: RankingMetrics
+    user_lists: ListMetrics | None = None
+
+
+class PairReport(_Frozen):
+    """evaluation/pairs/<retriever>__<ranker>.json: a promotion decision between the champion
+    pair and challenger pairs, all on groups at or after `window_start` (no compared model
+    trained on them)."""
+
+    evaluated_at: datetime
+    window_start: datetime
+    top_k: int
+    candidates: int
+    champion: PairEvaluation | None
+    challengers: list[PairEvaluation]
+    chosen: PairEvaluation | None
+    promoted: bool
+    reason: str
+
+
+class PairRecord(_Frozen):
+    """evaluation/champion/pair.json (and one line of history.jsonl): the pair being served."""
+
+    retriever_id: str
+    ranker_id: str | None
+    promoted_at: datetime
+    reason: str
+    window_start: datetime | None = None
+    final: RankingMetrics | None = None

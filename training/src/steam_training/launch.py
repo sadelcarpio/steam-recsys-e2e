@@ -1,7 +1,15 @@
-"""Starts a SageMaker training job for `train` or `promote` and watches it (CD workflows).
+"""Starts a SageMaker training job for `train`, `promote`, `rank` or `pair` and watches it.
 
     python -m steam_training.launch train   --model-id <sha> [--env EPOCHS=10 ...]
     python -m steam_training.launch promote --model-id <sha>
+    python -m steam_training.launch rank    --model-id <ranker id> [--env RETRIEVER_ID=<id>]
+    python -m steam_training.launch pair    --model-id <label> --env RANKER_ID=<id> \
+        [RETRIEVER_ID=<id>]
+    python -m steam_training.launch pair    --model-id rollback --env ROLLBACK=true
+
+`rank` trains a ranker named after `--model-id` (spec 9: a CPU job, e.g. `--instance-type
+ml.m5.2xlarge`); `pair` promotes a (retriever, ranker) pair or rolls back, `--model-id` only names
+the job.
 
 Both run the image `<training_image_repository>:<model_id>` by default, so a model is trained
 and evaluated by the code of its own commit. `--image-tag` picks another image: the GPU build
@@ -58,7 +66,20 @@ METRIC_DEFINITIONS = {
         "champion:warm_recall": r"champion_warm_recall=" + _NUMBER,
         "popularity:warm_recall": r"popularity_warm_recall=" + _NUMBER,
     },
+    # `ranker.pipeline.metrics_line`, at RANKER_TOP_K
+    "rank": {
+        "ranker:recall": r"ranker_recall_at_k=" + _NUMBER,
+        "retrieval:recall": r"retrieval_recall_at_k=" + _NUMBER,
+        "ranker:ndcg": r"ranker_ndcg_at_k=" + _NUMBER,
+        "retrieval:ndcg": r"retrieval_ndcg_at_k=" + _NUMBER,
+        "candidates:recall": r"candidate_recall=" + _NUMBER,
+        "ranker:list_map": r"ranker_list_map_at_k=" + _NUMBER,
+        "retrieval:list_map": r"retrieval_list_map_at_k=" + _NUMBER,
+    },
+    # one log line per evaluated pair: the report holds the comparison
+    "pair": {},
 }
+MODES = tuple(METRIC_DEFINITIONS)
 
 
 def parse_env(pairs: list[str]) -> dict[str, str]:
@@ -186,9 +207,31 @@ def promotion_summary(report: EvaluationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+def ranker_summary(report) -> str:
+    k = report.top_k
+    t = report.test
+    lines = [
+        f"### Ranker `{report.ranker_id}` on `{report.retriever_id}`: gate "
+        f"{'PASSED' if report.gate_passed else 'failed'}",
+        "",
+        report.reason,
+        "",
+        f"| order | recall@{k} | ndcg@{k} | mrr@{k} |",
+        "|---|---|---|---|",
+        f"| retrieval | {t.retrieval.recall[k]:.4f} | {t.retrieval.ndcg[k]:.4f} | "
+        f"{t.retrieval.mrr.get(k, 0):.4f} |",
+        f"| ranker | {t.ranker.recall[k]:.4f} | {t.ranker.ndcg[k]:.4f} | "
+        f"{t.ranker.mrr.get(k, 0):.4f} |",
+        "",
+        f"Candidates' recall (ceiling): {report.candidate_recall:.4f}; test groups "
+        f"{report.window.test_groups} from T2 {report.window.t2:%Y-%m-%d}.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="steam_training.launch")
-    parser.add_argument("mode", choices=["train", "promote"])
+    parser.add_argument("mode", choices=MODES)
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--env", nargs="*", default=[], help="NAME=value job env overrides")
     parser.add_argument("--summary", type=Path, help="append a Markdown summary to this file")
@@ -240,6 +283,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "train":
         metadata = store.load_metadata(args.model_id)
         summary = training_summary(metadata) if metadata else "model metadata not found\n"
+    elif args.mode == "rank":
+        ranker = store.read_ranker_report(args.model_id)
+        summary = ranker_summary(ranker) if ranker else "ranker report not found\n"
+    elif args.mode == "pair":
+        pair = store.read_pair()
+        summary = (
+            f"### Serving pair\n`{pair.retriever_id}` + `{pair.ranker_id or 'no ranker'}`: "
+            f"{pair.reason}\n"
+            if pair
+            else "no pair.json (nothing promoted)\n"
+        )
     else:
         report = store.read_report(args.model_id)
         summary = promotion_summary(report) if report else "evaluation report not found\n"

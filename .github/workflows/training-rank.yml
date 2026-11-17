@@ -1,0 +1,85 @@
+name: training rank
+
+# Manual (spec 9): trains a ranker on a retriever's candidates after that retriever's cutoff in
+# a SageMaker job (CPU), and writes s3://model-artifacts-<acct>/rankers/<ranker_id>/ and
+# evaluation/rankers/<ranker_id>/ranker.json (gate result included). Nothing is promoted: run
+# *training promote* with mode `pair` and this ranker_id afterwards.
+#
+# The job runs ECR training:<image_tag> (default: this commit's sha, pushed by *training image
+# CD* on merges); ranker_id defaults to the same sha.
+on:
+  workflow_dispatch:
+    inputs:
+      ranker_id:
+        description: "Ranker id = folder rankers/<ranker_id>/ (empty = this commit's sha)"
+        type: string
+        default: ""
+      retriever_id:
+        description: "Retriever whose candidates train the ranker (champion, a commit sha, local-…)"
+        type: string
+        default: champion
+      image_tag:
+        description: "Image tag in ECR training:<tag> that runs the job (empty = this commit's sha)"
+        type: string
+        default: ""
+      instance_type:
+        description: "SageMaker instance (CPU is enough; ~32 GB RAM for the real marts)"
+        type: string
+        default: ml.m5.2xlarge
+      env_overrides:
+        description: "Overrides, space-separated NAME=value (e.g. RANKER_ABLATION=false RANKER_MAX_TRAIN_GROUPS=200000)"
+        type: string
+        default: ""
+      wait_minutes:
+        description: "Minutes to watch the job (the deploy role's credentials last 1 h)"
+        type: number
+        default: 50
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: training-rank
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: training
+
+jobs:
+  rank:
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 75
+    env:
+      USE_SSM: "true"
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: training/uv.lock
+      - run: uv sync --frozen --no-group cu128 --group cpu
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: ./.github/actions/pipeline-guard
+
+      - name: Train the ranker on SageMaker
+        env:
+          RANKER_ID: ${{ inputs.ranker_id || github.sha }}
+          RETRIEVER: ${{ inputs.retriever_id }}
+          IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+          INSTANCE: ${{ inputs.instance_type }}
+          OVERRIDES: ${{ inputs.env_overrides }}
+          WAIT_MINUTES: ${{ inputs.wait_minutes }}
+        run: |
+          uv run --no-sync python -m steam_training.launch rank --model-id "$RANKER_ID" \
+            --image-tag "$IMAGE_TAG" ${INSTANCE:+--instance-type "$INSTANCE"} \
+            --env "RETRIEVER_ID=$RETRIEVER $OVERRIDES" --wait-minutes "$WAIT_MINUTES" \
+            --summary "$GITHUB_STEP_SUMMARY"

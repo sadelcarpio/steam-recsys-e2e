@@ -13,7 +13,7 @@ import os
 from typing import Any, Literal
 
 import boto3
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -246,8 +246,11 @@ class RankerSettings(_SsmSettings):
     settings never change a retriever's checkpoint fingerprint or metadata."""
 
     model_artifacts_bucket: str = Field(pattern=BUCKET_PATTERN)
-    # the ranker's id (rankers/<ranker_id>/): the commit sha in CD, local-<sha>-<suffix> locally
-    ranker_id: str = Field(pattern=MODEL_ID_PATTERN)
+    # the ranker's id (rankers/<ranker_id>/): the commit sha in CD, local-<sha>-<suffix> locally.
+    # RANKER_ID, or MODEL_ID (what the SageMaker launcher sets)
+    ranker_id: str = Field(
+        pattern=MODEL_ID_PATTERN, validation_alias=AliasChoices("ranker_id", "model_id")
+    )
     # the retriever whose candidates train the ranker (`champion` = the current champion)
     retriever_id: str = Field(CHAMPION, pattern=MODEL_ID_PATTERN)
     glue_database: str = "steam_marts"
@@ -308,6 +311,58 @@ class RankerSettings(_SsmSettings):
             raise ValueError(f"ranker_id '{CHAMPION}' is reserved")
         if self.ranker_top_k > self.ranker_candidates:
             raise ValueError("RANKER_TOP_K must be <= RANKER_CANDIDATES")
+        return self
+
+
+class PairSettings(_SsmSettings):
+    """Settings of `python -m steam_training pair` (spec 9): evaluate challenger (retriever,
+    ranker) pairs against the serving pair on a window none of them trained on, and promote the
+    best one; or roll back to the previous pair (`ROLLBACK=true`)."""
+
+    model_artifacts_bucket: str = Field(pattern=BUCKET_PATTERN)
+    # challenger retriever (unset = the serving one: a ranker-only challenge)
+    retriever_id: str | None = Field(None, pattern=MODEL_ID_PATTERN)
+    # challenger ranker trained on the challenger retriever's candidates (unset = none)
+    ranker_id: str | None = Field(None, pattern=MODEL_ID_PATTERN)
+    rollback: bool = False
+    glue_database: str = "steam_marts"
+    aws_region: str = "us-east-1"
+    data_cache_dir: str | None = None
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    eval_batch_size: int = Field(4096, ge=1)
+    seed: int = 42
+
+    pair_candidates: int = Field(100, ge=2)
+    pair_top_k: int = Field(20, ge=1)
+    # retrieval recall@K the retriever gate compares (as the retriever's own promotion)
+    pair_retrieval_k: int = Field(50, ge=1)
+    pair_history_length: int = Field(20, ge=1, le=512)
+    pair_max_rows: int = Field(1_000_000, ge=1)
+    pair_max_groups_per_user: int = Field(20, ge=1)
+    pair_max_groups: int = Field(100_000, ge=1)
+    pair_list_users: int = Field(20_000, ge=0)
+    pair_list_horizon_days: int = Field(7, ge=1)
+    pair_list_max_snapshots: int = Field(4, ge=1)
+    pair_popularity_source: Literal["mart", "interactions"] = "mart"
+
+    # final list: recall@top_k must beat the serving pair by this much, NDCG@top_k not drop
+    min_improvement: float = Field(0.0, ge=0)
+    # a new retriever: retrieval recall@PAIR_RETRIEVAL_K must beat the serving retriever's by
+    # this much and recall@PAIR_CANDIDATES (the ranker's ceiling) must not drop
+    retriever_min_improvement: float = Field(0.0, ge=0)
+    # promote even when the gates reject (the report keeps the real reason)
+    force_promotion: bool = False
+    log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _check(self) -> PairSettings:
+        for value in (self.retriever_id, self.ranker_id):
+            if value == CHAMPION:
+                raise ValueError("challenger ids can't be 'champion' (it names the serving pair)")
+        if not self.rollback and self.retriever_id is None and self.ranker_id is None:
+            raise ValueError("set RETRIEVER_ID and / or RANKER_ID (or ROLLBACK=true)")
+        if self.pair_top_k > self.pair_candidates:
+            raise ValueError("PAIR_TOP_K must be <= PAIR_CANDIDATES")
         return self
 
 

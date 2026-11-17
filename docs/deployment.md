@@ -345,7 +345,33 @@ To swap in a model that loses (e.g. the first one trained on the full backfill),
 `FORCE_PROMOTION=true` to `env_overrides`: it is still evaluated, and the report says it was forced.
 
 **Roll back** the champion: the bucket is versioned, so restore the previous object versions of
-`models/champion/*` and `evaluation/champion/metrics.json`, or promote an older sha again.
+`models/champion/*` and `evaluation/champion/metrics.json`, or promote an older sha again. Once a
+ranker serves, use *training promote* with `mode=rollback` instead (below).
+
+**Ranker (spec 9).** The second stage re-orders the retriever's top 100. Its promotion is by
+pair: a ranker only serves with a retriever it was evaluated with.
+
+1. *training rank* → `retriever_id` (default `champion`), `ranker_id` (default the commit
+   sha). A CPU job (`ml.m5.2xlarge`, ~20 min; `RANKER_ABLATION=false` in `env_overrides`
+   halves it) writes `rankers/<id>/` and `evaluation/rankers/<id>/ranker.json` (its gate:
+   recall@20 vs retrieval order). Its popularity features read the `game_popularity_weekly`
+   mart: one dbt run after the ETL deploy that adds it (`RANKER_POPULARITY_SOURCE=interactions`
+   until then).
+2. *training promote* → `mode=pair`, `ranker_id` = that ranker (and `model_id` = a new
+   retriever, if it is one). It scores the serving pair and the challengers on the same groups
+   (after every compared model's training window), promotes the best one when it wins (final
+   recall@20 and NDCG@20; a new retriever must also win at retrieval and keep its recall@100),
+   copies it to `models/champion/` / `rankers/champion/`, and writes
+   `evaluation/champion/pair.json` + `history.jsonl`. The report: `evaluation/pairs/`.
+3. *training promote* → `mode=rollback` restores the previous pair. Run inference afterwards:
+   DynamoDB keeps the current lists until the next run.
+
+While a ranker serves, `mode=retriever` refuses: promote retrievers with `mode=pair` (with
+`model_id`), so the serving ranker is re-evaluated on the new retriever's candidates.
+
+**Time-based windows.** `HOLDOUT_WEEKS=6` (`env_overrides` of *training CD*) trains a retriever
+on everything up to 6 weeks before the newest review instead of the last 10% of rows; the last
+`TEST_WEEKS` (2) stay unread for the pair gates (spec 9, "Time windows").
 
 ## 10. Recommendations (batch inference)
 

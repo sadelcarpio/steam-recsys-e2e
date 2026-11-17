@@ -420,8 +420,11 @@ Each phase ships on its own (CI, docs, deploy), in this order:
    ETL (and one pipeline run) before a ranker job reads the mart.
 3. **Pair evaluation and promotion** (no live MLflow): time-based windows (`HOLDOUT_WEEKS`,
    `TEST_WEEKS`, see "Time windows"), ranker gate, pair evaluation of a new retriever (both
-   rankers), final-list gate, `pair.json`, `history.jsonl`, `ROLLBACK=1`, `training-rank.yml`
-   and `training-promote.yml` changes, the numpy `ranker.npz` export.
+   rankers, and the retriever alone), final-list gate, `pair.json`, `history.jsonl`,
+   `ROLLBACK=true`, `training-rank.yml` and `training-promote.yml` (`mode`), the numpy
+   `ranker.npz` export. Report metrics: per review (recall / NDCG / MRR, end to end and
+   conditional on the candidates) and per user (precision / recall / MAP@k of weekly lists).
+   Done on this branch except `ranker.npz` (with phase 5's serving port).
 4. **Batch inference**: the ranker in `RANKER_MODE=shadow`, then `on`; the delayed-label check.
 5. **Online serving**: `game_features.npz` export, the numpy tree evaluator in the Lambda,
    parity test; deploy serving before promoting a ranker that serving must read.
