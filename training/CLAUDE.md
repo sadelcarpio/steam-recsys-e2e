@@ -5,7 +5,10 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
 ## Layout
 
 - `src/steam_training/` (uv project, hatchling, py3.12; torch only through the `cpu` / `cu128`
-  extras, so always `uv sync --extra cpu` or `--extra cu128`)
+  dependency groups. `cu128` is a default group, so a plain `uv sync` / `uv run` / `uv add`
+  keeps a local GPU venv on CUDA torch; CI and the CPU image use `uv sync --no-group cu128
+  --group cpu` and then `uv run --no-sync` (a plain `uv run` would re-sync cu128). Never sync
+  a developer's venv with `--group cpu`.)
   - `config.py`: `TrainingSettings` (jobs, hyperparameters) and `LaunchSettings` (CD launcher),
     env > SSM `/training/*` when `USE_SSM=true`
   - `contracts.py`: Pydantic artifacts contract (`ModelConfig`, `ModelMetadata`,
@@ -153,8 +156,9 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
 
 ## Commands
 
-`uv sync --extra cpu && uv run pytest && uv run ruff check . && uv run ruff format --check .`
-Add deps only with `uv add` (never edit the lock). torch is routed per extra to the
+`uv sync && uv run pytest && uv run ruff check . && uv run ruff format --check .` (GPU torch, the
+default group; CPU only: `uv sync --no-group cu128 --group cpu` + `uv run --no-sync ...`)
+Add deps only with `uv add` (never edit the lock). torch is routed per dependency group to the
 `pytorch-cpu` / `pytorch-cu128` indexes in `[tool.uv.sources]` (a tool section). Note that
 `uv remove torch` deletes that routing, so restore it before re-adding torch.
 

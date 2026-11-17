@@ -21,11 +21,11 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: training/uv.lock
-      - run: uv sync --frozen --extra cpu
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
+      - run: uv sync --frozen --no-group cu128 --group cpu
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
       # Unit tests + a full train/promote run on synthetic marts (moto S3), no AWS.
-      - run: uv run pytest -q
+      - run: uv run --no-sync pytest -q
 
   build:
     runs-on: ubuntu-latest

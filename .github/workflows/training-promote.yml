@@ -55,7 +55,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: training/uv.lock
-      - run: uv sync --frozen --extra cpu
+      - run: uv sync --frozen --no-group cu128 --group cpu
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -70,5 +70,5 @@ jobs:
           OVERRIDES: ${{ inputs.env_overrides }}
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          uv run python -m steam_training.launch promote --model-id "$MODEL_ID" \
+          uv run --no-sync python -m steam_training.launch promote --model-id "$MODEL_ID" \
             ${IMAGE_TAG:+--image-tag "$IMAGE_TAG"} --env "$OVERRIDES" --summary "$GITHUB_STEP_SUMMARY"

@@ -43,8 +43,10 @@ re-mined per epoch and by `EVAL_MAX_ROWS`. Training itself grows linearly: about
 per 2.7M interactions on 16 CPU cores.
 
 **Devices.** `DEVICE=auto` uses CUDA when present, otherwise the CPU. torch comes from one of two
-uv extras: `cpu` (default image, CI) or `cu128` (GPU image, built with
-`--build-arg TORCH_VARIANT=cu128` and tagged `<sha>-cu128`). The cu128 index stops at torch 2.11
+uv dependency groups: `cu128` (the default group: a plain `uv sync` / `uv run` / `uv add` keeps
+a local venv on CUDA torch; the GPU image, built with `--build-arg TORCH_VARIANT=cu128` and
+tagged `<sha>-cu128`) or `cpu` (the default image and CI: `uv sync --no-group cu128 --group
+cpu`, then `uv run --no-sync`). The cu128 index stops at torch 2.11
 while cpu has 2.14. Artifacts are plain state dicts, so they load in either.
 
 **Checkpoints.** After every epoch the full training state (model, optimizer, mined negatives,
@@ -320,7 +322,7 @@ min / max activity is in `tracking.json`.
 
 ```bash
 docker compose -f training/mlflow/compose.yaml up -d      # http://localhost:5000
-cd training && uv sync --extra cu128 --extra tracking      # mlflow-skinny client (cpu works too)
+cd training && uv sync --extra tracking                   # + the mlflow-skinny client
 MLFLOW_TRACKING_URI=http://localhost:5000 AWS_PROFILE=admin AWS_REGION=us-east-1 \
   MODEL_ARTIFACTS_BUCKET=model-artifacts-<acct> MODEL_ID=local-$(git rev-parse --short HEAD)-a1 \
   EXPLICIT_NEGATIVES=false uv run python -m steam_training train
@@ -487,7 +489,8 @@ forwards them to the job:
 
 ```bash
 cd training
-uv sync --extra cpu      # or --extra cu128 on a CUDA machine; + --extra tracking for MLflow
+uv sync                  # CUDA torch (default group); CPU only: --no-group cu128 --group cpu
+                         # (then `uv run --no-sync`); + --extra tracking for MLflow
 uv run pytest            # unit tests + train/promote end to end on synthetic marts (moto S3)
 uv run ruff check . && uv run ruff format --check .
 ```
