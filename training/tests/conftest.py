@@ -34,6 +34,11 @@ def game_cluster(game_idx: int) -> int:
     return (game_idx - FIRST_GAME) // GAMES_PER_CLUSTER
 
 
+def game_id(game_idx):
+    """Steam appid of a synthetic game_idx."""
+    return game_idx * 10 + 1000
+
+
 def _item_row(game_idx: int, ratio: float) -> dict:
     cluster = game_cluster(game_idx)
     return {
@@ -109,7 +114,26 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
     return {
         "interactions": pa.Table.from_pylist(rows),
         "game_features": pa.Table.from_pylist(game_features),
-        "lkp_games": pa.table({"game_idx": pa.array(games, pa.int64())}),
+        "lkp_games": pa.table(
+            {
+                "game_idx": pa.array(games, pa.int64()),
+                "game_id": pa.array(game_id(games), pa.int64()),
+            }
+        ),
+        # spec 9 ranker: price + release date (the last game has neither)
+        "game_details": pa.table(
+            {
+                "game_id": pa.array(game_id(games), pa.int64()),
+                "game_price": pa.array(
+                    [float(g % 4) * 10 for g in games[:-1]] + [None], pa.float64()
+                ),
+                "game_release_date": pa.array(
+                    [f"Mar {1 + int(g) % 28}, {2015 + int(g) % 8}" for g in games[:-1]]
+                    + ["Coming soon"],
+                    pa.string(),
+                ),
+            }
+        ),
         "lkp_developers": lookup(7),
         "lkp_publishers": lookup(5),
         "lkp_genres": lookup(N_CLUSTERS),

@@ -1,4 +1,7 @@
-"""SageMaker job entry point: `python -m steam_training {train,promote}`.
+"""SageMaker job entry point: `python -m steam_training {train,promote,rank}`.
+
+`rank` (spec 9) trains a ranker on the candidates of `RETRIEVER_ID` (default the champion) after
+that retriever's cutoff, writes rankers/<RANKER_ID>/ and evaluation/rankers/<RANKER_ID>/ranker.json.
 
 `python -m steam_training export --model-id <id>` (local, one-off) writes the numpy user tower
 (`user_tower.npz`) of a model saved before it existed; export `champion` too when it is one.
@@ -16,12 +19,14 @@ import logging
 from steam_training.artifacts import ArtifactStore
 from steam_training.config import (
     ExportSettings,
+    RankerSettings,
     TrackSettings,
     TrainingSettings,
     configure_logging,
 )
 from steam_training.data import IcebergSource
 from steam_training.pipeline import run_promotion, run_training
+from steam_training.ranker.pipeline import run_ranking
 from steam_training.tracking import ALIASES, MlflowSink
 
 log = logging.getLogger("steam_training")
@@ -29,13 +34,17 @@ log = logging.getLogger("steam_training")
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="steam_training")
-    parser.add_argument("mode", choices=["train", "promote", "export", "track"])
+    parser.add_argument("mode", choices=["train", "promote", "export", "track", "rank"])
     parser.add_argument("--model-id", help="export / track: the model (e.g. champion)")
     parser.add_argument(
         "--alias", choices=ALIASES, help="track: point this registered model alias at the run"
     )
     parser.add_argument(
         "--replace", action="store_true", help="track: replay even if the run is already there"
+    )
+    parser.add_argument(
+        "--retriever-id",
+        help="rank: the retriever whose candidates train the ranker (default: champion)",
     )
     args = parser.parse_args(argv)
 
@@ -57,6 +66,22 @@ def main(argv: list[str] | None = None) -> None:
         if args.model_id != metadata.model_id:
             key = store.copy_user_tower_numpy(metadata.model_id, args.model_id)
         log.info("exported the numpy user tower of %s to %s", metadata.model_id, key)
+        return
+
+    if args.mode == "rank":
+        overrides = {"retriever_id": args.retriever_id} if args.retriever_id else {}
+        ranker_settings = RankerSettings(**overrides)
+        configure_logging(ranker_settings.log_level)
+        report = run_ranking(
+            ranker_settings,
+            IcebergSource(
+                ranker_settings.glue_database,
+                ranker_settings.aws_region,
+                ranker_settings.data_cache_dir,
+            ),
+            ArtifactStore(ranker_settings.model_artifacts_bucket),
+        )
+        log.info("ranker %s: gate %s (%s)", report.ranker_id, report.gate_passed, report.reason)
         return
 
     settings = TrainingSettings()
