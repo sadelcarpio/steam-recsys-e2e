@@ -48,8 +48,14 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
     `UserReviews`, `snapshot_lists`, `ListAccumulator` precision / recall / MAP),
     `pipeline.py` (`run_ranking`: `python -m steam_training rank`; T2 = the retriever's split
     end when it has one)
-  - `launch.py`: CD launcher (creates and watches the SageMaker job, writes the job summary);
-    `METRIC_DEFINITIONS` (log regexes -> CloudWatch curves in the SageMaker console)
+  - `pairs.py` (spec 9, phase 3): `python -m steam_training pair` (`PairSettings`):
+    `run_pair` scores the serving pair and challenger pairs on groups at or after
+    `window_start` (newest retriever split end / cutoff and ranker T2), `decide_pair`
+    (retriever gate, then final-list gate), `promote_pair`, `rollback`; `serving_pair`
+    bootstraps from `models/champion/` before the first `pair.json`
+  - `launch.py`: CD launcher for `train`, `promote`, `rank`, `pair` (creates and watches the
+    SageMaker job, writes the job summary); `METRIC_DEFINITIONS` (log regexes -> CloudWatch
+    curves in the SageMaker console)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
   (streams small batches). Unit tests, train → promote end to end with moto S3, and a bitwise
   resumed-equals-uninterrupted checkpoint test.
@@ -131,6 +137,13 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
   groups come after its retriever's cutoff (the retriever never saw their labels). Naive UTC
   datetimes go through `ranker.data.epoch_seconds` (never `datetime.timestamp()`, which applies
   the local timezone).
+- Serving pair (spec 9): `evaluation/champion/pair.json` names the serving (retriever, ranker);
+  a pair promotion copies the changed models (`copy_model_to_champion`,
+  `copy_ranker_to_champion`, None deletes `rankers/champion/`), appends `history.jsonl`, and
+  writes `pair.json` last. `run_promotion` (retriever alone) refuses while a ranker serves.
+  Pair comparisons use only groups none of the compared models trained or selected on; a
+  ranker must have passed its gate and match `FEATURE_SCHEMA_VERSION`. A rollback steps one
+  promotion back (the pair before the current one's last non-rollback promotion).
 - `DATA_CACHE_DIR` (local runs): `iceberg_batches` reads through `data.CachingFileIO`, which
   copies each remote data / delete file once (`<dir>/<scheme>/<bucket>/<key>`, `.part` +
   rename) and serves it from disk. Safe because Iceberg files are immutable. It relies on
@@ -168,5 +181,6 @@ Add deps only with `uv add` (never edit the lock). torch is routed per dependenc
 `uv remove torch` deletes that routing, so restore it before re-adding torch.
 
 Infra for this component: `infrastructure/training.tf`. Workflows: `training-ci.yml`,
-`training-cd.yml`, `training-promote.yml`, `training-image-cd.yml` (CPU image on merges, via
+`training-cd.yml`, `training-promote.yml` (modes retriever / pair / rollback),
+`training-rank.yml` (ranker job), `training-image-cd.yml` (CPU image on merges, via
 `cd.yml`; no training job).

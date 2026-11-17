@@ -13,9 +13,26 @@ name: training promote
 # A model trained locally is named local-<short sha>-<suffix> and has no image of its own:
 # set image_tag to a pushed image that can load it, e.g. the merge commit sha that contains
 # its code (*training image CD* pushes training:<merge sha>).
+#
+# mode (spec 9):
+#   retriever  the above (refused once a ranker serves: a retriever must then go through `pair`)
+#   pair       evaluates the serving (retriever, ranker) pair against challenger pairs built from
+#              model_id (a new retriever, optional) and ranker_id (a ranker from *training
+#              rank*, optional) on groups none of them trained on, promotes the best one and
+#              writes evaluation/champion/pair.json + history.jsonl
+#   rollback   restores the pair that served before the current one (run inference afterwards)
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "retriever (a retriever alone), pair (retriever and / or ranker), rollback"
+        type: choice
+        options: [retriever, pair, rollback]
+        default: retriever
+      ranker_id:
+        description: "pair: challenger ranker, rankers/<ranker_id>/ (empty = none)"
+        type: string
+        default: ""
       model_id:
         description: "Model id = folder models/<model_id>/ in the bucket: the commit sha for training CD models, local-<sha>-<suffix> for local ones (empty = this commit's sha)"
         type: string
@@ -64,7 +81,8 @@ jobs:
 
       - uses: ./.github/actions/pipeline-guard
 
-      - name: Evaluate and promote on SageMaker
+      - name: Evaluate and promote a retriever on SageMaker
+        if: inputs.mode == 'retriever'
         env:
           MODEL_ID: ${{ inputs.model_id || github.sha }}
           OVERRIDES: ${{ inputs.env_overrides }}
@@ -72,3 +90,23 @@ jobs:
         run: |
           uv run --no-sync python -m steam_training.launch promote --model-id "$MODEL_ID" \
             ${IMAGE_TAG:+--image-tag "$IMAGE_TAG"} --env "$OVERRIDES" --summary "$GITHUB_STEP_SUMMARY"
+
+      # pair / rollback: the job runs this commit's image (or image_tag); --model-id only names it
+      - name: Evaluate and promote a pair, or roll back, on SageMaker
+        if: inputs.mode != 'retriever'
+        env:
+          MODE: ${{ inputs.mode }}
+          RETRIEVER: ${{ inputs.model_id }}
+          RANKER: ${{ inputs.ranker_id }}
+          OVERRIDES: ${{ inputs.env_overrides }}
+          IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+        run: |
+          if [ "$MODE" = rollback ]; then
+            ENV="ROLLBACK=true"; LABEL=rollback
+          else
+            ENV="${RETRIEVER:+RETRIEVER_ID=$RETRIEVER} ${RANKER:+RANKER_ID=$RANKER}"
+            LABEL="${RANKER:-$RETRIEVER}"
+            if [ -z "$LABEL" ]; then echo "pair needs model_id and / or ranker_id" >&2; exit 1; fi
+          fi
+          uv run --no-sync python -m steam_training.launch pair --model-id "$LABEL" \
+            --image-tag "$IMAGE_TAG" --env "$ENV $OVERRIDES" --summary "$GITHUB_STEP_SUMMARY"

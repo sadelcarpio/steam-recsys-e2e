@@ -159,3 +159,44 @@ def evaluate_lists(
         retrieval.add(by_retrieval, lists.relevant)
         ranker.add(by_ranker, lists.relevant)
     return retrieval.metrics(), ranker.metrics()
+
+
+def candidate_lists(
+    score_fn,
+    index,
+    k: int,
+    batch_size: int,
+    history_length: int,
+    games,
+    popularity,
+    predict: Callable[[np.ndarray], np.ndarray] | None = None,
+    chunk: int = 256,
+) -> Callable[[SnapshotLists, int], tuple[np.ndarray, np.ndarray]]:
+    """The `rank` callback of `evaluate_lists` for one retriever (`score_fn` over the catalog
+    `index`) and an optional ranker (`predict`: scores of a [rows, len(FEATURES)] matrix;
+    None = retrieval order for both)."""
+    from steam_training.evaluation import top_candidates
+    from steam_training.ranker.features import compute_features
+
+    def rank(lists: SnapshotLists, t: int) -> tuple[np.ndarray, np.ndarray]:
+        candidates, scores = top_candidates(
+            score_fn, lists.history, index, k, batch_size, exclude=lists.reviewed
+        )
+        missing = ~np.isfinite(scores)
+        by_retrieval = np.where(missing, -1, candidates)
+        if predict is None:
+            return by_retrieval, by_retrieval
+        history = lists.history[:, :history_length]
+        seconds = np.full(len(lists), t, dtype=np.int64)
+        ranked = np.empty(scores.shape, dtype=np.float64)
+        for start in range(0, len(lists), chunk):
+            part = slice(start, start + chunk)
+            x = compute_features(
+                history[part], candidates[part], scores[part], seconds[part], games, popularity
+            )
+            ranked[part] = predict(x.reshape(-1, x.shape[-1])).reshape(x.shape[:2])
+        ranked[missing] = -np.inf
+        order = np.argsort(-ranked, axis=1, kind="stable")
+        return by_retrieval, by_retrieval[np.arange(len(lists))[:, None], order]
+
+    return rank

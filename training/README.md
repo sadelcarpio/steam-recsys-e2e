@@ -452,12 +452,35 @@ DATA_CACHE_DIR=~/.cache/steam-recsys/iceberg \
   `RANKER_TRAIN_FRACTION` of the groups.
 - **Gate:** recall@`RANKER_TOP_K` must beat retrieval order by `RANKER_MIN_GAIN`. The ranker is
   saved either way (`rankers/<id>/model.txt` + `metadata.json`), and the report says whether
-  it passed. Pair promotion and serving come in later phases (spec 9, "Delivery sequence").
+  it passed. Serving it is a pair promotion (below).
+
+**Pair promotion and rollback** (`python -m steam_training pair`, *training promote* with
+`mode=pair` / `rollback`). The serving pair is `evaluation/champion/pair.json` (before the
+first one: the champion retriever alone). `RANKER_ID` and / or `RETRIEVER_ID` name the
+challengers; with a new retriever, the pairs (it + `RANKER_ID`), (it + the serving ranker) and
+(it alone) are all scored. Every pair is scored on the same groups, from the newest of the
+compared retrievers' split ends (cutoffs) and rankers' T2, so nothing compared was trained or
+selected on them:
+
+1. a new retriever: retrieval recall@`PAIR_RETRIEVAL_K` (50) must beat the serving one's by
+   `RETRIEVER_MIN_IMPROVEMENT`, and recall@`PAIR_CANDIDATES` (100, the ranker's ceiling) must
+   not drop;
+2. the best challenger's final recall@`PAIR_TOP_K` (20) must beat the serving pair's by
+   `MIN_IMPROVEMENT`, with NDCG@20 not lower.
+
+The report (`evaluation/pairs/<retriever>__<ranker>.json`) has every pair's final and
+retrieval metrics and per-user lists. A ranker that failed its own gate is refused (unless
+`FORCE_PROMOTION=true`). `ROLLBACK=true` restores the pair that served before the current
+one. While a ranker serves, `promote` (a retriever alone) refuses.
 
 ```
   rankers/<id>/model.txt                      LightGBM text dump
   rankers/<id>/metadata.json                  RankerMetadata: retriever, window (T1, T2), features, snapshots
   evaluation/rankers/<id>/ranker.json         RankerReport
+  rankers/champion/…                          the serving ranker (deleted when none serves)
+  evaluation/pairs/<retriever>__<ranker>.json PairReport (a pair promotion)
+  evaluation/champion/pair.json               PairRecord: the serving (retriever, ranker)
+  evaluation/champion/history.jsonl           one PairRecord per promotion / rollback
 ```
 
 Popularity comes from the `game_popularity_weekly` mart (reviews per game and ISO week; a

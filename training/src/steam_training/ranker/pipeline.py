@@ -37,9 +37,8 @@ from steam_training.ranker.features import (
     FEATURE_SCHEMA_VERSION,
     FEATURES,
     SECONDS_PER_DAY,
-    compute_features,
 )
-from steam_training.ranker.lists import SnapshotLists, evaluate_lists
+from steam_training.ranker.lists import candidate_lists, evaluate_lists
 from steam_training.ranker.lists import snapshots as list_snapshots
 from steam_training.ranker.model import (
     FitResult,
@@ -232,36 +231,25 @@ def metrics_line(report: RankerReport) -> str:
 def _user_lists(settings, data, fit, score_fn, index, ks) -> UserListComparison:
     """Per-user lists at weekly snapshots of the test window (`ranker.lists`)."""
     horizon = settings.ranker_list_horizon_days * SECONDS_PER_DAY
-    end = int(data.rows.seconds[-1])
-    times = list_snapshots(epoch_seconds(data.t2), end, horizon, settings.ranker_list_max_snapshots)
-    length = data.rows.history.shape[1]
-
-    def rank(lists: SnapshotLists, t: int) -> tuple[np.ndarray, np.ndarray]:
-        candidates, scores = top_candidates(
-            score_fn, lists.history, index, settings.ranker_candidates,
-            settings.eval_batch_size, exclude=lists.reviewed,
-        )  # fmt: skip
-        history = lists.history[:, : settings.ranker_history_length]
-        seconds = np.full(len(lists), t, dtype=np.int64)
-        ranked = np.empty_like(scores)
-        for start in range(0, len(lists), 256):
-            part = slice(start, start + 256)
-            x = compute_features(
-                history[part], candidates[part], scores[part], seconds[part],
-                data.games, data.popularity,
-            )  # fmt: skip
-            ranked[part] = fit.predict_features(x.reshape(-1, x.shape[-1])).reshape(x.shape[:2])
-        missing = ~np.isfinite(scores)
-        by_retrieval = np.where(missing, -1, candidates)
-        ranked[missing] = -np.inf
-        order = np.argsort(-ranked, axis=1, kind="stable")
-        by_ranker = np.where(missing, -1, candidates)[np.arange(len(lists))[:, None], order]
-        return by_retrieval, by_ranker
-
-    retrieval, ranker = evaluate_lists(data.list_reviews, times, horizon, length, ks, rank)
-    log.info(
-        "per-user lists: %d (user, snapshot) lists over %d snapshots", ranker.lists, len(times)
+    times = list_snapshots(
+        epoch_seconds(data.t2),
+        int(data.rows.seconds[-1]),
+        horizon,
+        settings.ranker_list_max_snapshots,
     )
+    rank = candidate_lists(
+        score_fn,
+        index,
+        settings.ranker_candidates,
+        settings.eval_batch_size,
+        settings.ranker_history_length,
+        data.games,
+        data.popularity,
+        fit.predict_features,
+    )
+    length = data.rows.history.shape[1]
+    retrieval, ranker = evaluate_lists(data.list_reviews, times, horizon, length, ks, rank)
+    log.info("per-user lists: %d (user, snapshot) lists, %d snapshots", ranker.lists, len(times))
     return UserListComparison(
         snapshots=[from_epoch_seconds(t) for t in times],
         horizon_days=settings.ranker_list_horizon_days,
