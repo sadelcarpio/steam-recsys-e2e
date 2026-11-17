@@ -82,6 +82,9 @@ class ServingSettings(BaseSettings):
     # Liked games accepted per request (only the first HISTORY_LENGTH known ones feed the model;
     # all of them are excluded from the results).
     max_liked_games: int = Field(100, ge=1, le=1000)
+    # spec 9: a list ordered by the ranker returns at most this many games, whatever `limit`
+    # (the ranker is evaluated at 20, and batch writes its top RANKER_TOP_K = 20)
+    ranker_top_k: int = Field(20, ge=1, le=MAX_LIMIT)
 
     log_level: str = "INFO"
 

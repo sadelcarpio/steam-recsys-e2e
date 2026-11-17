@@ -73,6 +73,7 @@ KEYS = {
     "game_tags": ("game_id",),
     "interactions": ("review_id",),
     "game_popularity_weekly": ("game_id", "week_start"),
+    "review_languages": ("review_id",),
     "user_index": ("user_idx",),
 }
 Snapshot = dict[str, list[dict[str, Any]]]
@@ -258,6 +259,7 @@ def test_incremental_matches_full_refresh(runs):
         "game_tags",
         "interactions",
         "game_popularity_weekly",
+        "review_languages",
         "user_index",
     ):
         assert without_batch(runs["full"][table]) == without_batch(runs["batch2"][table]), table
@@ -438,6 +440,20 @@ def test_game_popularity_weekly_counts_interactions_per_iso_week(runs, run):
         for r in runs[run]["game_popularity_weekly"]
     }
     assert got == expected
+
+
+def test_review_languages_keep_the_first_seen_language(runs):
+    """spec 17 (A7): one row per review with a language, lower case and trimmed; reviews without
+    one are left out; a re-scrape in a later batch keeps the first language (review 2)."""
+    want = {1: "english", 13: "english", 2: "english", 3: "schinese", 4: "english",
+            5: "russian", 7: "english"}  # fmt: skip
+    want |= {900 + k: "english" for k in range(1, 8)}
+    got = {r["review_id"]: r["language"] for r in runs["batch1"]["review_languages"]}
+    assert got == want
+    want |= {8: "english", 10: "english", 12: "english", 14: "english"}  # 11: empty
+    for run in ("batch2", "full"):
+        got = {r["review_id"]: r["language"] for r in runs[run]["review_languages"]}
+        assert got == want, run
 
 
 def test_user_index_ranks_users_by_reviews_then_id(runs):

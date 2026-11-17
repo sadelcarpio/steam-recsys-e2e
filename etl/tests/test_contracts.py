@@ -10,6 +10,7 @@ from steam_etl.contracts import (
     GameTagsRow,
     InteractionRow,
     LookupRow,
+    ReviewLanguageRow,
     UserIndexRow,
 )
 
@@ -149,3 +150,16 @@ def test_popularity_row():
 def test_popularity_rejects(overrides):
     with pytest.raises(ValidationError):
         popularity(**overrides)
+
+
+def test_review_language_row():
+    row = {
+        "_batch_at": NOW,
+        "review_id": 7,
+        "language": "schinese",
+        "scrape_date": date(2026, 1, 2),
+    }
+    assert ReviewLanguageRow.model_validate(row).language == "schinese"
+    for bad in ("", "English", " english"):
+        with pytest.raises(ValidationError):
+            ReviewLanguageRow.model_validate(row | {"language": bad})
