@@ -562,7 +562,7 @@ change, so the copy is never stale, and a new snapshot only downloads the files 
 Delete the folder to reclaim the space (~8 GB per snapshot, shared between snapshots).
 SageMaker jobs leave it unset (same-region S3 reads are free).
 
-Promote it with *training promote* (`model_id=local-…`, `image_tag=<a pushed commit sha>`), or
+Promote it with *training promote* (`retriever_id=local-…`, `image_tag=<a pushed commit sha>`), or
 locally with `python -m steam_training promote` and the same variables. Local runs need
 `glue:GetTable` on `steam_marts`, read access to `processed-steam-data-<acct>/iceberg/` and
 read/write access to `model-artifacts-<acct>`.
@@ -587,7 +587,7 @@ items = model.item_tower(to_item_batch(features))  # steam_training.batching.to_
   `wait_minutes` (50). A longer job keeps running, and its result is in CloudWatch
   (`/aws/sagemaker/TrainingJobs`) and `models/<sha>/metadata.json`. Re-running the same commit
   resumes from its checkpoint.
-- *training promote* (manual, inputs `model_id`, optional `image_tag`): runs the promotion job and
+- *training promote* (manual, inputs `retriever_id`, optional `image_tag`): runs the promotion job and
   writes the verdict and the metrics table to the job summary.
 
 SageMaker training job quotas start at 0 per instance type. Request one for the instance type
