@@ -329,14 +329,14 @@ until the next dbt run (new Iceberg snapshots start a fresh run).
 
 **No quota? Train locally.** `python -m steam_training train` runs the same pipeline on a
 workstation and uploads the model to the bucket (see `training/README.md`, *Development*). Then
-promote it with `model_id=local-…` and `image_tag=<a pushed commit sha>`: every merge to `main`
+promote it with `retriever_id=local-…` and `image_tag=<a pushed commit sha>`: every merge to `main`
 that changes the training code pushes `training:<merge sha>` (*training image CD*), so use the
 merge commit that contains the code the model was trained with (or a later compatible one).
 
 **GPU** (optional, once a GPU quota is granted, e.g. `ml.g4dn.xlarge`, quota code `L-3F53BF0F`):
 run *training CD* with `torch_variant=cu128` and `instance_type=ml.g4dn.xlarge`.
 
-**Promote.** Actions → *training promote* → Run workflow with `model_id` = the trained commit
+**Promote.** Actions → *training promote* → Run workflow with `retriever_id` = the trained commit
 sha (empty = the commit the workflow runs on). It evaluates the candidate and the current
 champion on the same validation rows and writes `evaluation/<sha>/metrics.json`. When the
 candidate wins, it copies the model to `models/champion/` and the report to
@@ -357,7 +357,7 @@ pair: a ranker only serves with a retriever it was evaluated with.
    recall@20 vs retrieval order). Its popularity features read the `game_popularity_weekly`
    mart: one dbt run after the ETL deploy that adds it (`RANKER_POPULARITY_SOURCE=interactions`
    until then).
-2. *training promote* → `mode=pair`, `ranker_id` = that ranker (and `model_id` = a new
+2. *training promote* → `mode=pair`, `ranker_id` = that ranker (and `retriever_id` = a new
    retriever, if it is one). It scores the serving pair and the challengers on the same groups
    (after every compared model's training window), promotes the best one when it wins (final
    recall@20 and NDCG@20; a new retriever must also win at retrieval and keep its recall@100),
@@ -367,7 +367,7 @@ pair: a ranker only serves with a retriever it was evaluated with.
    DynamoDB keeps the current lists until the next run.
 
 While a ranker serves, `mode=retriever` refuses: promote retrievers with `mode=pair` (with
-`model_id`), so the serving ranker is re-evaluated on the new retriever's candidates.
+`retriever_id`), so the serving ranker is re-evaluated on the new retriever's candidates.
 
 **Training Step Function (spec 9, phase 7).** `steam-recsys-training` chains it all: train a
 retriever (the champion's recipe on time-based windows), train its ranker, evaluate the pairs as
