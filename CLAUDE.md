@@ -106,6 +106,10 @@ Order: EventBridge → 1 → 2 → 3 → 4
 
 - S3 (Iceberg `game_features`, `interactions`; user histories derived from `interactions`) → features → SageMaker Inference Pipeline
 - S3 `model-artifacts-<account-id>/models/champion/` → model artifacts → SageMaker Inference Pipeline
+- S3 `model-artifacts-<account-id>/evaluation/champion/pair.json` + `rankers/champion/` → the serving
+  ranker (spec 9; Iceberg `game_popularity_weekly` + `game_details` features) re-orders the top 100
+  (`RANKER_MODE` shadow / on); `evaluation/online/` ↔ delayed-label check (previous run's lists vs
+  reviews since)
 - SageMaker Inference Pipeline ↔ Bedrock (LLM reranking + explanations for the most active reviewers)
 - SageMaker Inference Pipeline → top-K recs (changed users only) + `__popular__` fallback → DynamoDB
   `game-explainable-recommendations`

@@ -145,6 +145,8 @@ class Reviews:
 
     game_idx: np.ndarray  # int64
     is_positive: np.ndarray | None = None  # bool, same order
+    # int64 microseconds since the epoch of each review, same order (None = not kept)
+    micros: np.ndarray | None = None
 
     def histories(self, review_users: np.ndarray, user_id: np.ndarray, length: int) -> np.ndarray:
         """[len(user_id), length]: each user's last `length` positively reviewed games, most
@@ -446,13 +448,13 @@ def collect_reviews(
         positives.append(positive[keep])
     if not users:
         empty = np.zeros(0, dtype=np.int64)
-        return empty, Reviews(empty, np.zeros(0, dtype=bool)), popular
+        return empty, Reviews(empty, np.zeros(0, dtype=bool), empty), popular
     user = np.concatenate(users)
     game = np.concatenate(games)
     ts = np.concatenate(timestamps)
     positive = np.concatenate(positives)
     order = np.lexsort((-ts, user))
-    return user[order], Reviews(game[order], positive[order]), popular
+    return user[order], Reviews(game[order], positive[order], ts[order]), popular
 
 
 def popular_counts(
