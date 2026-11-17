@@ -57,7 +57,8 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
     (`APPLY_REPORT`: promote a `PAIR_DRY_RUN` report's choice if the serving pair is unchanged);
     `serving_pair` bootstraps from `models/champion/` before the first `pair.json`
   - `launch.py`: CD launcher for `train`, `promote`, `rank`, `pair` (creates and watches the
-    SageMaker job, writes the job summary); `METRIC_DEFINITIONS` (log regexes -> CloudWatch
+    SageMaker job, `LogTail` prints its CloudWatch lines into the workflow log, best effort;
+    writes the job summary); `METRIC_DEFINITIONS` (log regexes -> CloudWatch
     curves in the SageMaker console)
 - `tests/`: `conftest.py` builds synthetic marts with learnable taste clusters + `FakeSource`
   (streams small batches). Unit tests, train → promote end to end with moto S3, and a bitwise
