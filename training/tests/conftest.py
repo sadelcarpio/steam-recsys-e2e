@@ -109,7 +109,10 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
     return {
         "interactions": pa.Table.from_pylist(rows),
         "game_features": pa.Table.from_pylist(game_features),
-        "lkp_games": pa.table({"game_idx": pa.array(games, pa.int64())}),
+        "lkp_games": pa.table(
+            {"game_idx": pa.array(games, pa.int64()), "game_id": pa.array(games + GAME_ID_BASE)}
+        ),
+        "game_details": game_details(games),
         "lkp_developers": lookup(7),
         "lkp_publishers": lookup(5),
         "lkp_genres": lookup(N_CLUSTERS),
@@ -117,6 +120,30 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
         "lkp_tags": lookup(6),
         "game_tags": game_tags,
     }
+
+
+GAME_ID_BASE = 1000  # synthetic Steam appid = game_idx + GAME_ID_BASE
+
+
+def release_date(game_idx: int) -> str | None:
+    """Steam's raw release date strings: mostly exact days, a few unparseable ones."""
+    if game_idx % 10 == 7:
+        return "Coming soon"
+    if game_idx % 10 == 8:
+        return "2027"
+    if game_idx % 10 == 9:
+        return None
+    day = START - timedelta(days=30 * (game_idx % 6))
+    return f"{day:%b} {day.day}, {day.year}"
+
+
+def game_details(games) -> pa.Table:
+    return pa.table(
+        {
+            "game_id": pa.array([int(g) + GAME_ID_BASE for g in games], pa.int64()),
+            "game_release_date": pa.array([release_date(int(g)) for g in games], pa.string()),
+        }
+    )
 
 
 class FakeSource:

@@ -23,6 +23,15 @@ FIRST_ID = 2
 # inference and serving read today. Longer histories (A3) are derived in training from
 # `interactions` (`data.HistoryIndex`) and set per model (`ModelConfig.history_length`).
 USER_HISTORY_LENGTH = 5
+# A7: Steam API review languages; id = index + FIRST_ID (0 padding, 1 = OOV: unknown / none).
+# Append only: the ids are part of a trained model.
+STEAM_LANGUAGES = (
+    "english", "schinese", "tchinese", "japanese", "koreana", "thai", "bulgarian", "czech",
+    "danish", "german", "spanish", "latam", "greek", "french", "italian", "indonesian",
+    "hungarian", "dutch", "norwegian", "polish", "portuguese", "brazilian", "romanian",
+    "russian", "finnish", "swedish", "turkish", "vietnamese", "ukrainian",
+)  # fmt: skip
+NUM_LANGUAGE_IDS = FIRST_ID + len(STEAM_LANGUAGES)
 
 # Bump when the model layout changes so an older champion is not loaded into new code.
 ARCHITECTURE_VERSION = 1
@@ -63,6 +72,13 @@ class ModelConfig(_Frozen):
     history_encoder: Literal["mean", "attention"] = "mean"
     attention_heads: int = Field(2, ge=1)
     attention_layers: int = Field(1, ge=1)
+    # A6 (spec 17): the item tower also reads recency features as of the review / catalog day
+    # (log1p reviews in the last 30 / 90 days, log1p days since release, release known);
+    # False for older models
+    item_recency: bool = False
+    # A7 (spec 17): the user tower also reads the language of the user's previous review
+    # (an embedding of STEAM_LANGUAGES, OOV when unknown); False for older models
+    user_language: bool = False
 
 
 class SplitInfo(_Frozen):
@@ -199,3 +215,5 @@ class TrackingRecord(_Frozen):
     popularity: RetrievalDiagnostics
     item_embeddings: EmbeddingHealth
     user_embeddings: EmbeddingHealth
+    # A6 runs: the weekly recent-popularity baseline (`evaluation.recent_popularity_scores`)
+    recent_popularity: RetrievalDiagnostics | None = None

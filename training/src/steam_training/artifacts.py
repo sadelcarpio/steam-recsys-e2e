@@ -75,7 +75,10 @@ class ArtifactStore:
             buffer = io.BytesIO()
             torch.save({k: v.cpu() for k, v in module.state_dict().items()}, buffer)
             self._put(prefix + name, buffer.getvalue(), "application/octet-stream")
-        self.save_user_tower_numpy(model, metadata.model_id)
+        if not model.config.user_language:
+            self.save_user_tower_numpy(model, metadata.model_id)
+        else:  # A7: no numpy port of the language input yet (not promotable)
+            log.info("no %s: the model reads the user's language (A7)", USER_TOWER_NUMPY)
         # metadata last: its presence marks a complete model
         self._put(
             prefix + METADATA, metadata.model_dump_json(indent=2).encode(), "application/json"

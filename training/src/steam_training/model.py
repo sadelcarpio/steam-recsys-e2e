@@ -31,9 +31,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from steam_training.contracts import OOV_ID, PADDING_ID, ModelConfig
+from steam_training.contracts import NUM_LANGUAGE_IDS, OOV_ID, PADDING_ID, ModelConfig
 
 NUM_NUMERIC_FEATURES = 3
+# A6: appended to the numeric features (`data.Recency.features`)
+NUM_RECENCY_FEATURES = 4
+LANGUAGE_EMBEDDING_DIM = 8
 ATTRIBUTES = ("developers", "publishers", "genres", "categories")
 
 
@@ -74,7 +77,7 @@ class Bag(TensorTree):
 @dataclass
 class ItemBatch(TensorTree):
     game_idx: torch.Tensor  # int64 [rows]
-    numeric: torch.Tensor  # float32 [rows, NUM_NUMERIC_FEATURES]
+    numeric: torch.Tensor  # float32 [rows, NUM_NUMERIC_FEATURES (+ NUM_RECENCY_FEATURES)]
     developers: Bag
     publishers: Bag
     genres: Bag
@@ -134,10 +137,13 @@ class ItemTower(nn.Module):
             if vocab.tags is not None
             else None
         )
+        # A6 models read the recency columns too; others read the first 3 (so a catalog with
+        # recency features scores every model)
+        self.numeric_dim = NUM_NUMERIC_FEATURES + NUM_RECENCY_FEATURES * config.item_recency
         in_dim = (
             config.game_embedding_dim
             + (len(ATTRIBUTES) + (self.tags is not None)) * config.attribute_embedding_dim
-            + NUM_NUMERIC_FEATURES
+            + self.numeric_dim
         )
         self.mlp = _mlp(in_dim, config.hidden_dim, config.output_dim)
 
@@ -151,7 +157,9 @@ class ItemTower(nn.Module):
             bag = items.tags
             values = _clip_to_vocab(bag.values, self.tag_size)
             parts.append(self.tags(values, bag.offsets, per_sample_weights=bag.weights))
-        parts.append(items.numeric)
+        if items.numeric.shape[1] < self.numeric_dim:
+            raise ValueError("the model reads recency features (A6) the items don't have")
+        parts.append(items.numeric[:, : self.numeric_dim])
         return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 
 
@@ -249,6 +257,13 @@ class UserTower(nn.Module):
                 vocab.tags, config.attribute_embedding_dim, mode="sum", padding_idx=PADDING_ID
             )
             in_dim += config.attribute_embedding_dim
+        # A7: the language of the user's previous review (OOV = unknown)
+        self.language: nn.Embedding | None = None
+        if config.user_language:
+            self.language = nn.Embedding(
+                NUM_LANGUAGE_IDS, LANGUAGE_EMBEDDING_DIM, padding_idx=PADDING_ID
+            )
+            in_dim += LANGUAGE_EMBEDDING_DIM
         self.mlp = _mlp(in_dim, config.hidden_dim, config.output_dim)
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:
@@ -292,8 +307,9 @@ class UserTower(nn.Module):
         values = _clip_to_vocab(self.game_tag_values[source], self.tag_size)
         return self.tag_profile(values, offsets, per_sample_weights=weights)
 
-    def forward(self, history: torch.Tensor) -> torch.Tensor:
-        """history: int64 [rows, history_length], most recent first, 0 = padding."""
+    def forward(self, history: torch.Tensor, language: torch.Tensor | None = None) -> torch.Tensor:
+        """history: int64 [rows, history_length], most recent first, 0 = padding. `language`
+        (A7): int64 [rows] language ids, None = unknown for every row."""
         if history.shape[1] != self.history_length:
             raise ValueError(
                 f"history has {history.shape[1]} games, the model reads {self.history_length}"
@@ -309,6 +325,10 @@ class UserTower(nn.Module):
             parts.append(self.attention(games * weights, present))
         if self.tag_profile is not None:
             parts.append(self._tag_profile(history))
+        if self.language is not None:
+            if language is None:
+                language = torch.full_like(history[:, 0], OOV_ID)
+            parts.append(self.language(language.clamp(0, NUM_LANGUAGE_IDS - 1)))
         return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 
 

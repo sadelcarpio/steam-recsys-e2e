@@ -38,13 +38,22 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from steam_training.contracts import PADDING_ID, USER_HISTORY_LENGTH, SplitInfo, VocabSizes
+from steam_training.contracts import (
+    OOV_ID,
+    PADDING_ID,
+    USER_HISTORY_LENGTH,
+    SplitInfo,
+    VocabSizes,
+)
+
+if TYPE_CHECKING:
+    from steam_training.languages import ReviewLanguages
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +76,19 @@ INTERACTION_COLUMNS = [
 ]
 GAME_FEATURE_COLUMNS = ["timestamp", *ITEM_COLUMNS]
 GAME_TAG_COLUMNS = ["game_idx", "game_tags", "game_tag_weights"]
+# A6 (spec 17): release dates (Steam's raw strings, e.g. "Jul 9, 2021") of the `game_details`
+# mart, joined to game_idx through `lkp_games`
+GAME_DETAIL_COLUMNS = ["game_id", "game_release_date"]
+RELEASE_DATE_FORMAT = "%b %d, %Y"
+DAY_SECONDS = 86_400
+# A6 item features as of a day: log1p reviews in each window of days before it, log1p days since
+# release, release date known
+RECENCY_WINDOWS = (30, 90)
+NUM_RECENCY_FEATURES = len(RECENCY_WINDOWS) + 2
+# A6: evaluation scores each row against the catalog as of the start of its week (weeks
+# anchored at the catalog's day), and training batches come from one such week
+RECENCY_REFRESH_DAYS = 7
+_RECENCY_SCALE = 0.1  # log1p values up to ~12 -> about [0, 1.2], like the other numeric inputs
 # lookup table -> (id column, VocabSizes field)
 LOOKUPS = {
     "lkp_games": ("game_idx", "games"),
@@ -269,6 +291,8 @@ class ItemFeatures:
     categories: Ragged
     # weighted: each row's weights sum to 1 (empty row: no tags); None -> no tags at all
     tags: Ragged = None  # type: ignore[assignment]
+    # A6: float32 [n, NUM_RECENCY_FEATURES] as of the catalog's day (`Recency.features`)
+    recency: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.tags is None:
@@ -303,7 +327,67 @@ class ItemFeatures:
             genres=self.genres.take(index),
             categories=self.categories.take(index),
             tags=self.tags.take(index),
+            recency=self.recency[index] if self.recency is not None else None,
         )
+
+
+@dataclass(frozen=True)
+class ReviewCounts:
+    """Reviews (any polarity) per (game_idx, day since the epoch), for counts over a window of
+    days: `keys` = game_idx << 16 | day, sorted, and `before[i]` = reviews of keys[:i]."""
+
+    keys: np.ndarray  # int64 [pairs]
+    before: np.ndarray  # int64 [pairs + 1]
+
+    @staticmethod
+    def key(game: np.ndarray, day: np.ndarray) -> np.ndarray:
+        return (np.asarray(game, np.int64) << 16) | np.clip(day, 0, 0xFFFF).astype(np.int64)
+
+    @classmethod
+    def from_parts(cls, parts: list[tuple[np.ndarray, np.ndarray]]) -> ReviewCounts:
+        """From (unique keys, counts) parts, e.g. one per streamed batch."""
+        if not parts:
+            return cls(np.zeros(0, np.int64), np.zeros(1, np.int64))
+        keys = np.concatenate([k for k, _ in parts])
+        counts = np.concatenate([c for _, c in parts])
+        keys, inverse = np.unique(keys, return_inverse=True)
+        totals = np.bincount(inverse, weights=counts, minlength=len(keys)).astype(np.int64)
+        before = np.zeros(len(keys) + 1, np.int64)
+        np.cumsum(totals, out=before[1:])
+        return cls(keys, before)
+
+    def window(self, game: np.ndarray, day: np.ndarray, days: int) -> np.ndarray:
+        """Reviews of each `game` on days [day - days, day): strictly before `day`."""
+        day = np.asarray(day, np.int64)
+        hi = np.searchsorted(self.keys, self.key(game, day), side="left")
+        lo = np.searchsorted(self.keys, self.key(game, day - days), side="left")
+        return self.before[hi] - self.before[lo]
+
+
+@dataclass(frozen=True)
+class Recency:
+    """A6: what an item's recency features need, as of any day (training rows: the review's
+    day; the catalog: the cutoff's day, refreshed by evaluation)."""
+
+    counts: ReviewCounts
+    release_day: np.ndarray  # int32 [vocab.games]: day of release, -1 unknown
+
+    def features(self, game: np.ndarray, day: np.ndarray | int) -> np.ndarray:
+        game = np.asarray(game, np.int64)
+        day = np.broadcast_to(np.asarray(day, np.int64), game.shape)
+        out = np.empty((len(game), NUM_RECENCY_FEATURES), np.float32)
+        for i, days in enumerate(RECENCY_WINDOWS):
+            out[:, i] = np.log1p(self.counts.window(game, day, days))
+        inside = (game >= 0) & (game < len(self.release_day))
+        release = np.where(
+            inside, self.release_day[np.clip(game, 0, len(self.release_day) - 1)], -1
+        )
+        known = release >= 0
+        age = np.where(known, np.maximum(day - release, 0), 0)  # reviews before release: 0
+        out[:, -2] = np.log1p(age)
+        out[:, :-1] *= _RECENCY_SCALE
+        out[:, -1] = known
+        return out
 
 
 @dataclass(frozen=True)
@@ -312,6 +396,15 @@ class Catalog:
 
     items: ItemFeatures
     row_of: np.ndarray  # int64 [vocab.games]: catalog row of each game_idx, -1 when absent
+    # A6: the recency source and the day the items' recency is as of (None without A6)
+    recency: Recency | None = None
+    as_of_day: int | None = None
+
+    def at_day(self, day: int) -> Catalog:
+        """The same games with their recency features as of `day` (A6)."""
+        assert self.recency is not None
+        items = replace(self.items, recency=self.recency.features(self.items.game_idx, day))
+        return replace(self, items=items, as_of_day=int(day))
 
     def __len__(self) -> int:
         return len(self.items)
@@ -424,6 +517,10 @@ class TrainRows:
     # while loading only: int64 seconds (to build the histories) and the cold-row draw
     timestamp: np.ndarray | None = None  # uint32
     cold_draw: np.ndarray | None = None
+    # A6: day of the review (since the epoch): its recency features are as of that day
+    day: np.ndarray | None = None  # uint16
+    # A7: language id of the user's previous review (any polarity), OOV_ID when none / unknown
+    language: np.ndarray | None = None  # int8
 
     def __len__(self) -> int:
         return len(self.target)
@@ -463,6 +560,8 @@ class EvalRows:
     # every game the user reviewed (any polarity) strictly before the row: excluded from its
     # candidates, so a heavy user's top K isn't spent on games they already reviewed
     reviewed: Ragged | None = None
+    # A7: language id of the user's previous review (`TrainRows.language`)
+    language: np.ndarray | None = None  # int8
 
     def __len__(self) -> int:
         return len(self.target)
@@ -509,14 +608,25 @@ def load_training_data(
     with_train_rows: bool = True,
     with_tags: bool = False,
     history_length: int = USER_HISTORY_LENGTH,
+    with_recency: bool = False,
+    languages: ReviewLanguages | None = None,
 ) -> TrainingData:
     """Stream the marts (see module docstring). The timeline is split by row share into
     [train | validation | test] (`split_window`); `fit_on` picks what is trained on and what is
     evaluated. `cutoff` given: train before it and evaluate on everything after (promotion).
     `with_tags`: read `lkp_tags` / `game_tags` (the vocabulary gets `tags`, the catalog each
-    game's tags). `history_length`: games per history (the model's)."""
+    game's tags). `history_length`: games per history (the model's). `with_recency` (A6): count
+    reviews per (game, day) and read release dates, so item recency features can be computed as
+    of any day (training rows: their own day; the catalog: the cutoff's). `languages` (A7):
+    every row gets the language of its user's previous review (`previous_language`)."""
     lookups = {**LOOKUPS, **(TAG_LOOKUPS if with_tags else {})}
-    tables = [*lookups, "interactions", "game_features", *(["game_tags"] if with_tags else [])]
+    tables = [
+        *lookups,
+        "interactions",
+        "game_features",
+        *(["game_tags"] if with_tags else []),
+        *(["game_details"] if with_recency else []),
+    ]
     snapshots = {table: source.snapshot_id(table) for table in tables}
     vocab = _vocab_sizes(source, snapshots, lookups)
 
@@ -572,7 +682,12 @@ def load_training_data(
     eval_parts: list[EvalRows] = []
     # every positive review before `end` (user, seconds, game): the histories
     positives = _Positives.empty(max_positives)
-    for batch in source.batches("interactions", INTERACTION_COLUMNS, snapshots["interactions"]):
+    # A6: reviews per (game, day) before `end`, any polarity (a test window is never counted)
+    count_parts: list[tuple[np.ndarray, np.ndarray]] = []
+    # A7: (user, seconds, language) of every review before `end`
+    language_parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    columns = INTERACTION_COLUMNS + (["review_id"] if languages is not None else [])
+    for batch in source.batches("interactions", columns, snapshots["interactions"]):
         game = _int64(pc.fill_null(batch["game_idx"], -1))
         known = (game >= 0) & (game < vocab.games)
         is_positive = _bool(batch["is_positive"]) & known
@@ -584,6 +699,19 @@ def load_training_data(
         user_id = _int64(batch["user_id"])
         keep = np.flatnonzero(is_positive & (ts < end_us))
         positives.add(user_id[keep], _seconds(ts[keep]), game[keep])
+        if languages is not None:
+            reviewed = np.flatnonzero(ts < end_us)
+            language_parts.append(
+                (
+                    user_id[reviewed],
+                    _seconds(ts[reviewed]),
+                    languages.of(_int64(batch["review_id"])[reviewed]),
+                )
+            )
+        if with_recency:
+            counted = np.flatnonzero(known & (ts < end_us))
+            day = _seconds(ts[counted]) // DAY_SECONDS
+            count_parts.append(np.unique(ReviewCounts.key(game[counted], day), return_counts=True))
         keep_eval = np.flatnonzero(is_positive & in_window & (rng.random(len(game)) < eval_rate))
         eval_parts.append(
             EvalRows(
@@ -611,6 +739,9 @@ def load_training_data(
                 reviews_ratio=reviews_ratio[keep_train],
                 timestamp=_seconds(ts[keep_train]).astype(np.uint32),
                 cold_draw=cold_draw[keep_train],
+                day=(_seconds(ts[keep_train]) // DAY_SECONDS).astype(np.uint16)
+                if with_recency
+                else None,
             )
         )
         keep_negative = np.flatnonzero(~_bool(batch["is_positive"]) & known & ~is_val)
@@ -626,11 +757,49 @@ def load_training_data(
         vocab.games,
         tags,
     )
+    if with_recency:
+        recency = Recency(
+            ReviewCounts.from_parts(count_parts),
+            release_days(
+                source.batches("game_details", GAME_DETAIL_COLUMNS, snapshots["game_details"]),
+                source.batches("lkp_games", ["game_idx", "game_id"], snapshots["lkp_games"]),
+                vocab.games,
+            ),
+        )
+        del count_parts
+        catalog = replace(catalog, recency=recency).at_day(
+            _seconds(np.array([cutoff_us]))[0] // DAY_SECONDS
+        )
+        log.info(
+            "recency: %d (game, day) review counts, release day known for %d games",
+            len(recency.counts.keys),
+            int((recency.release_day >= 0).sum()),
+        )
     train = _concat(TrainRows, train_parts) if with_train_rows else None
     if train is not None:
         # targets always have a catalog row (1970-01-01 game_features row); guard anyway
         train = train.take(np.flatnonzero(catalog.rows(train.target) >= 0))
     validation = _concat(EvalRows, eval_parts)
+    if languages is not None:
+        user, seconds, code = (np.concatenate(p) for p in zip(*language_parts, strict=True))
+        del language_parts
+        validation = replace(
+            validation,
+            language=previous_language(
+                user, seconds, code, validation.user_id, validation.timestamp
+            ),
+        )
+        if train is not None:
+            assert train.timestamp is not None
+            train = replace(
+                train,
+                language=previous_language(user, seconds, code, train.user_id, train.timestamp),
+            )
+        del user, seconds, code
+        log.info(
+            "languages: %.1f%% of validation rows know their user's language",
+            100 * float((validation.language != OOV_ID).mean()) if len(validation) else 0.0,
+        )
     train, validation = _histories(positives, train, validation, history_length)
     del positives
     # pass 4: the validation users' reviews -> activity (before the cutoff) and each row's
@@ -775,6 +944,57 @@ def _latest_per_game(table: pa.Table) -> pa.Table:
     is_last = np.ones(len(order), dtype=bool)
     is_last[:-1] = ordered[:-1] != ordered[1:]
     return table.take(pa.array(order[is_last]))
+
+
+def previous_language(
+    user: np.ndarray,
+    seconds: np.ndarray,
+    code: np.ndarray,
+    row_user: np.ndarray,
+    row_seconds: np.ndarray,
+) -> np.ndarray:
+    """A7: per row, the language of `row_user`'s last review strictly before `row_seconds`
+    (from every review's (user, seconds, language)); OOV_ID when there is none. Never the row's
+    own review: at serving time that's the future."""
+    users = np.unique(user)
+    key = np.searchsorted(users, user).astype(np.int64) << 32 | seconds.astype(np.int64)
+    order = np.argsort(key, kind="stable")
+    key, code = key[order], code[order]
+    position = np.clip(np.searchsorted(users, row_user), 0, max(len(users) - 1, 0))
+    found = users[position] == row_user if len(users) else np.zeros(len(row_user), bool)
+    base = position.astype(np.int64) << 32
+    last = np.searchsorted(key, base | np.asarray(row_seconds, np.int64), side="left") - 1
+    same_user = (last >= 0) & (key[np.maximum(last, 0)] >> 32 == position) & found
+    return np.where(same_user, code[np.maximum(last, 0)], OOV_ID).astype(np.int8)
+
+
+def release_days(
+    detail_batches: Iterable[pa.RecordBatch],
+    lookup_batches: Iterable[pa.RecordBatch],
+    num_games: int,
+) -> np.ndarray:
+    """Day of release (since the epoch) per game_idx, -1 when unknown: only exact dates
+    ("Jul 9, 2021"); "Coming soon", "Q1 2026" or a bare year stay unknown."""
+    lookup = pa.Table.from_batches(list(lookup_batches))
+    details = pa.Table.from_batches(list(detail_batches))
+    out = np.full(num_games, -1, np.int32)
+    if lookup.num_rows == 0 or details.num_rows == 0:
+        return out
+    parsed = pc.strptime(
+        details["game_release_date"], format=RELEASE_DATE_FORMAT, unit="s", error_is_null=True
+    )
+    found = pc.is_valid(parsed).to_numpy(zero_copy_only=False)
+    game_id = _int64(pc.fill_null(details["game_id"], -1))[found]
+    day = parsed.filter(pa.array(found)).cast(pa.int64()).to_numpy() // DAY_SECONDS
+    ids = _int64(lookup["game_id"])
+    order = np.argsort(ids)
+    ids, idx = ids[order], _int64(lookup["game_idx"])[order]
+    at = np.clip(np.searchsorted(ids, game_id), 0, max(len(ids) - 1, 0))
+    match = ids[at] == game_id
+    game_idx = idx[at[match]]
+    inside = (game_idx >= 0) & (game_idx < num_games)
+    out[game_idx[inside]] = day[match][inside]
+    return out
 
 
 # ---- helpers -------------------------------------------------------------------------------

@@ -158,6 +158,8 @@ def final_metrics(record: TrackingRecord) -> dict[str, float]:
     `embeddings/...`."""
     out = _diagnostic_metrics(f"{record.evaluation}/", record.model)
     out |= _diagnostic_metrics("popularity/", record.popularity)
+    if record.recent_popularity is not None:  # A6 runs
+        out |= _diagnostic_metrics("recent_popularity/", record.recent_popularity)
     for segment in ("warm", "all"):
         model = getattr(record.model.recall, segment).recall
         baseline = getattr(record.popularity.recall, segment).recall

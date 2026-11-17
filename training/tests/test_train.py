@@ -237,7 +237,7 @@ def _scripted_monitor(monkeypatch, scores):
 
     remaining = list(scores)
 
-    def fake_evaluate(score_fn, rows, catalog, ks, batch_size, device=None):
+    def fake_evaluate(score_fn, rows, catalog, ks, batch_size, device=None, rescore=None):
         segment = SegmentRecall(rows=1, recall={k: remaining[0] for k in ks})
         remaining.pop(0)
         return RecallMetrics(warm=segment, cold=segment, all=segment)

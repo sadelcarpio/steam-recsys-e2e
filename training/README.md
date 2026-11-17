@@ -554,6 +554,8 @@ forwards them to the job:
 | `HISTORY_LENGTH` | 5 | games in the user history: the last N positives strictly before each row, derived from `interactions` (A3: 20 / 50); inference derives the same |
 | `HISTORY_ENCODER` | mean | A3: `mean`, or `attention` (adds a self-attention summary of the history to the mean). numpy user tower format 3 |
 | `ATTENTION_HEADS` / `ATTENTION_LAYERS` / `ATTENTION_DROPOUT` | 2 / 1 / 0.1 | the attention encoder (heads must divide `GAME_EMBEDDING_DIM`) |
+| `ITEM_RECENCY` | false | A6 (experiment, not promotable): item features as of t (log reviews in the last 30 / 90 days, log days since release from `game_details`, release known). Batches come from one week each with recency as of its start and logQ per week (mixed-date batches let the model reject candidates by their date); evaluation refreshes the catalog weekly and adds a recent-popularity baseline |
+| `USER_LANGUAGE` / `RAW_REVIEWS_URI` | false / unset | A7 (experiment, not promotable): the language of the user's previous review as a user tower embedding (10% dropout to unknown), read from the raw reviews (`rec_id`, `language`; cached per file under `DATA_CACHE_DIR`) until a mart has it |
 | `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |
 | `GIT_COMMIT` | `git rev-parse HEAD` | lineage tag (set by the launcher on SageMaker jobs) |
 

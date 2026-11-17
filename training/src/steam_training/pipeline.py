@@ -28,6 +28,9 @@ from steam_training.evaluation import (
     model_scores,
     popularity_scores,
     rank_rows,
+    recency_rescore,
+    recent_popularity_rescore,
+    recent_popularity_scores,
 )
 from steam_training.model import TwoTowerModel
 from steam_training.tracking import RunTracker, lineage_tags, params_of
@@ -50,6 +53,14 @@ _NOT_HYPERPARAMETERS = {
 
 def _load(settings: TrainingSettings, source: TableSource, **kwargs: object) -> TrainingData:
     kwargs.setdefault("history_length", settings.history_length)
+    kwargs.setdefault("with_recency", settings.item_recency)
+    if settings.user_language and "languages" not in kwargs:
+        from steam_training.languages import load_review_languages
+
+        assert settings.raw_reviews_uri is not None
+        kwargs["languages"] = load_review_languages(
+            settings.raw_reviews_uri, settings.aws_region, settings.data_cache_dir
+        )
     return load_training_data(
         source,
         validation_fraction=settings.validation_fraction,
@@ -70,7 +81,7 @@ def _evaluate_all(
 ) -> tuple[dict[str, RecallMetrics], RecallMetrics]:
     """Recall of each model and of the popularity baseline on the validation rows."""
 
-    def run(score_fn) -> RecallMetrics:
+    def run(score_fn, rescore=None) -> RecallMetrics:
         return evaluate(
             score_fn,
             data.validation,
@@ -78,10 +89,14 @@ def _evaluate_all(
             settings.recall_ks,
             settings.eval_batch_size,
             device,
+            rescore,
         )
 
     results = {
-        name: run(model_scores(model.to(device), data.catalog, settings.eval_batch_size, device))
+        name: run(
+            model_scores(model.to(device), data.catalog, settings.eval_batch_size, device),
+            recency_rescore(model, settings.eval_batch_size, device),
+        )
         for name, model in models.items()
     }
     baseline = run(popularity_scores(data.train_positive_counts, data.catalog, device))
@@ -94,11 +109,18 @@ _USER_EMBEDDING_ROWS = 10_000
 
 def _diagnose(
     settings: TrainingSettings, data: TrainingData, model: TwoTowerModel, device: torch.device
-) -> tuple[RetrievalDiagnostics, RetrievalDiagnostics, EmbeddingHealth, EmbeddingHealth]:
+) -> tuple[
+    RetrievalDiagnostics,
+    RetrievalDiagnostics,
+    RetrievalDiagnostics | None,
+    EmbeddingHealth,
+    EmbeddingHealth,
+]:
     """Every tracked metric of the model and of the popularity baseline (one scoring pass each),
-    plus the embedding-collapse checks."""
+    the weekly recent-popularity baseline when the catalog has recency (A6), and the
+    embedding-collapse checks."""
 
-    def run(score_fn) -> RetrievalDiagnostics:
+    def run(score_fn, rescore=None) -> RetrievalDiagnostics:
         ranks, exposure = rank_rows(
             score_fn,
             data.validation,
@@ -106,20 +128,35 @@ def _diagnose(
             max(settings.recall_ks),
             settings.eval_batch_size,
             device,
+            rescore,
         )
         return retrieval_diagnostics(ranks, exposure, data.validation, settings.recall_ks)
 
     model = model.to(device).eval()
-    diagnostics = run(model_scores(model, data.catalog, settings.eval_batch_size, device))
+    diagnostics = run(
+        model_scores(model, data.catalog, settings.eval_batch_size, device),
+        recency_rescore(model, settings.eval_batch_size, device),
+    )
     baseline = run(popularity_scores(data.train_positive_counts, data.catalog, device))
+    recent = None
+    if data.catalog.recency is not None:
+        recent = run(
+            recent_popularity_scores(data.catalog, device), recent_popularity_rescore(device)
+        )
     items = embed_catalog(model, data.catalog, settings.eval_batch_size, device)
     warm = data.validation.take(data.validation.is_warm.nonzero()[0])
     warm = warm.sample(_USER_EMBEDDING_ROWS, settings.seed)
     with torch.no_grad():
-        users = model.user_tower(torch.from_numpy(warm.history).to(device))
+        language = (
+            torch.from_numpy(warm.language.astype("int64")).to(device)
+            if warm.language is not None
+            else None
+        )
+        users = model.user_tower(torch.from_numpy(warm.history).to(device), language)
     return (
         diagnostics,
         baseline,
+        recent,
         embedding_health(items, seed=settings.seed),
         embedding_health(users, seed=settings.seed),
     )
@@ -194,9 +231,13 @@ def _train(
     )
 
     # 4. evaluation (recall@K, hit rate, activity buckets, coverage, collapse checks)
-    diagnostics, baseline, item_health, user_health = _diagnose(settings, data, model, device)
+    diagnostics, baseline, recent, item_health, user_health = _diagnose(
+        settings, data, model, device
+    )
     log.info("validation %s", diagnostics.recall.model_dump_json())
     log.info("popularity baseline %s", baseline.recall.model_dump_json())
+    if recent is not None:
+        log.info("recent popularity baseline (weekly) %s", recent.recall.model_dump_json())
     log.info(
         "metrics %s",
         metrics_line(
@@ -227,6 +268,7 @@ def _train(
         evaluation=data.split.evaluation,
         model=diagnostics,
         popularity=baseline,
+        recent_popularity=recent,
         item_embeddings=item_health,
         user_embeddings=user_health,
     )
@@ -290,6 +332,16 @@ def run_promotion(
     settings: TrainingSettings, source: TableSource, store: ArtifactStore
 ) -> EvaluationReport:
     candidate, candidate_meta = store.load_model(settings.model_id)
+    if candidate.config.user_language:
+        raise ValueError(
+            f"{settings.model_id} reads the user's language (A7): not promotable, inference and "
+            "serving don't compute it"
+        )
+    if candidate.config.item_recency:
+        raise ValueError(
+            f"{settings.model_id} reads item recency features (A6): not promotable, inference "
+            "embeds the catalog without them"
+        )
     champion, champion_meta = _load_champion(store, settings.model_id)
     now = datetime.now(UTC)
 
@@ -320,6 +372,7 @@ def run_promotion(
         with_tags=with_tags,
         # the longest history of the two (each model reads its own prefix, `model_scores`)
         history_length=max(m.config.history_length for m in (candidate, champion) if m),
+        with_recency=False,
     )
     if len(data.validation) == 0:
         raise ValueError(f"no positive interactions after {max(cutoffs)} to evaluate on")

@@ -24,8 +24,10 @@ from steam_training.batching import (
     Batch,
     Collator,
     TrainingExamples,
+    bucket_log_probs,
     make_loader,
     target_log_probs,
+    time_buckets,
 )
 from steam_training.config import NOT_FINGERPRINTED, TrainingSettings
 from steam_training.contracts import EpochMetrics, ModelConfig, VocabSizes
@@ -34,6 +36,7 @@ from steam_training.evaluation import (
     evaluate,
     mine_hard_negatives,
     model_scores,
+    recency_rescore,
 )
 from steam_training.model import TwoTowerModel
 
@@ -53,11 +56,13 @@ def model_config(settings: TrainingSettings, vocab: VocabSizes) -> ModelConfig:
         history_encoder=settings.history_encoder,
         attention_heads=settings.attention_heads,
         attention_layers=settings.attention_layers,
+        item_recency=settings.item_recency,
+        user_language=settings.user_language,
     )
 
 
 def retrieval_loss(model: TwoTowerModel, batch: Batch, logq_correction: bool) -> torch.Tensor:
-    users = model.user_tower(batch.history)
+    users = model.user_tower(batch.history, batch.language)
     items = model.item_tower(batch.items)
     logits = model.score(users, items)
     if logq_correction:
@@ -183,6 +188,14 @@ def train_model(
         model.set_game_tags(catalog.game_tags(vocab.games))
     model.to(device)
 
+    bucket = None
+    if model.config.item_recency:  # A6: batches of one time bucket, recency as of its start
+        if examples.day is None or catalog.as_of_day is None:
+            raise ValueError("ITEM_RECENCY needs the examples' days and a dated catalog")
+        bucket, starts = time_buckets(examples.day, catalog.as_of_day, settings.batch_size)
+        examples.as_of = starts[bucket].astype(np.int32)
+        examples.log_q = bucket_log_probs(examples.target, bucket)
+        log.info("A6: %d time buckets (weeks, sparse old ones merged)", len(starts))
     collator = Collator(
         examples,
         catalog,
@@ -195,7 +208,9 @@ def train_model(
     )
     shuffle = torch.Generator()
     cuda = device.type == "cuda"
-    loader = make_loader(examples, collator, settings.batch_size, shuffle, pin_memory=cuda)
+    loader = make_loader(
+        examples, collator, settings.batch_size, shuffle, pin_memory=cuda, bucket=bucket
+    )
     # fused on CUDA: one kernel per step for every parameter, and no per-parameter host read
     # of the step count (the same update rule)
     optimizer = torch.optim.Adam(
@@ -289,6 +304,7 @@ def train_model(
                 [settings.primary_k],
                 settings.eval_batch_size,
                 device,
+                recency_rescore(model, settings.eval_batch_size, device),
             )
             monitor = metrics.warm.recall[settings.primary_k]
             message += f" warm_recall@{settings.primary_k}={monitor:.4f}"

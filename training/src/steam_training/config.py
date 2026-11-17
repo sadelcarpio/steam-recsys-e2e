@@ -115,6 +115,15 @@ class TrainingSettings(_SsmSettings):
     attention_heads: int = Field(2, ge=1)
     attention_layers: int = Field(1, ge=1)
     attention_dropout: float = Field(0.1, ge=0, lt=1)
+    # A6 (spec 17): item recency features (`ModelConfig.item_recency`), computed by training
+    # from `interactions` + `game_details` release dates. Not promotable yet: inference embeds
+    # the catalog without them.
+    item_recency: bool = False
+    # A7 (spec 17): the language of the user's previous review (`ModelConfig.user_language`),
+    # read from the raw reviews (RAW_REVIEWS_URI: s3://raw-steam-data-<account>/reviews/) until a
+    # mart has it. Not promotable yet: inference / serving don't compute it.
+    user_language: bool = False
+    raw_reviews_uri: str | None = None
 
     # ---- model ----
     game_embedding_dim: int = Field(64, ge=4)
@@ -193,6 +202,8 @@ class TrainingSettings(_SsmSettings):
             raise ValueError("validation_fraction + test_fraction must be < 0.5")
         if self.game_embedding_dim % self.attention_heads:
             raise ValueError("GAME_EMBEDDING_DIM must be divisible by ATTENTION_HEADS")
+        if self.user_language and not self.raw_reviews_uri:
+            raise ValueError("USER_LANGUAGE needs RAW_REVIEWS_URI")
         if self.user_tag_profile and not self.use_game_tags:
             raise ValueError("USER_TAG_PROFILE needs USE_GAME_TAGS")
         if self.fit_on == "train+validation" and self.test_fraction == 0:
