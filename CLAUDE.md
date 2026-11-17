@@ -88,7 +88,7 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - S3 raw parquet (Glue `steam_raw`) → Athena → modeled tables → S3 `processed-steam-data-<account-id>/iceberg/`
   (Glue `steam_staging` / `steam_intermediate` / `steam_marts`)
 - dbt (3) runs its models via Athena (workgroup `steam-recsys-etl`)
-- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `game_popularity_weekly` (reviews per game and week, spec 9), `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
+- Marts for training / inference: `interactions`, `game_features`, `game_tags`, `game_popularity_weekly` (reviews per game and week, spec 9), `review_languages` (language of each review, spec 17), `lkp_*`, `user_index` (demo user numbers, spec 13; see `etl/README.md`)
 
 ### Public dataset (spec 16)
 
