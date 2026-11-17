@@ -253,11 +253,11 @@ evaluation at promotion, not by retraining.
 - **Delayed-label check.** Each inference run scores the previous run's lists against the reviews
   that arrived since (recall@20 of what was written; retrieval order vs ranker order in shadow),
   as `evaluation/online/<run_id>.json` + CloudWatch metrics: the batch path's online metric.
-- **Data window.** A ranker trains on a window its candidate retriever never saw, and every
-  compatibility / final-list evaluation needs a window none of the evaluated models saw. A
-  retriever refit on all data (`FIT_ON=all`) leaves no such window, so it is refused while a
-  ranker serves. Rolling windows (each cycle moves T1 forward: retriever ≤ T1, ranker T1..now)
-  are the follow-up.
+- **Data window** (details and diagrams: "Time windows"). A ranker trains on a window its
+  candidate retriever never saw, and every compatibility / final-list evaluation needs a window
+  none of the evaluated models saw. A retriever trained through N (the serving retriever R_B) is
+  therefore never used for ranker data or gates: it only exists as the refreshed twin of an
+  evaluated retriever R_A (pass B), and only after R_A passed.
 - **Orchestration.** Two pipelines, not one job: retriever training (GPU) → retriever gate →
   pair evaluation; ranker training (CPU) → ranker gate → final-list gate. Manual workflows first
   (`training-cd.yml`, a new `training-rank.yml`, `training-promote.yml`), then a training Step
@@ -266,6 +266,140 @@ evaluation at promotion, not by retraining.
   `rankers/<id>/`, the `champion/` copies, `pair.json`, `history.jsonl` and every report under
   `evaluation/`. MLflow stays optional: runs are replayed into it (`track`), and promotion sets
   the `champion` / `challenger` aliases when `MLFLOW_TRACKING_URI` is set.
+
+### Time windows: challengers and continuous training
+
+The retriever's cutoff is a share of rows today (`VALIDATION_FRACTION=0.1`, ~6.5 months after
+2026-05-01 for the champion), far more than a ranker needs (~450k reviews a week: 4 weeks give
+~1M warm groups). Phase 3 replaces it with **time-based windows counted back from the latest
+data N** (`HOLDOUT_WEEKS`, default 6; `TEST_WEEKS`, default 2). Every window below is
+`[start, end)`.
+
+**Rules** (every case below follows from them):
+
+1. A retriever never trains on anything at or after its cutoff.
+2. A ranker trains only on candidates of a retriever that never saw the ranker's window (else the
+   true game sits near the top and the ranker learns an easier problem than serving).
+3. Every comparison with the champion pair uses a window **none** of the compared models (either
+   retriever, either ranker) trained on: the test window `[N − 2w, N)`.
+4. Validation (epoch selection, early stopping) may overlap another model's training window, but
+   never the test window: the test window is only read by the gates.
+
+#### 1. One pair from scratch (the happy path)
+
+```
+time ──────────────────────────────────────────────────────────────────────────►
+                                           N − 6w              N − 2w        N
+retriever train   ██████████████████████████│
+retriever valid                             │░░░░░░░░░░░░░░░░░░│              (epochs, monitor)
+ranker train                                │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│              (last 20%: early stop)
+test (gates)                                                   │▒▒▒▒▒▒▒▒▒▒▒▒▒│
+```
+
+- **Retriever**: trains on everything before `N − 6w`; picks its epoch on `[N − 6w, N − 2w)`.
+- **Ranker**: the retriever's candidates on `[N − 6w, N − 2w)` (the same window: the retriever
+  never trained on those labels, it only selected an epoch with them, rule 4); its last 20% by
+  time stops boosting.
+- **Test** `[N − 2w, N)`: retrieval recall@50 / @100, ranker vs retrieval order, the pair's
+  recall@20 / NDCG@20. Nothing trained on it.
+- **Serving**: see the refresh step in 2 (the pair above is the *evaluated* pair; the served one
+  also learns the last 6 weeks).
+
+#### 2. Continuous training (monthly, the champion's lineage)
+
+Two lineages of the same retriever, one step apart:
+
+- the **evaluation retriever** R_A: always stops at `N − 6w`, so the latest 6 weeks stay unseen
+  (rankers train on its candidates; gates use it);
+- the **serving retriever** R_B: R_A fine-tuned on those 6 weeks, trained through N. It serves,
+  but it can never produce ranker training data (it saw every window) and it is never the
+  starting point of the next cycle (next month's ranker window overlaps what it saw).
+
+Cycle n (run date N; previous run N' ≈ N − 4w; R_A' / R_B' / K' = the previous cycle's models):
+
+```
+time ───────────────────────────────────────────────────────────────────────────────────────────►
+                                     N'−6w             N−6w                    N−2w             N
+R_A' (previous evaluation)        ██████│                 │                       │             │
+pass A  R_A = R_A' + delta        ██████│░░░░░░░░░░░░░░░░░│                       │             │  warm start + replay, ~1 epoch
+        R_A validation                  │                 │░░░░░░░░░░░░░░░░░░░░░░░│             │
+        K_A train (R_A's cands)         │                 │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│             │  from scratch, minutes
+        gate vs (R_B', K')              │                 │                       │▒▒▒▒▒▒▒▒▒▒▒▒▒│  no regression
+pass B  R_B = R_A + holdout             │                 │█████████████████████████████████████│  fine-tune, same recipe
+        K_B (R_A's cands)               │                 │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│  R_A never saw these weeks
+        serve (R_B, K_B); the next cycle warm-starts from R_A, never R_B
+```
+
+- **Pass A (evaluate and monitor).** R_A = R_A' warm-started on the delta `[N' − 6w, N − 6w)`
+  plus a replay sample of older rows (no forgetting). K_A trains on R_A's candidates over
+  `[N − 6w, N − 2w)`. The ranker is retrained from scratch each cycle (minutes on CPU); continuing
+  K' with LightGBM's `init_model` would keep stacking trees fitted to old windows. Pass A's
+  numbers are the cycle's quality record (`evaluation/cycles/<run>/`).
+- **Gate (no regression).** On the test window, the pair (R_A, K_A) must stay within
+  `MAX_REGRESSION` (default 0.002) of the serving champion (R_B', K') on warm recall@20 and NDCG@20,
+  and R_A's retrieval recall@100 within the same margin of R_B''s. A refresh exists to stay fresh,
+  so it needs "not worse", not "better". The champion is evaluated on the same window: R_B' was
+  trained through N' ≈ N − 4w and K' on R_A''s candidates up to N', both before `N − 2w`. The
+  champion has seen 2 more weeks than R_A, so the comparison leans conservative. Also reported:
+  (R_A, K') (does the old ranker still fit the new candidates).
+- **Pass B (refresh to serve).** R_B = R_A fine-tuned on the 6 held-out weeks `[N − 6w, N)` with
+  the same recipe; K_B = a ranker trained on R_A's candidates over `[N − 6w, N)` (R_A never saw
+  them, so no leakage; the test weeks are training data now). There is no unseen window left for
+  R_B / K_B, so before serving: sanity checks (R_B's recall on its last training week not below
+  R_A's on the same rows, top-20 churn of (R_B, K_B) vs (R_A, K_A) on a sample of users under
+  `MAX_CHURN`, catalog coverage, embedding health). After serving: the delayed-label check; if
+  live recall@20 drops by more than `MAX_LIVE_DROP` vs the previous run, the previous pair is
+  restored automatically (`ROLLBACK=1`) and the next inference run rewrites the lists.
+- **Records.** `pair.json` holds the serving pair (R_B, K_B) **and** its evaluation twin (R_A,
+  K_A); `history.jsonl` gets one line per cycle. The current champion (cutoff 2026-05-01, never
+  trained past it) is a valid R_A: the first cycle starts from it and produces the first R_B.
+
+#### 3. A retriever challenger (new architecture or recipe, from scratch)
+
+```
+time ──────────────────────────────────────────────────────────────────────────►
+                                           N − 6w              N − 2w        N
+challenger R_C    ██████████████████████████│                                    from scratch
+R_C valid                                   │░░░░░░░░░░░░░░░░░░│
+K_C train (R_C's candidates)                │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+champion (R_B', K') trained through N'      ████████████████████████│ ≈ N − 4w
+gates: (R_C, K_C), (R_C, K') vs (R_B', K')                     │▒▒▒▒▒▒▒▒▒▒▒▒▒│
+```
+
+- **Train**: everything before `N − 6w`, epochs picked on `[N − 6w, N − 2w)`. Not on the
+  champion's validation rows: the champion R_B' has already trained through N'.
+- **Retriever gate on the test window only**: R_B' has seen `[N − 6w, N')`, so the validation
+  window can't compare the two; the test window is unseen by both. Warm recall@50 must beat R_B''s
+  by `MIN_IMPROVEMENT` and recall@100 must not drop.
+- **Rankers**: K_C on R_C's candidates over `[N − 6w, N − 2w)`, and the champion ranker K' run on
+  R_C's candidates. The better of (R_C, K_C) and (R_C, K') must beat (R_B', K') on the test window
+  by `MIN_IMPROVEMENT` (a challenger must win, unlike a refresh).
+- **If promoted**: pass B as in 2 (R_C fine-tuned on `[N − 6w, N)` serves; the ranker trained on
+  R_C's candidates over the whole holdout serves with it), and R_C becomes the evaluation lineage
+  the next cycle warm-starts from.
+
+#### 4. A ranker challenger (features, params; same retriever)
+
+```
+time ──────────────────────────────────────────────────────────────────────────►
+                                           N − 6w              N − 2w        N
+evaluation retriever R_A (latest cycle) ███│
+K_new and K_champion train (R_A's candidates) │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+gate: (R_A, K_new) vs (R_A, K_champion)                         │▒▒▒▒▒▒▒▒▒▒▒▒▒│
+```
+
+- Candidates come from the evaluation retriever R_A of the latest cycle (never R_B: it saw every
+  window). The cycle's N fixes the windows; a ranker experiment between cycles reuses them.
+- Both rankers are trained the same way on the same window and compared on the same retriever's
+  candidates, so the difference is the ranker alone. K_new must beat K_champion's pair recall@20
+  by `MIN_IMPROVEMENT` (and pass the ranker gate vs retrieval order).
+- **If promoted**: retrain K_new on R_A's candidates over `[N − 6w, N)` (as pass B does) and serve
+  it with the current R_B. A feature-schema change goes out with phase 5's serving deploy first
+  when the online path must read it.
+
+**Settings** (phase 3 / 8): `HOLDOUT_WEEKS` (6), `TEST_WEEKS` (2), `MAX_REGRESSION` (0.002, refresh
+gate), `MIN_IMPROVEMENT` (challengers), `REPLAY_FRACTION` (older rows mixed into a warm start),
+`MAX_CHURN`, `MAX_LIVE_DROP`. `VALIDATION_FRACTION` stays for experiments on a fixed split.
 
 ### Delivery sequence
 
@@ -278,9 +412,10 @@ Each phase ships on its own (CI, docs, deploy), in this order:
    Popularity computed from `interactions`.
 2. **ETL: popularity mart** (`game_popularity_weekly`); training, inference's `__popular__` and
    spec 15 read it.
-3. **Pair evaluation and promotion** (no live MLflow): ranker gate, pair evaluation of a new
-   retriever (both rankers), final-list gate, `pair.json`, `history.jsonl`, `ROLLBACK=1`,
-   `training-rank.yml` and `training-promote.yml` changes, the numpy `ranker.npz` export.
+3. **Pair evaluation and promotion** (no live MLflow): time-based windows (`HOLDOUT_WEEKS`,
+   `TEST_WEEKS`, see "Time windows"), ranker gate, pair evaluation of a new retriever (both
+   rankers), final-list gate, `pair.json`, `history.jsonl`, `ROLLBACK=1`, `training-rank.yml`
+   and `training-promote.yml` changes, the numpy `ranker.npz` export.
 4. **Batch inference**: the ranker in `RANKER_MODE=shadow`, then `on`; the delayed-label check.
 5. **Online serving**: `game_features.npz` export, the numpy tree evaluator in the Lambda,
    parity test; deploy serving before promoting a ranker that serving must read.
@@ -289,19 +424,15 @@ Each phase ships on its own (CI, docs, deploy), in this order:
 7. **Training orchestration**: a training Step Function (retriever training job → ranker job →
    pair evaluation → manual approval → promote → inference run), started by hand or by
    EventBridge.
-8. **Continuous training** (its own spec): a monthly cycle with rolling windows (retriever on
-   data before N − 4 weeks, ranker on [N − 4w, N − 1w), test on [N − 1w, N)); pass A warm-starts
-   the champion retriever and gates the pair on the test window; pass B fine-tunes the passed
-   retriever on the 4 held-back weeks and serves it with pass A's ranker (or one retrained on
-   pass A's candidates, never on the refreshed retriever's), after sanity checks (recall on its
-   last training week, churn vs pass A, coverage); the delayed-label check rolls back
-   automatically if live recall drops. Full retrains from scratch stay on the challenger path.
+8. **Continuous training** (its own spec, following "Time windows" 2): the monthly pass A /
+   pass B cycle with the evaluation and serving lineages, the no-regression gate, sanity checks
+   and the delayed-label automatic rollback. Full retrains from scratch stay on the challenger
+   path (3).
 
 ### Out of scope
 
-Review text features, refitting the retriever on the full data while a ranker serves (until the
-continuous-training spec), the neural ranker (see "Model"), batch-only features (negatives,
-history beyond 20) as a second model.
+Review text features, the neural ranker (see "Model"), batch-only features (negatives, history
+beyond 20) as a second model.
 
 Follow-ups that need an ETL change (the columns are scraped but dropped by `stg_steam__reviews`):
 
