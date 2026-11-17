@@ -280,6 +280,17 @@ VALIDATION_FRACTION=0.075 TEST_FRACTION=0.075 ...      VALIDATION_FRACTION=0.075
 
 ![Temporal splits for experiments, promotion and keeping a champion fresh](docs/splits.svg)
 
+**Time-based windows** (spec 9, "Time windows"; not in the diagram yet). `HOLDOUT_WEEKS=6`
+replaces the fractions with windows counted back from the newest interaction N: train before
+`N - 6w`, validate on `[N - 6w, N - TEST_WEEKS)`, and the last `TEST_WEEKS` (default 2) are
+never read by training: they are the test window the pair gates use. A ranker trained on that
+retriever (`rank --retriever-id`) uses the retriever's validation weeks for its own training
+(the retriever never trained on them) and starts its test at the same `N - TEST_WEEKS`.
+
+```bash
+HOLDOUT_WEEKS=6 TEST_WEEKS=2 ...        # instead of VALIDATION_FRACTION / TEST_FRACTION
+```
+
 Promotion (step 4) ignores these fractions: it trains nothing and scores both models on every
 row after both cutoffs. A model trained with a held-out test window and then promoted is
 therefore judged partly on that window too. A refit on all rows for serving (step 3) and
@@ -426,10 +437,19 @@ DATA_CACHE_DIR=~/.cache/steam-recsys/iceberg \
   top `RANKER_CANDIDATES`, games reviewed before t excluded, games the user likes later
   dropped. T2 splits the groups by time (`RANKER_TRAIN_FRACTION`): train before, test after.
   The last `RANKER_EARLY_STOPPING_FRACTION` of the training groups stops boosting early.
-- **Report** (`evaluation/rankers/<id>/ranker.json`): recall@{10, `RANKER_TOP_K`} and NDCG of
-  retrieval order vs ranker order on the test groups, the candidates' recall (the ceiling), a
-  split by history size, gain importances and, with `RANKER_ABLATION`, the recall change when
-  each feature family is left out.
+- **Report** (`evaluation/rankers/<id>/ranker.json`), retrieval order vs ranker order:
+  - per review (one relevant game per group): recall@{10, `RANKER_TOP_K`}, NDCG, MRR (=
+    average precision with one relevant game); end to end (`test`, a game outside the
+    candidates is a miss) and `conditional` (only groups whose game is among them: the
+    ranker's own skill); the candidates' recall (the ceiling); a split by history size;
+  - per user (`user_lists`, the batch path's view): at weekly snapshots T of the test window,
+    one list per sampled user (`RANKER_LIST_USERS`) from the history before T, judged against
+    every game they like in `[T, T + RANKER_LIST_HORIZON_DAYS)`: precision@k, recall@k (hits /
+    min(k, relevant)), MAP@k;
+  - gain importances and, with `RANKER_ABLATION`, the recall change when each feature family
+    is left out.
+- **T2**: the retriever's split end when it was trained with `HOLDOUT_WEEKS`, else after
+  `RANKER_TRAIN_FRACTION` of the groups.
 - **Gate:** recall@`RANKER_TOP_K` must beat retrieval order by `RANKER_MIN_GAIN`. The ranker is
   saved either way (`rankers/<id>/model.txt` + `metadata.json`), and the report says whether
   it passed. Pair promotion and serving come in later phases (spec 9, "Delivery sequence").
@@ -460,6 +480,7 @@ forwards them to the job:
 | `TEMPERATURE` | 0.05 | softmax temperature on cosine similarity |
 | `GAME_EMBEDDING_DIM` / `ATTRIBUTE_EMBEDDING_DIM` / `HIDDEN_DIM` / `OUTPUT_DIM` | 64 / 16 / 128 / 64 | |
 | `VALIDATION_FRACTION` / `TEST_FRACTION` | 0.1 / 0 | shares of interactions (by time) held out: `[train \| validation \| test]` |
+| `HOLDOUT_WEEKS` / `TEST_WEEKS` | unset / 2 | time-based windows instead of the fractions: validation `[N − HOLDOUT, N − TEST)`, test `[N − TEST, N)` (spec 9) |
 | `FIT_ON` | train | `train` (evaluate on validation) or `train+validation` (evaluate on test; needs `TEST_FRACTION` > 0) |
 | `COLD_ROW_FRACTION` | 0.1 | share of empty-history rows trained on |
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |

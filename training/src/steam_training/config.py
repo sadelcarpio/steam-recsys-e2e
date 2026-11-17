@@ -92,6 +92,12 @@ class TrainingSettings(_SsmSettings):
     validation_fraction: float = Field(0.1, gt=0, lt=0.5)
     test_fraction: float = Field(0.0, ge=0, lt=0.5)
     fit_on: Literal["train", "train+validation"] = "train"
+    # Time-based windows (spec 9, "Time windows"), counted back from the newest interaction N:
+    # train before N - HOLDOUT_WEEKS, validate on [N - HOLDOUT_WEEKS, N - TEST_WEEKS), and the
+    # last TEST_WEEKS are the test window only gates read (rows there are never used by
+    # training). Replaces VALIDATION_FRACTION / TEST_FRACTION when set.
+    holdout_weeks: int | None = Field(None, ge=1)
+    test_weeks: int = Field(2, ge=0)
     # Share of empty-history (first positive review) rows kept for training. Inference never
     # sees an empty history; a few of them teach the model a "no history" fallback query.
     cold_row_fraction: float = Field(0.1, ge=0, le=1)
@@ -195,7 +201,14 @@ class TrainingSettings(_SsmSettings):
             raise ValueError("GAME_EMBEDDING_DIM must be divisible by ATTENTION_HEADS")
         if self.user_tag_profile and not self.use_game_tags:
             raise ValueError("USER_TAG_PROFILE needs USE_GAME_TAGS")
-        if self.fit_on == "train+validation" and self.test_fraction == 0:
+        if self.holdout_weeks is not None:
+            if self.test_weeks >= self.holdout_weeks:
+                raise ValueError("TEST_WEEKS must be < HOLDOUT_WEEKS")
+            if self.test_fraction > 0:
+                raise ValueError("HOLDOUT_WEEKS replaces TEST_FRACTION: set only one")
+            if self.fit_on == "train+validation" and self.test_weeks == 0:
+                raise ValueError("FIT_ON=train+validation needs TEST_WEEKS > 0")
+        elif self.fit_on == "train+validation" and self.test_fraction == 0:
             raise ValueError("FIT_ON=train+validation needs TEST_FRACTION > 0 to evaluate on")
         return self
 
@@ -250,7 +263,9 @@ class RankerSettings(_SsmSettings):
     ranker_top_k: int = Field(20, ge=1)
     # liked games the user-side features read (MAX_LIKED_GAMES online)
     ranker_history_length: int = Field(20, ge=1, le=512)
-    # share of the window's groups (by time) before T2: train; the rest: test
+    # share of the window's groups (by time) before T2: train; the rest: test. Only for
+    # retrievers without a split end: with time-based windows (HOLDOUT_WEEKS), T2 is the
+    # retriever's split end (its test window starts there)
     ranker_train_fraction: float = Field(0.7, gt=0, lt=1)
     # last share (by time) of the training groups used for early stopping
     ranker_early_stopping_fraction: float = Field(0.2, gt=0, lt=1)
@@ -263,6 +278,13 @@ class RankerSettings(_SsmSettings):
     # weekly game popularity: the `game_popularity_weekly` mart, or the same counts computed
     # from `interactions` (marts deployed before the mart existed)
     ranker_popularity_source: Literal["mart", "interactions"] = "mart"
+
+    # ---- per-user lists (the batch path's view; spec 9) ----
+    # test-window users whose lists are rebuilt at weekly snapshots (0 = skip the list metrics)
+    ranker_list_users: int = Field(20_000, ge=0)
+    # relevant games: positives in [T, T + horizon) (the batch cadence)
+    ranker_list_horizon_days: int = Field(7, ge=1)
+    ranker_list_max_snapshots: int = Field(6, ge=1)
 
     # ---- model (LightGBM lambdarank) ----
     ranker_num_leaves: int = Field(31, ge=2)

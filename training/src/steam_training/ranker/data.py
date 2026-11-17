@@ -41,6 +41,7 @@ from steam_training.ranker.features import (
     week_of,
     week_of_start,
 )
+from steam_training.ranker.lists import UserReviews
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +83,11 @@ class RankerData:
     popularity: PopularityTable
     snapshots: dict[str, int | None]
     cutoff: datetime
+    # rows[:test_start] are before T2 (training), rows[test_start:] from T2 (test)
+    t2: datetime
+    test_start: int
+    # every review of a sample of test-window users (per-user list metrics); None = not loaded
+    list_reviews: UserReviews | None = None
 
 
 def load_ranker_data(
@@ -93,9 +99,15 @@ def load_ranker_data(
     max_groups_per_user: int,
     seed: int,
     popularity_source: str = "mart",
+    t2: datetime | None = None,
+    train_fraction: float = 0.7,
+    list_users: int = 0,
 ) -> RankerData:
     """`popularity_source`: "mart" (`game_popularity_weekly`) or "interactions" (the same
-    weekly counts, counted in the extra pass; for marts without the popularity mart)."""
+    weekly counts, counted in the extra pass; for marts without the popularity mart). `t2`:
+    where the test window starts (the retriever's split end with time-based windows); None =
+    after `train_fraction` of the groups. `list_users`: users of the test window whose every
+    review is kept for the per-user list metrics (0 = none)."""
     data = load_training_data(
         source,
         validation_fraction=0.1,  # unused: the cutoff is given
@@ -121,6 +133,14 @@ def load_ranker_data(
         max_groups_per_user,
     )
     user_id, seconds, target = val.user_id[kept], val.timestamp[kept], val.target[kept]
+    if t2 is not None:
+        test_start = int(np.searchsorted(seconds, epoch_seconds(t2)))
+    else:
+        test_start = min(int(len(seconds) * train_fraction), max(len(seconds) - 1, 0))
+        t2 = from_epoch_seconds(int(seconds[test_start])) if len(seconds) else cutoff
+    rng = np.random.default_rng(seed)
+    test_users = np.unique(user_id[test_start:])
+    sampled = np.sort(rng.choice(test_users, min(list_users, len(test_users)), replace=False))
     cutoff_seconds = epoch_seconds(cutoff)
     end_seconds = int(seconds.max()) if len(kept) else cutoff_seconds
     first_week = int(week_of(cutoff_seconds)) - MAX_RECENT_WEEKS
@@ -134,8 +154,8 @@ def load_ranker_data(
         )
     else:  # until the mart is deployed: the same counts from interactions
         counter = PopularityCounter(data.vocab.games, first_week, last_week)
-    later = _window_pass(
-        source, data.snapshots["interactions"], counter, user_id, seconds, target, cutoff
+    later, list_reviews = _window_pass(
+        source, data.snapshots["interactions"], counter, user_id, seconds, target, cutoff, sampled
     )
     if counter is not None:
         popularity = counter.table()
@@ -167,6 +187,9 @@ def load_ranker_data(
         popularity=popularity,
         snapshots=snapshots,
         cutoff=cutoff,
+        t2=t2,
+        test_start=test_start,
+        list_reviews=list_reviews if list_users else None,
     )
 
 
@@ -206,10 +229,14 @@ def _window_pass(
     row_seconds: np.ndarray,
     row_target: np.ndarray,
     cutoff: datetime,
-) -> Ragged:
+    list_users: np.ndarray | None = None,
+) -> tuple[Ragged, UserReviews]:
     """Fills `counter` (when given) from every review and returns, per row, the positives of
-    its user after t (at or after the cutoff), its target left out."""
+    its user after t (at or after the cutoff), its target left out; and every review of
+    `list_users` (sorted ids)."""
     users = np.unique(row_user)
+    list_users = np.zeros(0, dtype=np.int64) if list_users is None else list_users
+    list_parts: list[tuple[np.ndarray, ...]] = []
     cutoff_us = np.datetime64(cutoff, "us")
     user_parts, time_parts, game_parts = [], [], []
     for batch in source.batches(
@@ -229,7 +256,12 @@ def _window_pass(
         user_parts.append(position[keep])
         time_parts.append(seconds[keep])
         game_parts.append(game[keep])
-    return positives_after(
+        if len(list_users):
+            at = np.searchsorted(list_users, ids)
+            at[at >= len(list_users)] = 0
+            mine = (list_users[at] == ids) & (game >= 0)
+            list_parts.append((ids[mine], seconds[mine], game[mine], positive[mine]))
+    later = positives_after(
         np.concatenate(user_parts) if user_parts else np.zeros(0, np.int64),
         np.concatenate(time_parts) if time_parts else np.zeros(0, np.int64),
         np.concatenate(game_parts) if game_parts else np.zeros(0, np.int64),
@@ -237,6 +269,17 @@ def _window_pass(
         row_seconds,
         row_target,
     )
+    columns = (
+        [np.concatenate(c) for c in zip(*list_parts, strict=True)]
+        if list_parts
+        else [
+            np.zeros(0, dtype=np.int64),
+            np.zeros(0, dtype=np.int64),
+            np.zeros(0, dtype=np.int64),
+            np.zeros(0, dtype=bool),
+        ]
+    )
+    return later, UserReviews.build(*columns)
 
 
 def positives_after(
