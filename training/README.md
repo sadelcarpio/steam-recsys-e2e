@@ -438,9 +438,11 @@ DATA_CACHE_DIR=~/.cache/steam-recsys/iceberg \
   evaluation/rankers/<id>/ranker.json         RankerReport
 ```
 
-Popularity is computed from `interactions` (weekly counts, a lookup reads the weeks before t's
-week) until the `game_popularity_weekly` mart ships; prices and release dates come from
-`game_details` (the price at the last scrape, not as of t).
+Popularity comes from the `game_popularity_weekly` mart (reviews per game and ISO week; a
+lookup at t reads the weeks before t's week). `RANKER_POPULARITY_SOURCE=interactions` counts the
+same weeks from `interactions` instead (marts deployed before the mart existed; a test checks
+both agree). Prices and release dates come from `game_details` (the price at the last scrape,
+not as of t).
 
 ## Configuration
 

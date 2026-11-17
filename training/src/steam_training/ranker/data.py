@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.compute as pc
 
 from steam_training.contracts import VocabSizes
@@ -38,10 +39,12 @@ from steam_training.ranker.features import (
     PopularityCounter,
     PopularityTable,
     week_of,
+    week_of_start,
 )
 
 log = logging.getLogger(__name__)
 
+POPULARITY_MART = "game_popularity_weekly"
 RELEASE_DATE_FORMATS = ("%b %d, %Y", "%d %b, %Y", "%B %d, %Y", "%d %B, %Y")
 
 
@@ -89,7 +92,10 @@ def load_ranker_data(
     max_rows: int,
     max_groups_per_user: int,
     seed: int,
+    popularity_source: str = "mart",
 ) -> RankerData:
+    """`popularity_source`: "mart" (`game_popularity_weekly`) or "interactions" (the same
+    weekly counts, counted in the extra pass; for marts without the popularity mart)."""
     data = load_training_data(
         source,
         validation_fraction=0.1,  # unused: the cutoff is given
@@ -118,11 +124,21 @@ def load_ranker_data(
     cutoff_seconds = epoch_seconds(cutoff)
     end_seconds = int(seconds.max()) if len(kept) else cutoff_seconds
     first_week = int(week_of(cutoff_seconds)) - MAX_RECENT_WEEKS
-    counter = PopularityCounter(data.vocab.games, first_week, int(week_of(end_seconds)))
+    last_week = int(week_of(end_seconds))
+    snapshots = dict(data.snapshots)
+    counter = None
+    if popularity_source == "mart":
+        snapshots[POPULARITY_MART] = source.snapshot_id(POPULARITY_MART)
+        popularity = popularity_from_mart(
+            source, snapshots[POPULARITY_MART], data.vocab.games, first_week, last_week
+        )
+    else:  # until the mart is deployed: the same counts from interactions
+        counter = PopularityCounter(data.vocab.games, first_week, last_week)
     later = _window_pass(
         source, data.snapshots["interactions"], counter, user_id, seconds, target, cutoff
     )
-    snapshots = dict(data.snapshots)
+    if counter is not None:
+        popularity = counter.table()
     for table in ("lkp_games", "game_details"):
         snapshots[table] = source.snapshot_id(table)
     price, release_day = game_details(source, snapshots, data.vocab.games)
@@ -148,7 +164,7 @@ def load_ranker_data(
         catalog=data.catalog,
         vocab=data.vocab,
         games=games,
-        popularity=counter.table(),
+        popularity=popularity,
         snapshots=snapshots,
         cutoff=cutoff,
     )
@@ -185,14 +201,14 @@ def cap_per_user(user_id: np.ndarray, cap: int, seed: int) -> np.ndarray:
 def _window_pass(
     source: TableSource,
     snapshot: int | None,
-    counter: PopularityCounter,
+    counter: PopularityCounter | None,
     row_user: np.ndarray,
     row_seconds: np.ndarray,
     row_target: np.ndarray,
     cutoff: datetime,
 ) -> Ragged:
-    """Fills `counter` from every review and returns, per row, the positives of its user after
-    t (at or after the cutoff), its target left out."""
+    """Fills `counter` (when given) from every review and returns, per row, the positives of
+    its user after t (at or after the cutoff), its target left out."""
     users = np.unique(row_user)
     cutoff_us = np.datetime64(cutoff, "us")
     user_parts, time_parts, game_parts = [], [], []
@@ -203,7 +219,8 @@ def _window_pass(
         seconds = _seconds(ts)
         game = _int64(pc.fill_null(batch["game_idx"], -1))
         positive = _bool(batch["is_positive"])
-        counter.add(game, seconds, positive)
+        if counter is not None:
+            counter.add(game, seconds, positive)
         ids = _int64(pc.fill_null(batch["user_id"], -1))
         position = np.searchsorted(users, ids)
         position[position >= len(users)] = 0
@@ -248,6 +265,34 @@ def positives_after(
     offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
     np.cumsum(kept, out=offsets[1:])
     return Ragged(values[keep], offsets)
+
+
+def popularity_from_mart(
+    source: TableSource,
+    snapshot: int | None,
+    num_games: int,
+    first_week: int,
+    last_week: int,
+) -> PopularityTable:
+    """`PopularityTable` from `game_popularity_weekly` (one row per game and ISO week)."""
+    games, weeks, positives, reviews = [], [], [], []
+    columns = ["game_idx", "week_start", "positives", "reviews"]
+    for batch in source.batches(POPULARITY_MART, columns, snapshot):
+        day = batch["week_start"].cast(pa.date32()).cast(pa.int32()).to_numpy()
+        games.append(_int64(batch["game_idx"]))
+        weeks.append(week_of_start(day.astype(np.int64)))
+        positives.append(_int64(batch["positives"]))
+        reviews.append(_int64(batch["reviews"]))
+    empty = np.zeros(0, dtype=np.int64)
+    return PopularityTable.from_weekly(
+        np.concatenate(games) if games else empty,
+        np.concatenate(weeks) if weeks else empty,
+        np.concatenate(positives) if positives else empty,
+        np.concatenate(reviews) if reviews else empty,
+        num_games,
+        first_week,
+        last_week,
+    )
 
 
 def game_details(

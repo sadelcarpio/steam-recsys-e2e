@@ -3,7 +3,7 @@ user likes one cluster (positive reviews inside it, negative reviews outside).""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pyarrow as pa
@@ -110,6 +110,25 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
             ]
         ),
     )
+    # spec 9: reviews per game and ISO week (Monday), as the dbt mart counts them
+    weekly: dict[tuple[int, date], list[int]] = {}
+    for row in rows:
+        monday = row["timestamp"].date() - timedelta(days=row["timestamp"].weekday())
+        counts = weekly.setdefault((row["game_idx"], monday), [0, 0])
+        counts[0] += int(row["is_positive"])
+        counts[1] += 1
+    popularity = pa.Table.from_pylist(
+        [
+            {
+                "game_id": game_id(g),
+                "game_idx": g,
+                "week_start": week,
+                "positives": pos,
+                "reviews": total,
+            }
+            for (g, week), (pos, total) in sorted(weekly.items())
+        ]
+    )
     lookup = lambda n: pa.table({"id": pa.array(range(FIRST_GAME, FIRST_GAME + n), pa.int64())})  # noqa: E731
     return {
         "interactions": pa.Table.from_pylist(rows),
@@ -140,6 +159,7 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
         "lkp_categories": lookup(5),
         "lkp_tags": lookup(6),
         "game_tags": game_tags,
+        "game_popularity_weekly": popularity,
     }
 
 

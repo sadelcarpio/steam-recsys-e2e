@@ -413,8 +413,11 @@ Each phase ships on its own (CI, docs, deploy), in this order:
    vs ranker order, drop-one-family deltas, history-length split), artifacts under
    `rankers/<id>/`, `python -m steam_training rank --retriever-id <id>` locally and as a CPU job.
    Popularity computed from `interactions`.
-2. **ETL: popularity mart** (`game_popularity_weekly`); training, inference's `__popular__` and
-   spec 15 read it.
+2. **ETL: popularity mart** (`game_popularity_weekly`, Monday-based ISO weeks; done on this
+   branch). The ranker reads it (`RANKER_POPULARITY_SOURCE=mart`, default; `interactions`
+   counts the same weeks for marts deployed before it). Inference's `__popular__` list and spec
+   15 switch to it in phase 4, when inference reads the mart for the ranker anyway. Deploy order:
+   ETL (and one pipeline run) before a ranker job reads the mart.
 3. **Pair evaluation and promotion** (no live MLflow): time-based windows (`HOLDOUT_WEEKS`,
    `TEST_WEEKS`, see "Time windows"), ranker gate, pair evaluation of a new retriever (both
    rankers), final-list gate, `pair.json`, `history.jsonl`, `ROLLBACK=1`, `training-rank.yml`

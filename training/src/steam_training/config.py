@@ -260,6 +260,9 @@ class RankerSettings(_SsmSettings):
     ranker_max_train_groups: int = Field(300_000, ge=1)
     ranker_max_test_groups: int = Field(100_000, ge=1)
     ranker_min_groups: int = Field(5000, ge=1)
+    # weekly game popularity: the `game_popularity_weekly` mart, or the same counts computed
+    # from `interactions` (marts deployed before the mart existed)
+    ranker_popularity_source: Literal["mart", "interactions"] = "mart"
 
     # ---- model (LightGBM lambdarank) ----
     ranker_num_leaves: int = Field(31, ge=2)

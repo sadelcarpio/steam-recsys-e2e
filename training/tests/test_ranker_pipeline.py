@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import boto3
 import numpy as np
 import pytest
@@ -121,3 +123,21 @@ def test_ranker_settings_validation():
         RankerSettings(**base, ranker_candidates=10, ranker_top_k=20)
     with pytest.raises(ValueError, match="reserved"):
         RankerSettings(**{**base, "ranker_id": "champion"})
+
+
+def test_popularity_mart_matches_the_interactions_count(marts):
+    """The dbt mart and the fallback count the same weeks (Monday-based ISO weeks)."""
+    from steam_training.ranker.data import _window_pass, popularity_from_mart
+    from steam_training.ranker.features import PopularityCounter, week_of
+
+    source = FakeSource(marts)
+    ts = marts["interactions"]["timestamp"].to_numpy().astype("datetime64[s]").astype(np.int64)
+    first, last = int(week_of(ts.min())) - 2, int(week_of(ts.max()))
+    from_mart = popularity_from_mart(source, 123, 60, first, last)
+    counter = PopularityCounter(60, first, last)
+    empty = np.zeros(0, dtype=np.int64)
+    _window_pass(source, 123, counter, empty, empty, empty, datetime(2100, 1, 1))
+    from_interactions = counter.table()
+    assert np.array_equal(from_mart.positives, from_interactions.positives)
+    assert np.array_equal(from_mart.reviews, from_interactions.reviews)
+    assert from_mart.reviews[-1].sum() == len(marts["interactions"])

@@ -56,8 +56,14 @@ MAX_RECENT_WEEKS = max(RECENT_WEEKS.values())
 
 
 def week_of(seconds: np.ndarray | int) -> np.ndarray | int:
-    """Week index (seconds since the epoch // one week); popularity tables use the same one."""
-    return np.asarray(seconds) // SECONDS_PER_WEEK
+    """ISO week index of a time (weeks start on Monday 00:00 UTC, as `date_trunc('week')` in the
+    `game_popularity_weekly` mart): week w starts on day 7w - 3 since the epoch (a Thursday)."""
+    return (np.asarray(seconds) // SECONDS_PER_DAY + 3) // 7
+
+
+def week_of_start(day: np.ndarray | int) -> np.ndarray | int:
+    """ISO week index of a week's Monday, given as days since the epoch (the mart's week_start)."""
+    return (np.asarray(day) + 3) // 7
 
 
 @dataclass(frozen=True)

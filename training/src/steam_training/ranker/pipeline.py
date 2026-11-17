@@ -64,6 +64,7 @@ def run_ranking(
         max_rows=settings.ranker_max_rows,
         max_groups_per_user=settings.ranker_max_groups_per_user,
         seed=settings.seed,
+        popularity_source=settings.ranker_popularity_source,
     )
     rows = data.rows
     if len(rows) < 2:
