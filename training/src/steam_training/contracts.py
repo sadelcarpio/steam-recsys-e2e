@@ -340,6 +340,9 @@ class PairReport(_Frozen):
     chosen: PairEvaluation | None
     promoted: bool
     reason: str
+    # evaluated only (PAIR_DRY_RUN): `chosen` is the pair that would be promoted, applied later
+    # by APPLY_REPORT (the training Step Function's approval sits in between)
+    dry_run: bool = False
 
 
 class PairRecord(_Frozen):

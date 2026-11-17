@@ -325,6 +325,15 @@ class PairSettings(_SsmSettings):
     # challenger ranker trained on the challenger retriever's candidates (unset = none)
     ranker_id: str | None = Field(None, pattern=MODEL_ID_PATTERN)
     rollback: bool = False
+    # Evaluate and write the decision (the report's `chosen` = the pair that would be promoted)
+    # without promoting: the training Step Function's step before its approval.
+    pair_dry_run: bool = False
+    # Key of the report (default evaluation/pairs/<chosen retriever>__<ranker>.json); the Step
+    # Function sets a per-execution key to read the decision back.
+    pair_report_key: str | None = None
+    # Promote the pair a dry-run report chose (no re-evaluation), refused when the serving pair
+    # changed since that report: the Step Function's step after the approval.
+    apply_report: str | None = None
     glue_database: str = "steam_marts"
     aws_region: str = "us-east-1"
     data_cache_dir: str | None = None
@@ -359,8 +368,15 @@ class PairSettings(_SsmSettings):
         for value in (self.retriever_id, self.ranker_id):
             if value == CHAMPION:
                 raise ValueError("challenger ids can't be 'champion' (it names the serving pair)")
-        if not self.rollback and self.retriever_id is None and self.ranker_id is None:
-            raise ValueError("set RETRIEVER_ID and / or RANKER_ID (or ROLLBACK=true)")
+        if self.rollback + (self.apply_report is not None) + self.pair_dry_run > 1:
+            raise ValueError("ROLLBACK, APPLY_REPORT and PAIR_DRY_RUN are exclusive")
+        if (
+            not self.rollback
+            and self.apply_report is None
+            and self.retriever_id is None
+            and self.ranker_id is None
+        ):
+            raise ValueError("set RETRIEVER_ID and / or RANKER_ID (or ROLLBACK / APPLY_REPORT)")
         if self.pair_top_k > self.pair_candidates:
             raise ValueError("PAIR_TOP_K must be <= PAIR_CANDIDATES")
         return self

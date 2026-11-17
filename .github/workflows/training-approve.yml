@@ -1,0 +1,78 @@
+name: training approve
+
+# Manual (spec 9, phase 7): approves or rejects the promotion a *training Step Function*
+# execution is waiting on. The execution's dry-run report (evaluation/pairs/runs/<name>.json)
+# is shown in the job summary; approve sends its task token back with success (the state
+# machine promotes that pair, then runs inference), reject with failure (nothing promoted).
+# Runs in the prod environment, so the required reviewer approves the run itself.
+on:
+  workflow_dispatch:
+    inputs:
+      execution:
+        description: "Execution name of steam-recsys-training (its report: evaluation/pairs/runs/<name>.json)"
+        type: string
+        required: true
+      decision:
+        description: "approve (promote the chosen pair) or reject"
+        type: choice
+        options: [approve, reject]
+        default: approve
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: training-approve
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 10
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Show the decision and send it
+        env:
+          EXECUTION: ${{ inputs.execution }}
+          DECISION: ${{ inputs.decision }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$EXECUTION" =~ ^[A-Za-z0-9-]{1,80}$ ]]; then
+            echo "invalid execution name" >&2; exit 1
+          fi
+          ACCT=$(aws sts get-caller-identity --query Account --output text)
+          RUNS="s3://model-artifacts-${ACCT}/evaluation/pairs/runs"
+          aws s3 cp "$RUNS/$EXECUTION.json" report.json
+          aws s3 cp "$RUNS/$EXECUTION.token" token.txt
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          r = json.load(open("report.json"))
+          k = r["top_k"]
+          rows = ([r["champion"]] if r["champion"] else []) + r["challengers"]
+          print(f"### Pair decision ({r['reason']})\n")
+          print(f"Groups from {r['window_start']}\n")
+          print(f"| pair | recall@{k} | ndcg@{k} | retrieval recall@{r['candidates']} |")
+          print("|---|---|---|---|")
+          for e in rows:
+              name = f"{e['retriever_id']} + {e['ranker_id'] or 'no ranker'}"
+              chosen = " **(chosen)**" if r["chosen"] and r["chosen"] == e else ""
+              f, ret = e["final"], e["retrieval"]
+              print(f"| {name}{chosen} | {f['recall'][str(k)]:.4f} | {f['ndcg'][str(k)]:.4f} | "
+                    f"{ret['recall'][str(r['candidates'])]:.4f} |")
+          PY
+          if [ "$DECISION" = approve ]; then
+            aws stepfunctions send-task-success --task-token "$(cat token.txt)" \
+              --task-output "$(printf '{"approved_by":"%s"}' "$ACTOR")"
+            echo "Approved by $ACTOR: the execution promotes the pair." >> "$GITHUB_STEP_SUMMARY"
+          else
+            aws stepfunctions send-task-failure --task-token "$(cat token.txt)" \
+              --error Rejected --cause "rejected by $ACTOR"
+            echo "Rejected by $ACTOR: nothing promoted." >> "$GITHUB_STEP_SUMMARY"
+          fi
