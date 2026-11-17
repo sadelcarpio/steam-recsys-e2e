@@ -10,8 +10,9 @@ population), cold (empty history) and all. Validation rows are a uniform sample 
 
 A6 (item recency): inference re-embeds the catalog on every run, so recency features as of the
 cutoff would be months stale for most validation rows. A model that reads them scores each
-row against the catalog as of the start of the row's week (`RECENCY_REFRESH_DAYS`), from
-reviews before that day. Other models (and the popularity baseline) score as before.
+row against the catalog as of the row's ISO week (Monday UTC), from the reviews of the weeks
+before it (`game_popularity_weekly`), as a weekly inference run would. Other models (and the
+popularity baseline) score as before.
 
 The scoring loops (evaluation and hard-negative mining) are pure torch and run on `device`;
 numpy only appears at the entry points.
@@ -27,7 +28,14 @@ import torch
 
 from steam_training.batching import to_item_batch
 from steam_training.contracts import RecallMetrics, SegmentRecall
-from steam_training.data import DAY_SECONDS, RECENCY_REFRESH_DAYS, Catalog, EvalRows, Ragged
+from steam_training.data import (
+    DAY_SECONDS,
+    Catalog,
+    EvalRows,
+    Ragged,
+    week_of_day,
+    week_start_day,
+)
 from steam_training.model import TwoTowerModel
 
 NOT_FOUND = torch.iinfo(torch.int64).max
@@ -102,8 +110,8 @@ def recency_rescore(
 
 
 def recent_popularity_scores(catalog: Catalog, device: torch.device = CPU) -> ScoreFn:
-    """A6 baseline: every user gets the games with the most reviews in the 30 days before the
-    catalog's day (90 days break ties). With `recent_popularity_rescore` the catalog is
+    """A6 baseline: every user gets the games with the most reviews in the 4 weeks before the
+    catalog's ISO week (13 weeks break ties). With `recent_popularity_rescore` the catalog is
     refreshed weekly, like an A6 model's: "what's trending this week", no model."""
     recency = catalog.items.recency
     if recency is None:
@@ -290,7 +298,7 @@ def rank_rows(
 ) -> tuple[torch.Tensor, Exposure]:
     """Target ranks of `rows` (CPU) and what the scoring pass retrieved (`Exposure`).
     `rescore` (an A6 model's, `recency_rescore`): each row is scored against the catalog with
-    recency as of the start of its week since the catalog's day."""
+    recency as of its ISO week (rows of the catalog's own week keep `score_fn`)."""
     index = CatalogIndex.of(catalog, device)
     exposure = Exposure.empty(index)
 
@@ -309,13 +317,12 @@ def rank_rows(
 
     if rescore is None or catalog.as_of_day is None or rows.timestamp is None:
         return ranks_of(score_fn, rows), exposure
-    start = catalog.as_of_day
-    day = np.maximum(np.asarray(rows.timestamp) // DAY_SECONDS, start)
-    week = start + (day - start) // RECENCY_REFRESH_DAYS * RECENCY_REFRESH_DAYS
+    start = int(week_of_day(catalog.as_of_day))
+    week = np.maximum(week_of_day(np.asarray(rows.timestamp) // DAY_SECONDS), start)
     ranks = torch.full((len(rows),), NOT_FOUND, dtype=torch.int64)
-    for as_of in np.unique(week):
-        part = np.flatnonzero(week == as_of)
-        fn = score_fn if as_of == start else rescore(catalog.at_day(int(as_of)))
+    for w in np.unique(week):
+        part = np.flatnonzero(week == w)
+        fn = score_fn if w == start else rescore(catalog.at_day(int(week_start_day(w))))
         ranks[torch.from_numpy(part)] = ranks_of(fn, rows.take(part))
     return ranks, exposure
 

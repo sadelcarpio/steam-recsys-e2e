@@ -79,15 +79,19 @@ GAME_TAG_COLUMNS = ["game_idx", "game_tags", "game_tag_weights"]
 # A6 (spec 17): release dates (Steam's raw strings, e.g. "Jul 9, 2021") of the `game_details`
 # mart, joined to game_idx through `lkp_games`
 GAME_DETAIL_COLUMNS = ["game_id", "game_release_date"]
-RELEASE_DATE_FORMAT = "%b %d, %Y"
+# "Jul 9, 2021" and "9 Jul, 2021" (the ranker's `parse_release_day` reads the same two)
+RELEASE_DATE_FORMATS = ("%b %d, %Y", "%d %b, %Y")
 DAY_SECONDS = 86_400
-# A6 item features as of a day: log1p reviews in each window of days before it, log1p days since
-# release, release date known
-RECENCY_WINDOWS = (30, 90)
-NUM_RECENCY_FEATURES = len(RECENCY_WINDOWS) + 2
-# A6: evaluation scores each row against the catalog as of the start of its week (weeks
-# anchored at the catalog's day), and training batches come from one such week
-RECENCY_REFRESH_DAYS = 7
+# Reviews per game and ISO week (spec 9): the one definition of game popularity, also read by
+# the ranker and inference. A6 reads `reviews` (any polarity).
+POPULARITY_MART = "game_popularity_weekly"
+POPULARITY_COLUMNS = ["game_idx", "week_start", "reviews"]
+# A6 item features as of a week: log1p reviews in the 4 / 13 weeks before it (~30 / 90 days, the
+# ranker's windows), log1p days since release at its Monday, release date known. Features are
+# constant within an ISO week: training batches come from one week, evaluation scores each row
+# against the catalog as of its week.
+RECENCY_WEEKS = (4, 13)
+NUM_RECENCY_FEATURES = len(RECENCY_WEEKS) + 2
 _RECENCY_SCALE = 0.1  # log1p values up to ~12 -> about [0, 1.2], like the other numeric inputs
 # lookup table -> (id column, VocabSizes field)
 LOOKUPS = {
@@ -331,59 +335,81 @@ class ItemFeatures:
         )
 
 
+def week_of_day(day: np.ndarray | int) -> np.ndarray:
+    """ISO week index of a day since the epoch (weeks start on Monday 00:00 UTC, as
+    `date_trunc('week')` in the mart and the ranker's `week_of`): week w starts on day 7w - 3."""
+    return (np.asarray(day, np.int64) + 3) // 7
+
+
+def week_start_day(week: np.ndarray | int) -> np.ndarray:
+    """Day since the epoch of a week's Monday."""
+    return np.asarray(week, np.int64) * 7 - 3
+
+
 @dataclass(frozen=True)
-class ReviewCounts:
-    """Reviews (any polarity) per (game_idx, day since the epoch), for counts over a window of
-    days: `keys` = game_idx << 16 | day, sorted, and `before[i]` = reviews of keys[:i]."""
+class WeeklyReviews:
+    """Reviews (any polarity) per (game_idx, ISO week), sparse, for counts over the weeks before
+    a week: `keys` = game_idx << 16 | week, sorted, and `before[i]` = reviews of keys[:i]."""
 
     keys: np.ndarray  # int64 [pairs]
     before: np.ndarray  # int64 [pairs + 1]
 
     @staticmethod
-    def key(game: np.ndarray, day: np.ndarray) -> np.ndarray:
-        return (np.asarray(game, np.int64) << 16) | np.clip(day, 0, 0xFFFF).astype(np.int64)
+    def key(game: np.ndarray, week: np.ndarray) -> np.ndarray:
+        return (np.asarray(game, np.int64) << 16) | np.clip(week, 0, 0xFFFF).astype(np.int64)
 
     @classmethod
-    def from_parts(cls, parts: list[tuple[np.ndarray, np.ndarray]]) -> ReviewCounts:
-        """From (unique keys, counts) parts, e.g. one per streamed batch."""
-        if not parts:
-            return cls(np.zeros(0, np.int64), np.zeros(1, np.int64))
-        keys = np.concatenate([k for k, _ in parts])
-        counts = np.concatenate([c for _, c in parts])
-        keys, inverse = np.unique(keys, return_inverse=True)
-        totals = np.bincount(inverse, weights=counts, minlength=len(keys)).astype(np.int64)
+    def from_rows(cls, game: np.ndarray, week: np.ndarray, reviews: np.ndarray) -> WeeklyReviews:
+        """From (game, week, reviews) rows, e.g. the mart's (a pair may repeat: summed)."""
+        keys, inverse = np.unique(cls.key(game, week), return_inverse=True)
+        totals = np.bincount(inverse, weights=reviews, minlength=len(keys)).astype(np.int64)
         before = np.zeros(len(keys) + 1, np.int64)
         np.cumsum(totals, out=before[1:])
         return cls(keys, before)
 
-    def window(self, game: np.ndarray, day: np.ndarray, days: int) -> np.ndarray:
-        """Reviews of each `game` on days [day - days, day): strictly before `day`."""
-        day = np.asarray(day, np.int64)
-        hi = np.searchsorted(self.keys, self.key(game, day), side="left")
-        lo = np.searchsorted(self.keys, self.key(game, day - days), side="left")
+    @classmethod
+    def from_mart(cls, batches: Iterable[pa.RecordBatch]) -> WeeklyReviews:
+        """From `game_popularity_weekly` batches (`POPULARITY_COLUMNS`)."""
+        games, weeks, reviews = [], [], []
+        for batch in batches:
+            day = batch["week_start"].cast(pa.date32()).cast(pa.int32()).to_numpy()
+            games.append(_int64(batch["game_idx"]))
+            weeks.append(week_of_day(day))
+            reviews.append(_int64(batch["reviews"]))
+        if not games:
+            return cls(np.zeros(0, np.int64), np.zeros(1, np.int64))
+        return cls.from_rows(np.concatenate(games), np.concatenate(weeks), np.concatenate(reviews))
+
+    def window(self, game: np.ndarray, week: np.ndarray, weeks: int) -> np.ndarray:
+        """Reviews of each `game` in weeks [week - weeks, week): strictly before `week`."""
+        week = np.asarray(week, np.int64)
+        hi = np.searchsorted(self.keys, self.key(game, week), side="left")
+        lo = np.searchsorted(self.keys, self.key(game, week - weeks), side="left")
         return self.before[hi] - self.before[lo]
 
 
 @dataclass(frozen=True)
 class Recency:
-    """A6: what an item's recency features need, as of any day (training rows: the review's
-    day; the catalog: the cutoff's day, refreshed by evaluation)."""
+    """A6: what an item's recency features need, as of the ISO week of any day (training rows:
+    their bucket's week; the catalog: the cutoff's week, refreshed weekly by evaluation). Only
+    weeks before that week are counted, as the ranker and inference read the mart."""
 
-    counts: ReviewCounts
+    counts: WeeklyReviews
     release_day: np.ndarray  # int32 [vocab.games]: day of release, -1 unknown
 
     def features(self, game: np.ndarray, day: np.ndarray | int) -> np.ndarray:
         game = np.asarray(game, np.int64)
-        day = np.broadcast_to(np.asarray(day, np.int64), game.shape)
+        week = np.broadcast_to(week_of_day(day), game.shape)
         out = np.empty((len(game), NUM_RECENCY_FEATURES), np.float32)
-        for i, days in enumerate(RECENCY_WINDOWS):
-            out[:, i] = np.log1p(self.counts.window(game, day, days))
+        for i, weeks in enumerate(RECENCY_WEEKS):
+            out[:, i] = np.log1p(self.counts.window(game, week, weeks))
         inside = (game >= 0) & (game < len(self.release_day))
         release = np.where(
             inside, self.release_day[np.clip(game, 0, len(self.release_day) - 1)], -1
         )
         known = release >= 0
-        age = np.where(known, np.maximum(day - release, 0), 0)  # reviews before release: 0
+        # as of the week's Monday; reviews before release: 0
+        age = np.where(known, np.maximum(week_start_day(week) - release, 0), 0)
         out[:, -2] = np.log1p(age)
         out[:, :-1] *= _RECENCY_SCALE
         out[:, -1] = known
@@ -617,9 +643,10 @@ def load_training_data(
     [train | validation | test] (`split_window`); `fit_on` picks what is trained on and what is
     evaluated. `cutoff` given: train before it and evaluate on everything after (promotion).
     `with_tags`: read `lkp_tags` / `game_tags` (the vocabulary gets `tags`, the catalog each
-    game's tags). `history_length`: games per history (the model's). `with_recency` (A6): count
-    reviews per (game, day) and read release dates, so item recency features can be computed as
-    of any day (training rows: their own day; the catalog: the cutoff's). `languages` (A7):
+    game's tags). `history_length`: games per history (the model's). `with_recency` (A6): read
+    reviews per (game, ISO week) from `game_popularity_weekly` and release dates, so item recency
+    features can be computed as of any week (training rows: their own; the catalog: the
+    cutoff's). `languages` (A7):
     every row gets the language of its user's previous review (`previous_language`)."""
     lookups = {**LOOKUPS, **(TAG_LOOKUPS if with_tags else {})}
     tables = [
@@ -627,7 +654,7 @@ def load_training_data(
         "interactions",
         "game_features",
         *(["game_tags"] if with_tags else []),
-        *(["game_details"] if with_recency else []),
+        *(["game_details", POPULARITY_MART] if with_recency else []),
     ]
     snapshots = {table: source.snapshot_id(table) for table in tables}
     vocab = _vocab_sizes(source, snapshots, lookups)
@@ -687,7 +714,6 @@ def load_training_data(
     # every positive review before `end` (user, seconds, game): the histories
     positives = _Positives.empty(max_positives)
     # A6: reviews per (game, day) before `end`, any polarity (a test window is never counted)
-    count_parts: list[tuple[np.ndarray, np.ndarray]] = []
     # A7: (user, seconds, language) of every review before `end`
     language_parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     columns = INTERACTION_COLUMNS + (["review_id"] if languages is not None else [])
@@ -712,10 +738,6 @@ def load_training_data(
                     languages.of(_int64(batch["review_id"])[reviewed]),
                 )
             )
-        if with_recency:
-            counted = np.flatnonzero(known & (ts < end_us))
-            day = _seconds(ts[counted]) // DAY_SECONDS
-            count_parts.append(np.unique(ReviewCounts.key(game[counted], day), return_counts=True))
         keep_eval = np.flatnonzero(is_positive & in_window & (rng.random(len(game)) < eval_rate))
         eval_parts.append(
             EvalRows(
@@ -763,19 +785,20 @@ def load_training_data(
     )
     if with_recency:
         recency = Recency(
-            ReviewCounts.from_parts(count_parts),
+            WeeklyReviews.from_mart(
+                source.batches(POPULARITY_MART, POPULARITY_COLUMNS, snapshots[POPULARITY_MART])
+            ),
             release_days(
                 source.batches("game_details", GAME_DETAIL_COLUMNS, snapshots["game_details"]),
                 source.batches("lkp_games", ["game_idx", "game_id"], snapshots["lkp_games"]),
                 vocab.games,
             ),
         )
-        del count_parts
         catalog = replace(catalog, recency=recency).at_day(
             _seconds(np.array([cutoff_us]))[0] // DAY_SECONDS
         )
         log.info(
-            "recency: %d (game, day) review counts, release day known for %d games",
+            "recency: %d (game, week) review counts, release day known for %d games",
             len(recency.counts.keys),
             int((recency.release_day >= 0).sum()),
         )
@@ -998,14 +1021,15 @@ def release_days(
     num_games: int,
 ) -> np.ndarray:
     """Day of release (since the epoch) per game_idx, -1 when unknown: only exact dates
-    ("Jul 9, 2021"); "Coming soon", "Q1 2026" or a bare year stay unknown."""
+    ("Jul 9, 2021", "9 Jul, 2021"); "Coming soon", "Q1 2026" or a bare year stay unknown."""
     lookup = pa.Table.from_batches(list(lookup_batches))
     details = pa.Table.from_batches(list(detail_batches))
     out = np.full(num_games, -1, np.int32)
     if lookup.num_rows == 0 or details.num_rows == 0:
         return out
-    parsed = pc.strptime(
-        details["game_release_date"], format=RELEASE_DATE_FORMAT, unit="s", error_is_null=True
+    text = pc.utf8_trim_whitespace(details["game_release_date"])
+    parsed = pc.coalesce(
+        *(pc.strptime(text, format=f, unit="s", error_is_null=True) for f in RELEASE_DATE_FORMATS)
     )
     found = pc.is_valid(parsed).to_numpy(zero_copy_only=False)
     game_id = _int64(pc.fill_null(details["game_id"], -1))[found]

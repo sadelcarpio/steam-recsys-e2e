@@ -202,7 +202,7 @@ flowchart TB
 | A3 | Self-attention over a longer, ordered history | The previous game is 21% more similar to the next one than the game 20 reviews back. With shuffled order there's no decay (Q5). 22% of consecutive reviews are written the same day, hence the time-gap embedding. | `HISTORY_LENGTH=N` + `HISTORY_ENCODER=attention` (built 2026-11-12, see below). Training derives the long history from `interactions`, so experiments need no ETL change. Served: inference derives the same history from `interactions`, serving runs the attention in numpy (user tower format 3); deploy serving and inference before promoting one. Time-gap embedding **rejected (2026-11-14)**, see below |
 | A4 | History tag profile | 42% of heavy users are more concentrated on one tag than 95% of shuffled users. Tags separate users better than genres (Q1). | `USER_TAG_PROFILE=true`. **Accepted (2026-11-12)**: warm recall@50 0.1996 vs 0.1826 for a control on the same split (+9.3%, full-history exclusion, 2 epochs), +4% for new users rising to +40% / +76% for the top 5% / 1% most active, coverage@50 0.105 vs 0.053. Learned recency: the most recent game's tags weigh 1.67× the oldest's. Built over the 5-game history; the whole-history profile needs the longer history of A3. Promotable: its `user_tower.npz` is numpy format 2 (+ the tag lookup, table and position weights), which serving reads from the serving release that added it, so deploy serving first |
 | A5 | Playtime at review: an attribute of each history token + log1p sample weight on the target | Playtime tracks taste fit (ρ +0.07) and liking (ρ +0.14). Votes don't (ρ −0.02) and grow with review age (Q2, E1). It belongs to a (user, game) interaction: on history tokens it describes past interactions, so the user tower can compute it without the candidate; on the target it only weights the loss, never an input (it's the outcome). `POST /recommendations` sends liked games without playtime, so the token needs an "unknown" bucket, also used as dropout in training. Only `playtime_at_review`: `playtime_forever` is measured at scrape time, after the review. | `playtime_at_review` in `interactions` |
-| A6 | Recent popularity (30 / 90 days) and game age, as of t | Top-100 games overlap only 62% between consecutive 90-day windows. 31% of recent reviews go to games released in the last year (E3). Reviews are 1.4× front-loaded in the first year, and the positive rate drops 5 points after a game's first 90 days (Q3). `ITEM_RECENCY=true` (counts from `interactions` for the test; `game_popularity_weekly` to ship). **Accepted (2026-11-17)**: +34% (two seeds), +39% with A7, see the [experiment log](#experiment-log) |
+| A6 | Recent popularity (30 / 90 days) and game age, as of t | Top-100 games overlap only 62% between consecutive 90-day windows. 31% of recent reviews go to games released in the last year (E3). Reviews are 1.4× front-loaded in the first year, and the positive rate drops 5 points after a game's first 90 days (Q3). `ITEM_RECENCY=true` (counts from `game_popularity_weekly` since 2026-11-17; the runs below counted `interactions` per day). **Accepted (2026-11-17)**: +34% (two seeds), +39% with A7, see the [experiment log](#experiment-log) |
 | A7 | User language + free share | Non-English reviewers pick games whose reviewers mostly share their language 17% of the time vs 6% by chance (E4). Users lean free / paid beyond chance (Q4). `USER_LANGUAGE=true`, language of the previous review (raw reviews for the test; a `review_languages` mart to ship). Free share not built. **Accepted (2026-11-17)**: +3.3% alone, +3.6% on top of A6 |
 | A8 | Description embedding (optional) | Neighbours share 2.7× more tags than random pairs, but co-liked AUC goes from 0.623 to only 0.627 on top of tags (Q6). Only worth it for games with few tags. | precomputed embeddings per game |
 
@@ -389,6 +389,14 @@ numbers per game, as of a day: log1p reviews in the 30 and 90 days before it, lo
 release, and whether the release date is known (each × 0.1). Counts come from `interactions`
 (reviews per game and day, any polarity), release dates from `game_details`.
 
+*Since 2026-11-17 (after the runs below):* the counts come from `game_popularity_weekly`, the
+mart the ranker and inference read, so there is one definition of popularity. Features are as
+of an ISO week (Monday UTC): reviews in the 4 / 13 weeks before it (~30 / 90 days, the ranker's
+windows), age at its Monday. Batches are ISO weeks and evaluation refreshes the catalog per ISO
+week. Rows of the cutoff's own week no longer see that week's earlier reviews (the price of a
+weekly definition). The numbers below are from the daily version; the confirming A6 + A7 run
+uses the mart.
+
 The first try computed every candidate's features as of its row's review day, with rows of all
 dates mixed in a batch. It learned a shortcut: an in-batch negative from another row carried
 features of another date, so the model could reject it for its date rather than its fit. Loss
@@ -462,9 +470,8 @@ the most active 1% get 0.076 / 0.074 (control 0.071 / 0.067, A6 0.052 / 0.070), 
 Overall +39% warm recall@50 over the champion's recipe (0.3066 vs 0.2201, mean of two seeds).
 
 Not promotable yet (`run_promotion` refuses both settings, and no `user_tower.npz` is written
-with a language). What it needs: recency from `game_popularity_weekly` (the one definition of
-game popularity, shared with the ranker) instead of counting `interactions`; the language from a
-`review_languages` mart instead of the raw files; inference computing both (catalog recency as of
+with a language). What it needs: recency from `game_popularity_weekly` (done); the language
+from the `review_languages` mart instead of the raw files; inference computing both (catalog recency as of
 its run, each user's last review language); the numpy user tower and serving port with the
 language input (unknown for `POST /recommendations`, which the dropout trains for); then a
 confirming two-seed run on those sources and a pair evaluation with a ranker trained on its
@@ -746,7 +753,7 @@ forwards them to the job:
 | `HISTORY_LENGTH` | 5 | games in the user history: the last N positives strictly before each row, derived from `interactions` (A3: 20 / 50); inference derives the same |
 | `HISTORY_ENCODER` | mean | A3: `mean`, or `attention` (adds a self-attention summary of the history to the mean). numpy user tower format 3 |
 | `ATTENTION_HEADS` / `ATTENTION_LAYERS` / `ATTENTION_DROPOUT` | 2 / 1 / 0.1 | the attention encoder (heads must divide `GAME_EMBEDDING_DIM`) |
-| `ITEM_RECENCY` | false | A6 (experiment, not promotable): item features as of t (log reviews in the last 30 / 90 days, log days since release from `game_details`, release known). Batches come from one week each with recency as of its start and logQ per week (mixed-date batches let the model reject candidates by their date); evaluation refreshes the catalog weekly and adds a recent-popularity baseline |
+| `ITEM_RECENCY` | false | A6 (experiment, not promotable): item features as of an ISO week (log reviews in the 4 / 13 weeks before it from `game_popularity_weekly`, log days since release from `game_details`, release known). Batches come from one ISO week each with logQ per week (mixed-date batches let the model reject candidates by their date); evaluation refreshes the catalog per ISO week and adds a recent-popularity baseline |
 | `USER_LANGUAGE` / `RAW_REVIEWS_URI` | false / unset | A7 (experiment, not promotable): the language of the user's previous review as a user tower embedding (10% dropout to unknown), read from the raw reviews (`rec_id`, `language`; cached per file under `DATA_CACHE_DIR`) until a mart has it |
 | `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT` | unset / `steam-two-tower` | log the run live to MLflow (needs the `tracking` extra) |
 | `GIT_COMMIT` | `git rev-parse HEAD` | lineage tag (set by the launcher on SageMaker jobs) |

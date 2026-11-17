@@ -23,6 +23,7 @@ import pyarrow.compute as pc
 
 from steam_training.contracts import VocabSizes
 from steam_training.data import (
+    POPULARITY_MART,
     Catalog,
     Ragged,
     TableSource,
@@ -45,7 +46,6 @@ from steam_training.ranker.lists import UserReviews
 
 log = logging.getLogger(__name__)
 
-POPULARITY_MART = "game_popularity_weekly"
 RELEASE_DATE_FORMATS = ("%b %d, %Y", "%d %b, %Y", "%B %d, %Y", "%d %B, %Y")
 
 

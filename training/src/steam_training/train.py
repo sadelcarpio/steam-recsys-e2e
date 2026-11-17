@@ -192,10 +192,10 @@ def train_model(
     if model.config.item_recency:  # A6: batches of one time bucket, recency as of its start
         if examples.day is None or catalog.as_of_day is None:
             raise ValueError("ITEM_RECENCY needs the examples' days and a dated catalog")
-        bucket, starts = time_buckets(examples.day, catalog.as_of_day, settings.batch_size)
+        bucket, starts = time_buckets(examples.day, settings.batch_size)
         examples.as_of = starts[bucket].astype(np.int32)
         examples.log_q = bucket_log_probs(examples.target, bucket)
-        log.info("A6: %d time buckets (weeks, sparse old ones merged)", len(starts))
+        log.info("A6: %d time buckets (ISO weeks, sparse old ones merged)", len(starts))
     collator = Collator(
         examples,
         catalog,

@@ -1,5 +1,6 @@
-"""A6 (spec 17): item recency features (reviews in the last 30 / 90 days, game age) as of the
-review's day in training and as of a weekly refreshed catalog in evaluation."""
+"""A6 (spec 17): item recency features (reviews in the 4 / 13 weeks before, game age) from
+`game_popularity_weekly`, as of the review's ISO week in training and as of a weekly refreshed
+catalog in evaluation."""
 
 from datetime import datetime
 
@@ -24,37 +25,43 @@ from steam_training.contracts import ModelConfig, VocabSizes
 from steam_training.data import (
     DAY_SECONDS,
     NUM_RECENCY_FEATURES,
+    POPULARITY_MART,
     Recency,
-    ReviewCounts,
+    WeeklyReviews,
     load_training_data,
     release_days,
+    week_of_day,
+    week_start_day,
 )
 from steam_training.model import NUM_NUMERIC_FEATURES, TwoTowerModel
 from steam_training.model import NUM_RECENCY_FEATURES as MODEL_RECENCY_FEATURES
 from steam_training.pipeline import run_promotion, run_training
+from steam_training.ranker.features import week_of
 from tests.conftest import BUCKET, FakeSource, make_marts
 
 
-def _counts(game, day) -> ReviewCounts:
-    game, day = np.asarray(game), np.asarray(day)
-    return ReviewCounts.from_parts(
-        [np.unique(ReviewCounts.key(game[:3], day[:3]), return_counts=True)]
-        + [np.unique(ReviewCounts.key(game[3:], day[3:]), return_counts=True)]
-    )
+def test_weeks_are_the_marts_and_the_rankers_iso_weeks():
+    seconds = np.random.default_rng(0).integers(0, 2_000_000_000, 1000)
+    day = seconds // DAY_SECONDS
+    assert np.array_equal(week_of_day(day), week_of(seconds))
+    monday = week_start_day(week_of_day(day))
+    assert ((monday + 3) % 7 == 0).all()  # day 4 (1970-01-05) was a Monday
+    assert ((day - monday >= 0) & (day - monday < 7)).all()
 
 
-def test_review_counts_are_strictly_before_the_day_within_the_window():
+def test_weekly_reviews_count_the_weeks_strictly_before():
     rng = np.random.default_rng(0)
     game = rng.integers(2, 6, 500)
-    day = rng.integers(20_000, 20_200, 500)
-    counts = _counts(game, day)
+    week = rng.integers(2800, 2830, 500)
+    reviews = rng.integers(1, 5, 500)
+    counts = WeeklyReviews.from_rows(game, week, reviews)
     query_game = rng.integers(0, 8, 200)
-    query_day = rng.integers(19_990, 20_220, 200)
-    for days in (1, 30, 90):
-        got = counts.window(query_game, query_day, days)
+    query_week = rng.integers(2795, 2835, 200)
+    for weeks in (1, 4, 13):
+        got = counts.window(query_game, query_week, weeks)
         want = [
-            int(((game == g) & (day < d) & (day >= d - days)).sum())
-            for g, d in zip(query_game, query_day, strict=True)
+            int(reviews[(game == g) & (week < w) & (week >= w - weeks)].sum())
+            for g, w in zip(query_game, query_week, strict=True)
         ]
         assert got.tolist() == want
 
@@ -64,7 +71,7 @@ def test_release_days_parse_exact_dates_only():
         {
             "game_id": pa.array([10, 11, 12, 13, 14, 99], pa.int64()),
             "game_release_date": pa.array(
-                ["Jul 9, 2021", "Coming soon", "2027", None, "Nov 14, 2025", "Jan 1, 2020"]
+                ["Jul 9, 2021", "Coming soon", "2027", None, " 14 Nov, 2025", "Jan 1, 2020"]
             ),
         }
     )
@@ -75,22 +82,33 @@ def test_release_days_parse_exact_dates_only():
     assert days.tolist() == [-1, -1, epoch_day(2021, 7, 9), -1, -1, -1, epoch_day(2025, 11, 14), -1]
 
 
-def test_recency_features():
-    counts = _counts([2, 2, 2, 3, 2], [100, 150, 199, 199, 50])
-    release = np.array([-1, -1, 120, -1], np.int32)
-    out = Recency(counts, release).features(np.array([2, 2, 3]), np.array([200, 110, 200]))
+def test_recency_features_are_as_of_the_iso_week():
+    day = 20_000  # a Saturday: its week starts on Monday, day 19_996
+    w = int(week_of_day(day))
+    assert week_start_day(w) == 19_996
+    counts = WeeklyReviews.from_rows(
+        np.array([2, 2, 2, 3, 2, 2]),
+        np.array([w - 1, w - 5, w - 13, w - 1, w - 14, w]),  # w itself: not counted yet
+        np.array([1, 2, 3, 4, 5, 6]),
+    )
+    release = np.array([-1, -1, 19_900, -1], np.int32)
+    recency = Recency(counts, release)
+    out = recency.features(np.array([2, 2, 3]), np.array([day, 19_996, day]))
     assert out.shape == (3, NUM_RECENCY_FEATURES) == (3, MODEL_RECENCY_FEATURES)
+    expected_2 = [0.1 * np.log1p(1), 0.1 * np.log1p(1 + 2 + 3), 0.1 * np.log1p(96), 1]
     np.testing.assert_allclose(
         out,
         [
-            # day 200: 30 days = {199}, 90 days = {150, 199}, released on day 120
-            [0.1 * np.log1p(1), 0.1 * np.log1p(2), 0.1 * np.log1p(80), 1],
-            # day 110: 30 days = {100}, 90 days = {50, 100}, before release: age 0
-            [0.1 * np.log1p(1), 0.1 * np.log1p(2), 0.0, 1],
-            [0.1 * np.log1p(1), 0.1 * np.log1p(1), 0.0, 0],  # release unknown
+            # 4 weeks = {w-1}, 13 weeks = {w-1, w-5, w-13}, age at Monday = 19_996 - 19_900
+            expected_2,
+            expected_2,  # the Monday of the same week: the same features
+            [0.1 * np.log1p(4), 0.1 * np.log1p(4), 0.0, 0],  # release unknown
         ],
         rtol=1e-6,
     )
+    # the next week counts week w, drops w-13 from the 13 weeks
+    nxt = recency.features(np.array([2]), np.array([day + 7]))[0]
+    np.testing.assert_allclose(nxt[:2], [0.1 * np.log1p(6 + 1), 0.1 * np.log1p(6 + 1 + 2)])
 
 
 def _load(source, **kwargs):
@@ -111,10 +129,10 @@ def loaded():
     return _load(source), _load(source, with_recency=True), source
 
 
-def _reviews_per_game_day(source) -> tuple[np.ndarray, np.ndarray]:
+def _reviews_per_game_week(source) -> tuple[np.ndarray, np.ndarray]:
     table = source.tables["interactions"]
     seconds = table["timestamp"].to_numpy().astype("datetime64[s]").astype(np.int64)
-    return table["game_idx"].to_numpy(), seconds // DAY_SECONDS
+    return table["game_idx"].to_numpy(), week_of_day(seconds // DAY_SECONDS)
 
 
 def test_loading_with_recency_keeps_the_rows_and_dates_the_catalog(loaded):
@@ -127,13 +145,17 @@ def test_loading_with_recency_keeps_the_rows_and_dates_the_catalog(loaded):
     cutoff_day = int(np.datetime64(recency.split.cutoff, "s").astype(np.int64)) // DAY_SECONDS
     assert recency.catalog.as_of_day == cutoff_day
     assert (recency.train.day <= cutoff_day).all()
-    assert "game_details" in recency.snapshots
-    # the catalog's 30-day counts: every review of the game in the 30 days before the cutoff day
-    game, day = _reviews_per_game_day(source)
+    assert "game_details" in recency.snapshots and POPULARITY_MART in recency.snapshots
+    # the catalog's 4-week counts: every review of the game (the mart counts interactions) in
+    # the 4 ISO weeks before the cutoff's week
+    game, week = _reviews_per_game_week(source)
+    cutoff_week = int(week_of_day(cutoff_day))
     items = recency.catalog.items
     want = [
-        ((game == g) & (day < cutoff_day) & (day >= cutoff_day - 30)).sum() for g in items.game_idx
+        ((game == g) & (week < cutoff_week) & (week >= cutoff_week - 4)).sum()
+        for g in items.game_idx
     ]
+    assert sum(want) > 0
     np.testing.assert_allclose(items.recency[:, 0], 0.1 * np.log1p(want), rtol=1e-6)
     # exact release dates are known (synthetic: game_idx % 10 in 7, 8, 9 are not)
     assert items.recency[:, 3].tolist() == [float(g % 10 < 7) for g in items.game_idx]
@@ -197,14 +219,13 @@ def test_evaluation_refreshes_the_catalog_weekly_for_recency_models(loaded):
         return evaluation.model_scores(model, catalog, 64)
 
     refreshed, _ = evaluation.rank_rows(base, rows, data.catalog, 10, 64, rescore=rescore)
-    start = data.catalog.as_of_day
-    row_days = rows.timestamp // DAY_SECONDS
-    weeks = sorted({start + (int(d) - start) // 7 * 7 for d in row_days} - {start})
+    start = int(week_of_day(data.catalog.as_of_day))
+    row_week = np.maximum(week_of_day(rows.timestamp // DAY_SECONDS), start)
+    weeks = [int(week_start_day(w)) for w in sorted(set(row_week.tolist()) - {start})]
     assert days == weeks and len(weeks) > 2
     # the same ranks as scoring each week's rows against that week's catalog by hand
-    week = start + (row_days - start) // 7 * 7
     for as_of in weeks[:2]:
-        part = np.flatnonzero(week == as_of)
+        part = np.flatnonzero(row_week == week_of_day(as_of))
         catalog = data.catalog.at_day(as_of)
         by_hand, _ = evaluation.rank_rows(
             evaluation.model_scores(model, catalog, 64), rows.take(part), catalog, 10, 64
@@ -236,16 +257,15 @@ def test_train_with_recency_is_not_promotable(settings, source, store):
         run_promotion(settings, source, store)
 
 
-def test_time_buckets_are_the_evaluation_weeks_with_sparse_old_weeks_merged():
-    anchor = 1000
-    # weeks before the anchor: 3 rows in week -3, 1 in week -2, 5 in week -1, 2 in week 0
-    day = np.array([980, 980, 981, 986, 993, 993, 994, 995, 999, 1000, 1006])
-    bucket, starts = time_buckets(day, anchor, min_rows=4)
-    # weeks -3 and -2 merge (3 + 1 rows), week -1 has 5, week 0 keeps its 2 (the newest)
-    assert starts.tolist() == [979, 993, 1000]
+def test_time_buckets_are_iso_weeks_with_sparse_old_weeks_merged():
+    monday = 19_996  # week w starts here
+    # 3 rows in week w, 1 in w + 1, 5 in w + 2, 2 in w + 3 (Saturday / Sunday / Monday edges)
+    day = monday + np.array([0, 4, 6, 7, 14, 15, 16, 19, 20, 21, 27])
+    bucket, starts = time_buckets(day, min_rows=4)
+    # weeks w and w + 1 merge (3 + 1 rows), w + 2 has 5, w + 3 keeps its 2 (the newest)
+    assert starts.tolist() == [monday, monday + 14, monday + 21]
     assert bucket.tolist() == [0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2]
-    # each bucket starts on an evaluation week boundary (weeks anchored at the catalog's day)
-    assert ((starts - anchor) % 7 == 0).all()
+    assert np.array_equal(starts, week_start_day(week_of_day(starts)))  # all Mondays
 
 
 def test_bucket_log_probs_are_target_frequencies_within_the_bucket():
@@ -275,7 +295,7 @@ def test_bucket_batches_cover_every_example_once_and_never_mix_buckets():
 def test_collator_dates_a_batch_by_its_bucket_and_uses_the_bucket_log_q(loaded):
     _, data, _ = loaded
     examples = build_examples(data.train, data.catalog, data.negatives)
-    bucket, starts = time_buckets(examples.day, data.catalog.as_of_day, min_rows=64)
+    bucket, starts = time_buckets(examples.day, min_rows=64)
     examples.as_of = starts[bucket].astype(np.int32)
     examples.log_q = bucket_log_probs(examples.target, bucket)
     collator = Collator(

@@ -26,12 +26,13 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 
 from steam_training.contracts import OOV_ID, PADDING_ID
 from steam_training.data import (
-    RECENCY_REFRESH_DAYS,
     Catalog,
     ItemFeatures,
     NegativeRows,
     Ragged,
     TrainRows,
+    week_of_day,
+    week_start_day,
 )
 from steam_training.model import Bag, ItemBatch, TensorTree
 
@@ -103,19 +104,19 @@ def target_log_probs(target: np.ndarray, num_games: int) -> np.ndarray:
         return np.log(counts / max(counts.sum(), 1.0)).astype(np.float32)
 
 
-def time_buckets(day: np.ndarray, anchor: int, min_rows: int) -> tuple[np.ndarray, np.ndarray]:
-    """A6: weeks anchored at `anchor` (the catalog's day, like evaluation's weekly refresh);
-    consecutive weeks are merged, oldest first, until a bucket has `min_rows` examples (the
-    newest bucket keeps whatever is left). Returns each example's bucket and each bucket's first
-    day."""
-    week = (day.astype(np.int64) - anchor) // RECENCY_REFRESH_DAYS
+def time_buckets(day: np.ndarray, min_rows: int) -> tuple[np.ndarray, np.ndarray]:
+    """A6: ISO weeks (the weeks evaluation refreshes the catalog on, and the mart's); consecutive
+    weeks are merged, oldest first, until a bucket has `min_rows` examples (the newest bucket
+    keeps whatever is left). Returns each example's bucket and each bucket's first day (a
+    Monday)."""
+    week = week_of_day(day)
     weeks, inverse, counts = np.unique(week, return_inverse=True, return_counts=True)
     bucket_of_week = np.empty(len(weeks), np.int64)
     starts: list[int] = []
     size = min_rows
     for i, (w, n) in enumerate(zip(weeks.tolist(), counts.tolist(), strict=True)):
         if size >= min_rows:
-            starts.append(anchor + w * RECENCY_REFRESH_DAYS)
+            starts.append(int(week_start_day(w)))
             size = 0
         bucket_of_week[i] = len(starts) - 1
         size += n
