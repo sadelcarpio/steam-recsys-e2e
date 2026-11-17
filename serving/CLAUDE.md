@@ -52,7 +52,9 @@ Human docs: `README.md`.
   group; the file layout is `steam_training.ranker.export` (`RANKER_NUMPY_FORMAT` =
   `SUPPORTED_RANKER_FORMAT`). Change the three together; parity (features, LightGBM scores,
   the constants) is tested in inference's `tests/test_online_ranker.py`. A ranker problem
-  never fails a request: it falls back to retrieval order. No LightGBM in the zip.
+  never fails a request: it falls back to retrieval order. No LightGBM in the zip. A ranked
+  online list is cut at `RANKER_TOP_K` (20, as batch); `ranker_id` is in the response (stored
+  lists: the item's) and in the per-request log line.
 - Online ranking is by the score rounded to 4 decimals (as returned), then by lowest appid.
   Raw float order is not reproducible: identical games differ by CPU / BLAS-dependent noise
   (this flipped CI once). Batch uses `torch.topk`.

@@ -206,3 +206,45 @@ def test_runs_chain_their_online_checks(settings, store, champion, tmp_path):
     keys = {o["Key"] for o in store.s3.list_objects_v2(Bucket=store.bucket)["Contents"]}
     assert "evaluation/online/lists/latest.npz" in keys
     assert any(k.startswith("evaluation/online/2024") and k.endswith(".json") for k in keys)
+
+
+def _rankers(tmp_path, name: str) -> dict[str, str | None]:
+    lines = (tmp_path / f"{name}.jsonl").read_text().splitlines()
+    items = [__import__("json").loads(line) for line in lines]
+    return {i["user_id"]: i.get("ranker_id") for i in items}
+
+
+def test_stored_items_name_the_ranker_that_ordered_them(settings, store, champion, tmp_path):
+    serve_ranker(store)
+    run(settings, store, tmp_path, mode="on", name="named")
+    rankers = _rankers(tmp_path, "named")
+    assert rankers.pop("__popular__") is None
+    assert rankers and set(rankers.values()) == {"k1"}
+    run(settings, store, tmp_path, mode="shadow", name="unnamed")  # retrieval order written
+    assert set(_rankers(tmp_path, "unnamed").values()) == {None}
+
+
+def test_a_failed_chunk_is_not_named(settings, store, champion, tmp_path, monkeypatch):
+    serve_ranker(store)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ranking, "compute_features", broken)
+    run(settings, store, tmp_path, mode="on", name="failed")
+    assert set(_rankers(tmp_path, "failed").values()) == {None}
+
+
+def test_the_ranker_is_part_of_the_content_hash():
+    from steam_inference.contracts import Recommendation, UserRecommendations
+
+    item = UserRecommendations(
+        user_id="1",
+        recommendations=[Recommendation(game_id=1, name="a", score=0.5)],
+        model_id="m",
+        generated_at=NOW,
+        reranked=False,
+    )
+    named = item.model_copy(update={"ranker_id": "k1"})
+    assert named.content_hash() != item.content_hash()
+    assert named.to_item()["ranker_id"] == "k1" and "ranker_id" not in item.to_item()

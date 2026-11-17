@@ -41,6 +41,8 @@ export interface RecommendationsResponse {
   generated_at: string;
   reranked: boolean;
   rerank_model?: string;
+  // spec 9: the ranker that ordered the list (absent: the retriever's order)
+  ranker_id?: string;
   recommendations: Recommendation[];
   used_game_ids?: number[];
   ignored_game_ids?: number[];
@@ -59,7 +61,8 @@ export interface SearchIndex {
 }
 
 export const SEARCH_INDEX_FORMAT = 1;
-export const LIMIT = 30; // serving MAX_LIMIT (inference writes 30 per user)
+// serving MAX_LIMIT (inference writes 30 per user without a ranker; ranked lists have 20)
+export const LIMIT = 30;
 // The champion's user tower reads the last 20 liked games (its training HISTORY_LENGTH, A3
 // len20-attn): more would be ignored. Follow the champion's history length. Serving accepts up
 // to 100.

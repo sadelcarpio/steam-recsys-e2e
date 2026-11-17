@@ -135,13 +135,24 @@ export function likedStrip(
   );
 }
 
+// A 40-character commit sha (a ranker or model trained by CD) is shown as its first 7 characters.
+export function shortId(id: string): string {
+  return /^[0-9a-f]{40}$/.test(id) ? id.slice(0, 7) : id;
+}
+
 export function responseSummary(response: RecommendationsResponse): string {
   const when = formatDate(response.generated_at);
+  const models = t.modelsLabel(
+    shortId(response.model_id),
+    response.ranker_id ? shortId(response.ranker_id) : undefined,
+  );
   switch (response.source) {
     case "personalized":
-      return response.reranked ? t.summaryReranked(when) : t.summaryPersonalized(when);
+      return response.reranked
+        ? t.summaryReranked(when, models)
+        : t.summaryPersonalized(when, models);
     case "online":
-      return t.summaryOnline(response.model_id);
+      return t.summaryOnline(models);
     case "popular":
       return response.user_id ? t.summaryFallback(when) : t.summaryPopular(when);
   }

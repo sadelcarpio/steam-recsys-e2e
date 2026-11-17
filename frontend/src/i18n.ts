@@ -50,12 +50,18 @@ export const t = {
   likedHint: "Las reseñas positivas más recientes de este jugador: el modelo parte de ellas.",
   recommendationsTitle: "Recomendaciones",
   explainedBy: (model: string) => `modelo: ${model}`,
-  summaryReranked: (when: string) =>
-    `Personalizadas para este jugador, reordenadas y explicadas por un LLM (${when}).`,
-  summaryPersonalized: (when: string) =>
-    `Personalizadas para este jugador por el modelo de dos torres (${when}).`,
-  summaryOnline: (model: string) =>
-    `Calculadas ahora a partir de los juegos que elegiste (modelo ${model}).`,
+  // `models`: modelsLabel's text
+  summaryReranked: (when: string, models: string) =>
+    `Personalizadas para este jugador (${models}), reordenadas y explicadas por un LLM (${when}).`,
+  summaryPersonalized: (when: string, models: string) =>
+    `Personalizadas para este jugador (${models}, ${when}).`,
+  summaryOnline: (models: string) =>
+    `Calculadas ahora a partir de los juegos que elegiste (${models}).`,
+  // the retriever (two-tower model) and, when one ordered the list, the ranker
+  modelsLabel: (retriever: string, ranker?: string) =>
+    ranker
+      ? `recuperación: ${retriever}, ranking: ${ranker}`
+      : `modelo de dos torres: ${retriever}`,
   summaryFallback: (when: string) =>
     `Aún no hay recomendaciones para este jugador: se muestran los juegos más populares (${when}).`,
   summaryPopular: (when: string) => `Juegos más populares en las reseñas recientes (${when}).`,
