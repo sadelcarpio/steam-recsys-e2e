@@ -89,6 +89,20 @@ class InferenceSettings(BaseSettings):
     # newest review.
     popular_window_days: int = Field(90, ge=1)
 
+    # ---- ranker (spec 9) ----
+    # The serving pair (evaluation/champion/pair.json) names the ranker; it runs only when the
+    # pair's retriever is the model this run serves. off: retrieval order (TOP_K); shadow: the
+    # ranker order is computed and compared (summary), retrieval order is written; on: the
+    # ranker re-orders RETRIEVAL_CANDIDATES and its top RANKER_TOP_K is written.
+    ranker_mode: Literal["off", "shadow", "on"] = "shadow"
+    retrieval_candidates: int = Field(100, ge=1, le=500)
+    ranker_top_k: int = Field(20, ge=1, le=200)
+    ranker_chunk_users: int = Field(256, ge=1)
+    # Delayed-label check: a sample of this run's lists is saved, and the next run scores it
+    # against the reviews written in between (evaluation/online/). 0 = off.
+    online_check_users: int = Field(20_000, ge=0)
+    online_check_prefix: str = "evaluation/online"
+
     # ---- LLM reranking (Bedrock Converse API) ----
     rerank_enabled: bool = True
     # Amazon Nova 2 Lite (US cross-region inference profile): ~4.5k input + ~0.5k output tokens
@@ -146,6 +160,10 @@ class InferenceSettings(BaseSettings):
     def _check(self) -> InferenceSettings:
         if self.explain_top_n > self.top_k:
             raise ValueError(f"explain_top_n={self.explain_top_n} must be <= top_k={self.top_k}")
+        if self.ranker_mode == "on" and self.explain_top_n > self.ranker_top_k:
+            raise ValueError("EXPLAIN_TOP_N must be <= RANKER_TOP_K with RANKER_MODE=on")
+        if self.ranker_top_k > self.retrieval_candidates:
+            raise ValueError("RANKER_TOP_K must be <= RETRIEVAL_CANDIDATES")
         return self
 
 

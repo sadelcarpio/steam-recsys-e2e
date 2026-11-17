@@ -29,6 +29,8 @@ from steam_inference.contracts import (
 from steam_inference.details import sync_game_details
 from steam_inference.features import InferenceData, load_inference_data
 from steam_inference.online import BundleStore, build_catalog, encode_catalog
+from steam_inference.online_check import check, load_sample, sample_lists, save
+from steam_inference.ranking import RankerStats, apply_ranker, cut, load_serving_ranker
 from steam_inference.rerank import (
     Reranked,
     RerankLlm,
@@ -58,7 +60,10 @@ def run_inference(
     details_writer: Writer | None = None,
     bundle_store: BundleStore | None = None,
     now: datetime | None = None,
+    save_online_lists: bool = True,
 ) -> InferenceSummary:
+    """`save_online_lists`: run the delayed-label check (reads and writes
+    evaluation/online/ in the model bucket); off for dry runs."""
     started = time.monotonic()
     now = now or datetime.now(UTC)
     metadata = store.load_metadata(settings.model_id)
@@ -97,16 +102,60 @@ def run_inference(
         int(adult.sum()),
         int(unreleased.sum()),
     )
-    candidates = retrieve(
+    # spec 9: the serving pair's ranker re-orders RETRIEVAL_CANDIDATES (shadow: compared only)
+    ranker, ranker_reason = None, "RANKER_MODE=off"
+    if settings.ranker_mode != "off":
+        ranker, ranker_reason = load_serving_ranker(
+            source, store, data, metadata.model_id, as_of=now
+        )
+    log.info("ranker: %s", ranker_reason)
+    retrieved = retrieve(
         model,
         data.games,
         data.users,
         data.reviews,
-        k=settings.top_k,
+        k=settings.retrieval_candidates if ranker else settings.top_k,
         user_batch_size=settings.user_batch_size,
         item_batch_size=settings.item_batch_size,
         excluded=excluded,
     )
+    ranker_stats = RankerStats()
+    if ranker is None:
+        candidates = alternative = cut(retrieved, settings.top_k)
+    else:
+        ranked, ranker_stats = apply_ranker(
+            ranker,
+            data,
+            retrieved,
+            as_of=now,
+            top_k=settings.ranker_top_k,
+            chunk=settings.ranker_chunk_users,
+        )
+        if settings.ranker_mode == "on":
+            candidates = cut(ranked, settings.ranker_top_k)
+            alternative = cut(retrieved, settings.ranker_top_k)
+        else:  # shadow: retrieval order is written, the ranker's lists are only compared
+            candidates = cut(retrieved, settings.top_k)
+            alternative = cut(ranked, settings.ranker_top_k)
+    online_check = None
+    if settings.online_check_users and save_online_lists:
+        previous = load_sample(store.s3, store.bucket, settings.online_check_prefix)
+        online_check = check(previous, data, now) if previous is not None else None
+        save(
+            store.s3,
+            store.bucket,
+            settings.online_check_prefix,
+            sample_lists(
+                data,
+                candidates,
+                alternative,
+                users=settings.online_check_users,
+                run_at=now,
+                mode=settings.ranker_mode if ranker else "off",
+                ranker_id=ranker.ranker_id if ranker else None,
+            ),
+            online_check,
+        )
 
     online_bundle = search_index = None
     if bundle_store is not None:
@@ -222,7 +271,19 @@ def run_inference(
         online_bundle=online_bundle,
         search_index=search_index,
         user_index=user_index,
-        snapshots={**data.snapshots, "game_details": details_snapshot},
+        snapshots={
+            **data.snapshots,
+            "game_details": details_snapshot,
+            **(ranker.snapshots if ranker else {}),
+        },
+        ranker_id=ranker.ranker_id if ranker else None,
+        ranker_mode=settings.ranker_mode if ranker else "off",
+        ranker_reason=ranker_reason,
+        ranked_users=ranker_stats.ranked_users,
+        ranker_failures=ranker_stats.failures,
+        ranker_overlap=ranker_stats.overlap,
+        ranker_seconds=ranker_stats.seconds,
+        online_check=online_check,
         seconds=round(time.monotonic() - started, 1),
     )
     log.info("inference done: %s", summary.model_dump_json())

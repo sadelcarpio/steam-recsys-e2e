@@ -426,6 +426,9 @@ Each phase ships on its own (CI, docs, deploy), in this order:
    conditional on the candidates) and per user (precision / recall / MAP@k of weekly lists).
    Done on this branch except `ranker.npz` (with phase 5's serving port).
 4. **Batch inference**: the ranker in `RANKER_MODE=shadow`, then `on`; the delayed-label check.
+   Done on `feature/ranker-batch-inference` (summary fields and `evaluation/online/` JSON; a
+   CloudWatch metric for it is a follow-up). Inference reads popularity from the mart for the
+   ranker; its `__popular__` list still uses its own 90-day count (same data, one less read).
 5. **Online serving**: `game_features.npz` export, the numpy tree evaluator in the Lambda,
    parity test; deploy serving before promoting a ranker that serving must read.
 6. **Language**: `language` in `interactions` (ETL), the language feature (a
