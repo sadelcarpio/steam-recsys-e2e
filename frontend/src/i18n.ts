@@ -61,9 +61,7 @@ export const t = {
     `Calculadas ahora a partir de los juegos que elegiste (${models}).`,
   // the retriever (two-tower model) and, when one ordered the list, the ranker
   modelsLabel: (retriever: string, ranker?: string) =>
-    ranker
-      ? `recuperación: ${retriever}, ranking: ${ranker}`
-      : `modelo de dos torres: ${retriever}`,
+    ranker ? `retrieval: ${retriever}, ranking: ${ranker}` : `modelo de dos torres: ${retriever}`,
   summaryFallback: (when: string) =>
     `Aún no hay recomendaciones para este jugador: se muestran los juegos más populares (${when}).`,
   summaryPopular: (when: string) => `Juegos más populares en las reseñas recientes (${when}).`,
