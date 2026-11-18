@@ -66,7 +66,7 @@ Spec: `specs/3-training-pipeline.md` (ranker: `specs/9-ranking-model.md`). Human
 - `mlflow/compose.yaml`: local MLflow server (sqlite + artifacts in a named volume, localhost
   only); image tag = the `mlflow-skinny` version in `uv.lock`.
 - `Dockerfile`: image `training` (ECR), `TORCH_VARIANT` build arg; tags `<sha>` + `latest`
-  (cpu) or `<sha>-cu128`.
+  (cpu) or `<sha>-cu128` + `latest-cu128` (the training Step Function's retriever default).
 
 ## Invariants (keep them when changing code)
 
@@ -203,5 +203,5 @@ Add deps only with `uv add` (never edit the lock). torch is routed per dependenc
 Infra for this component: `infrastructure/training.tf`. Workflows: `training-ci.yml`,
 `training-cd.yml`, `training-promote.yml` (modes retriever / pair / rollback),
 `training-rank.yml` (ranker job), `training-approve.yml` (the training Step Function's approval),
-`training-image-cd.yml` (CPU image on merges, via
+`training-image-cd.yml` (CPU and GPU images on merges, `:latest` / `:latest-cu128`, via
 `cd.yml`; no training job).

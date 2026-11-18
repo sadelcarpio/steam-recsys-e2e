@@ -1,12 +1,13 @@
 name: training image CD
 
-# Build and push of the CPU training image `training:<sha>` (+ `:latest`) on merges to main that
-# change the training code (through cd.yml), or manual. No SageMaker job: training and
-# promotion stay manual (*training CD*, *training promote*). It gives every merged commit an
-# image, so a model trained locally (`local-…`) is promoted with `image_tag=<merge sha>`
-# (promotion runs on the CPU instance of SSM /training/INSTANCE_TYPE). The GPU image
-# (`<sha>-cu128`) is still built by *training CD* only. ECR keeps the last 30 images
-# (`infrastructure/training.tf`).
+# Build and push of the training images on merges to main that change the training code (through
+# cd.yml), or manual: CPU `training:<sha>` (+ `:latest`) and GPU `training:<sha>-cu128` (+
+# `:latest-cu128`), in parallel jobs (each build gets a runner's own disk). No SageMaker job:
+# training and promotion stay manual (*training CD*, *training promote*) or go through the
+# training Step Function, whose GPU retriever runs `:latest-cu128` by default. Every merged
+# commit gets both images, so a model trained locally (`local-…`) is promoted with
+# `image_tag=<merge sha>`. ECR keeps the last 30 images (two per merge,
+# `infrastructure/training.tf`).
 on:
   workflow_dispatch:
   workflow_call: # cd.yml, on merges to main
@@ -24,9 +25,8 @@ defaults:
     working-directory: training
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
-    environment: prod
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -34,6 +34,25 @@ jobs:
           enable-cache: true
           cache-dependency-glob: training/uv.lock
       - run: uv sync --frozen --no-group cu128 --group cpu && uv run --no-sync pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: prod
+    strategy:
+      matrix:
+        variant: [cpu, cu128]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The CUDA image needs more than the runner's free disk with the preinstalled toolchains
+      - name: Free disk space
+        if: matrix.variant == 'cu128'
+        working-directory: .
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker system prune -af
+          df -h /
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -44,13 +63,16 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Same build as *training CD* (cpu): the tag promote and later runs use
+      # Same builds as *training CD*: cpu -> <sha> + latest (promote and later runs),
+      # cu128 -> <sha>-cu128 + latest-cu128 (GPU retriever jobs, the training Step Function)
       - name: Build and push training image
         env:
           REPO: ${{ steps.ecr.outputs.registry }}/training
+          VARIANT: ${{ matrix.variant }}
         run: |
-          docker build --build-arg TORCH_VARIANT=cpu -t "$REPO:${GITHUB_SHA}" -t "$REPO:latest" .
-          docker push "$REPO:${GITHUB_SHA}"
-          docker push "$REPO:latest"
-          echo "Pushed \`training:${GITHUB_SHA}\` (promote a local model with this \`image_tag\`)" \
-            >> "$GITHUB_STEP_SUMMARY"
+          if [ "$VARIANT" = cpu ]; then TAG="$GITHUB_SHA"; LATEST=latest
+          else TAG="$GITHUB_SHA-$VARIANT"; LATEST="latest-$VARIANT"; fi
+          docker build --build-arg TORCH_VARIANT="$VARIANT" -t "$REPO:$TAG" -t "$REPO:$LATEST" .
+          docker push "$REPO:$TAG"
+          docker push "$REPO:$LATEST"
+          echo "Pushed \`training:$TAG\` (+ \`:$LATEST\`)" >> "$GITHUB_STEP_SUMMARY"
