@@ -185,7 +185,7 @@ Order matters only on the first deploy: the pipeline's ECS tasks run the `:lates
 | *data-ingestion CD* (`target=all`) | image `data-ingestion` (scraping tasks) + Lambda `list-partition-game-ids` code |
 | *etl CD* | image `etl` (ECS task `dbt`) |
 | *training CD* | image `training:<sha>` (or `<sha>-cu128`) + a SageMaker training job for that commit (see step 9) |
-| *training image CD* | image `training:<sha>` (CPU) only, on merges that change the training code: what promotion of a locally trained model runs |
+| *training image CD* | images `training:<sha>` (CPU, + `:latest`) and `<sha>-cu128` (GPU, + `:latest-cu128`) only, on merges that change the training code: what promotion of a locally trained model and the training Step Function run |
 | *inference CD* | image `inference` (SageMaker Processing job `Infer`, the pipeline's last step; see step 10) |
 | *serving CD* | Lambda `recsys-serving` code (zip) + smoke test (see step 11) |
 | *frontend CD* | static app to S3 `recsys-frontend-<acct>` + CloudFront invalidation + smoke test (see step 12) |
@@ -379,8 +379,14 @@ that creates it:
 ARN=$(aws stepfunctions list-state-machines \
   --query "stateMachines[?name=='steam-recsys-training'].stateMachineArn" --output text)
 aws stepfunctions start-execution --state-machine-arn "$ARN" --name ct-2026-11 --input '{}'
-# GPU retriever: '{"retriever_image_tag": "<sha>-cu128", "retriever_instance_type": "ml.g4dn.xlarge"}'
+# pin a commit instead of the latest images: '{"retriever_image_tag": "<sha>-cu128", "image_tag": "<sha>"}'
 ```
+
+By default the retriever trains on GPU (`training:latest-cu128` on `ml.g5.2xlarge`, ~45 min;
+the training image CD pushes `<sha>-cu128` and moves `latest-cu128` on every training merge)
+with the champion's recipe (A3 + A4 + A6 + A7), and the other jobs run `training:latest` on CPU.
+It needs the SageMaker training quota of `ml.g5.2xlarge` (and the `review_languages` /
+`game_popularity_weekly` marts built).
 
 The name (letters, digits, hyphens, ≤ 40) names everything it makes: models `ct-<name>` /
 `ct-<name>-rank`, the report `evaluation/pairs/runs/<name>.json`. When a challenger pair wins,
