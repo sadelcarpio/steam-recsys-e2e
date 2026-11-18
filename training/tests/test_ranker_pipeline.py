@@ -188,3 +188,40 @@ def test_holdout_settings_validation():
         TrainingSettings(**base, holdout_weeks=2, test_weeks=2)
     with pytest.raises(ValueError, match="TEST_FRACTION"):
         TrainingSettings(**base, holdout_weeks=6, test_fraction=0.05)
+
+
+def test_ranker_without_the_popularity_features(settings, store):
+    """RANKER_EXCLUDE_FEATURES: the ranker trains on the rest; its metadata (read back by
+    `pairs.load_ranker`, so by inference) and its export only use those features."""
+    from steam_training.pairs import load_ranker
+    from steam_training.ranker.export import tree_arrays
+    from steam_training.ranker.features import POPULARITY_FEATURES
+
+    source = FakeSource(make_marts(n_users=600, reviews_per_user=10, seed=1))
+    run_training(settings.model_copy(update={"validation_fraction": 0.3}), source, store)
+    excluded = ["log_positives", "log_positives_30d", "log_positives_90d"]
+    ranker = RankerSettings(
+        model_artifacts_bucket=BUCKET, ranker_id="nopop", retriever_id=settings.model_id,
+        device="cpu", ranker_candidates=15, ranker_top_k=5, ranker_history_length=5,
+        ranker_min_groups=20, ranker_min_data_in_leaf=5, ranker_max_rounds=50,
+        ranker_early_stopping_rounds=10, eval_batch_size=128, ranker_list_users=0,
+        ranker_exclude_features=excluded,
+    )  # fmt: skip
+    report = run_ranking(ranker, source, store)
+    assert not set(excluded) & set(report.importances)
+    fit, metadata = load_ranker(store, "nopop")
+    assert metadata.feature_names == [f for f in FEATURES if f not in excluded]
+    assert fit.features == metadata.feature_names
+    # export: split features index the full FEATURES list, never an excluded one
+    used = tree_arrays(fit)["node_feature"]
+    used = {FEATURES[i] for i in used[used >= 0].tolist()}
+    assert used and not used & set(excluded)
+    assert "positive_ratio" in POPULARITY_FEATURES  # kept: the quality signal, not volume
+
+
+def test_ranker_exclude_features_validation():
+    base = {"model_artifacts_bucket": BUCKET, "ranker_id": "r1"}
+    with pytest.raises(ValueError, match="unknown features"):
+        RankerSettings(**base, ranker_exclude_features=["popularity"])
+    with pytest.raises(ValueError, match="no feature"):
+        RankerSettings(**base, ranker_exclude_features=list(FEATURES))

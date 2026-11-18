@@ -27,7 +27,7 @@ import numpy as np
 import torch
 
 from steam_training.batching import to_item_batch
-from steam_training.contracts import RecallMetrics, SegmentRecall
+from steam_training.contracts import Concentration, RecallMetrics, SegmentRecall
 from steam_training.data import (
     DAY_SECONDS,
     Catalog,
@@ -323,6 +323,74 @@ def weekly_top_candidates(
             language=language[part] if language is not None else None,
         )
     return games, scores
+
+
+def concentration(
+    score_fn: ScoreFn,
+    history: np.ndarray,
+    index: CatalogIndex,
+    seen: np.ndarray,
+    k: int,
+    batch_size: int,
+    exclude: Ragged | None = None,
+    language: np.ndarray | None = None,
+) -> Concentration:
+    """`Concentration` of the top-`k` lists of `history` rows over the catalog `index`
+    (`seen`: bool per game_idx the model trained on; beyond it: unseen)."""
+    games, scores = top_candidates(
+        score_fn, history, index, k, batch_size, exclude=exclude, language=language
+    )
+    return list_concentration(np.where(np.isfinite(scores), games, -1), seen)
+
+
+def list_concentration(lists: np.ndarray, seen: np.ndarray) -> Concentration:
+    """`Concentration` of ready lists: int64 [users, k] game_idx, best first, -1 = empty slot
+    (e.g. a ranker's re-ordered top k)."""
+    users, k = lists.shape
+    listed = lists[lists >= 0]
+    if not users or not len(listed):
+        return Concentration(
+            k=k, lists=users, reach=0.0, top_game_idx=-1, top10_share=0.0, unseen_share=0.0,
+            distinct=0,
+        )  # fmt: skip
+    ids, counts = np.unique(listed, return_counts=True)  # a game appears once per list
+    order = np.argsort(-counts, kind="stable")
+    inside = listed < len(seen)
+    known = np.zeros(len(listed), bool)
+    known[inside] = seen[listed[inside]]
+    return Concentration(
+        k=k,
+        lists=users,
+        reach=float(counts[order[0]]) / users,
+        top_game_idx=int(ids[order[0]]),
+        top10_share=float(counts[order[:10]].sum()) / len(listed),
+        unseen_share=float((~known).mean()),
+        distinct=len(ids),
+    )
+
+
+def model_concentration(
+    model: TwoTowerModel,
+    catalog: Catalog,
+    history: np.ndarray,
+    k: int,
+    batch_size: int,
+    device: torch.device = CPU,
+    exclude: Ragged | None = None,
+    language: np.ndarray | None = None,
+) -> Concentration:
+    """`concentration` of a model over `catalog` (normally `data.current_catalog`)."""
+    seen = model.item_tower.game_ids.seen_games.detach().cpu().numpy()
+    return concentration(
+        model_scores(model, catalog, batch_size, device),
+        history,
+        CatalogIndex.of(catalog, device),
+        seen,
+        k,
+        batch_size,
+        exclude=exclude,
+        language=language,
+    )
 
 
 def recall_from_ranks(ranks: torch.Tensor, is_warm: torch.Tensor, ks: list[int]) -> RecallMetrics:

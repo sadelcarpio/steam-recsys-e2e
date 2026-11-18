@@ -35,17 +35,30 @@ import numpy as np
 from steam_training.artifacts import ArtifactStore
 from steam_training.config import CHAMPION, PairSettings
 from steam_training.contracts import (
+    Concentration,
     ModelMetadata,
     PairEvaluation,
     PairRecord,
     PairReport,
     RankerMetadata,
 )
-from steam_training.data import TableSource
-from steam_training.evaluation import CatalogIndex, weekly_scores, weekly_top_candidates
+from steam_training.data import Catalog, TableSource, current_catalog
+from steam_training.evaluation import (
+    CatalogIndex,
+    list_concentration,
+    model_scores,
+    top_candidates,
+    weekly_scores,
+    weekly_top_candidates,
+)
 from steam_training.languages import load_review_languages
-from steam_training.ranker.data import epoch_seconds, load_ranker_data
-from steam_training.ranker.features import FEATURE_SCHEMA_VERSION, SECONDS_PER_DAY
+from steam_training.ranker.data import RankerRows, epoch_seconds, game_details, load_ranker_data
+from steam_training.ranker.features import (
+    FEATURE_SCHEMA_VERSION,
+    SECONDS_PER_DAY,
+    GameTable,
+    compute_features,
+)
 from steam_training.ranker.lists import candidate_lists, evaluate_lists, snapshots
 from steam_training.ranker.model import (
     FitResult,
@@ -132,6 +145,8 @@ def run_pair(
         raise ValueError(f"no query groups after {start} to compare the pairs on")
 
     device = resolve_device(settings.device)
+    # loaded on the CPU; scored on `device` (a GPU when DEVICE=cuda)
+    retrievers = {rid: (model.to(device).eval(), meta) for rid, (model, meta) in retrievers.items()}
     index = CatalogIndex.of(data.catalog, device)
     k, top_k = settings.pair_candidates, settings.pair_top_k
     ks = sorted({*REPORT_KS, top_k, settings.pair_retrieval_k, k})
@@ -157,6 +172,20 @@ def run_pair(
         )
         scored[rid] = (scores_at, groups)
 
+    # exposure over the current catalog for the most recent groups' users (the gate)
+    current = current_catalog(
+        source,
+        data.vocab.games,
+        with_tags=data.vocab.tags is not None,
+        with_recency=any(m.config.item_recency for m, _ in retrievers.values()),
+        snapshots=dict(data.snapshots),
+    )
+    recent = rows.take(np.arange(max(len(rows) - settings.pair_concentration_rows, 0), len(rows)))
+    exposure, final_exposure = current_exposure(
+        settings, source, data, current, recent, retrievers, rankers_, [champion, *challengers],
+        device,
+    )  # fmt: skip
+
     def evaluate(pair: Pair) -> PairEvaluation:
         scores_at, groups = scored[pair.retriever_id]
         fit = rankers_[pair.ranker_id][0] if pair.ranker_id else None
@@ -176,6 +205,8 @@ def run_pair(
             final=ranking_metrics(final, ks),
             retrieval=ranking_metrics(retrieval, ks),
             user_lists=user_lists,
+            concentration=exposure[pair.retriever_id],
+            final_concentration=final_exposure[pair],
         )
         log.info(
             "pair %s: recall@%d %.4f ndcg@%d %.4f (retrieval recall@%d %.4f, @%d %.4f)",
@@ -253,6 +284,73 @@ def apply_report(store: ArtifactStore, key: str) -> PairRecord:
     )
 
 
+def current_exposure(
+    settings: PairSettings,
+    source: TableSource,
+    data,
+    current: Catalog,
+    recent: RankerRows,
+    retrievers: dict[str, tuple],
+    rankers: dict[str, tuple],
+    pairs: list[Pair],
+    device,
+) -> tuple[dict[str, Concentration], dict[Pair, Concentration]]:
+    """Each retriever's top-`PAIR_CONCENTRATION_K` lists over the current catalog for the
+    recent groups' users, and each pair's final lists (its ranker re-orders the retriever's
+    top `PAIR_CANDIDATES` as of the newest group, on features of the current catalog)."""
+    k, top = settings.pair_candidates, settings.pair_concentration_k
+    snapshots = dict(data.snapshots)
+    for table in ("lkp_games", "game_details"):
+        snapshots.setdefault(table, source.snapshot_id(table))
+    price, release_day = game_details(source, snapshots, data.vocab.games)
+    games = GameTable.from_catalog(
+        current, data.vocab.games, data.vocab.tags or 0, data.vocab.genres,
+        data.vocab.categories, price=price, release_day=release_day,
+    )  # fmt: skip
+    index = CatalogIndex.of(current, device)
+    now = np.full(len(recent), int(recent.seconds.max()) if len(recent) else 0, np.int64)
+    history = recent.history[:, : settings.pair_history_length]
+    exposure: dict[str, Concentration] = {}
+    final: dict[Pair, Concentration] = {}
+    for rid, (model, _) in retrievers.items():
+        seen = model.item_tower.game_ids.seen_games.detach().cpu().numpy()
+        candidates, scores = top_candidates(
+            model_scores(model, current, settings.eval_batch_size, device),
+            recent.history,
+            index,
+            k,
+            settings.eval_batch_size,
+            exclude=recent.reviewed,
+            language=recent.language,
+        )
+        retrieved = np.where(np.isfinite(scores), candidates, -1)
+        exposure[rid] = list_concentration(retrieved[:, :top], seen)
+        for pair in (p for p in pairs if p.retriever_id == rid):
+            if pair.ranker_id is None:
+                final[pair] = exposure[rid]
+                continue
+            fit = rankers[pair.ranker_id][0]
+            ranked = np.empty(scores.shape, np.float64)
+            for start in range(0, len(recent), 2048):
+                part = slice(start, start + 2048)
+                x = compute_features(
+                    history[part], candidates[part], scores[part], now[part], games,
+                    data.popularity,
+                )  # fmt: skip
+                ranked[part] = fit.predict_features(x.reshape(-1, x.shape[-1])).reshape(x.shape[:2])
+            ranked[retrieved < 0] = -np.inf
+            order = np.argsort(-ranked, axis=1, kind="stable")[:, :top]
+            final[pair] = list_concentration(np.take_along_axis(retrieved, order, axis=1), seen)
+        for pair in (p for p in pairs if p.retriever_id == rid):
+            log.info(
+                "%s over the current catalog: top game (game_idx %d) in %.1f%% of top-%d lists "
+                "(retrieval order: %.1f%%), unseen games %.1f%% of slots",
+                pair, final[pair].top_game_idx, 100 * final[pair].reach, top,
+                100 * exposure[rid].reach, 100 * final[pair].unseen_share,
+            )  # fmt: skip
+    return exposure, final
+
+
 def decide_pair(
     champion: PairEvaluation,
     challengers: list[PairEvaluation],
@@ -262,6 +360,13 @@ def decide_pair(
     """The challenger pair to promote (None: keep the serving pair) and why."""
     k, rk, top = settings.pair_candidates, settings.pair_retrieval_k, settings.pair_top_k
     if retriever_changed:
+        exposure = challengers[0].concentration
+        if exposure is not None and exposure.reach > settings.pair_max_game_reach:
+            return None, (
+                f"retriever {challengers[0].retriever_id}: its most common game (game_idx "
+                f"{exposure.top_game_idx}) is in {exposure.reach:.1%} of top-{exposure.k} lists "
+                f"over the current catalog (> PAIR_MAX_GAME_REACH {settings.pair_max_game_reach})"
+            )
         new, old = challengers[0].retrieval, champion.retrieval
         if not new.recall[rk] > old.recall[rk] + settings.retriever_min_improvement:
             return None, (
@@ -273,15 +378,37 @@ def decide_pair(
                 f"retriever {challengers[0].retriever_id}: recall@{k} (the ranker's ceiling) "
                 f"drops {old.recall[k]:.4f} -> {new.recall[k]:.4f}"
             )
+    flooding = [
+        e for e in challengers
+        if e.final_concentration is not None
+        and e.final_concentration.reach > settings.pair_max_game_reach
+    ]  # fmt: skip
+    challengers = [e for e in challengers if e not in flooding]
+    if not challengers:
+        worst = max(flooding, key=lambda e: e.final_concentration.reach)
+        c = worst.final_concentration
+        return None, (
+            f"every challenger floods one game: {worst.retriever_id} + "
+            f"{worst.ranker_id or 'no ranker'} sends game_idx {c.top_game_idx} to {c.reach:.1%} "
+            f"of top-{c.k} lists over the current catalog (> PAIR_MAX_GAME_REACH "
+            f"{settings.pair_max_game_reach})"
+        )
     best = max(challengers, key=lambda e: (e.final.recall[top], e.final.ndcg[top]))
     name = f"{best.retriever_id} + {best.ranker_id or 'no ranker'}"
+    skipped = "".join(
+        f"; skipped {e.retriever_id} + {e.ranker_id or 'no ranker'} (game_idx "
+        f"{e.final_concentration.top_game_idx} in {e.final_concentration.reach:.1%} of lists)"
+        for e in flooding
+    )
     recall, base = best.final.recall[top], champion.final.recall[top]
     ndcg, base_ndcg = best.final.ndcg[top], champion.final.ndcg[top]
     if recall > base + settings.min_improvement and ndcg >= base_ndcg:
-        return best, f"{name}: recall@{top} {recall:.4f} > {base:.4f}, ndcg@{top} {ndcg:.4f}"
+        return best, (
+            f"{name}: recall@{top} {recall:.4f} > {base:.4f}, ndcg@{top} {ndcg:.4f}{skipped}"
+        )
     return None, (
         f"best pair {name}: recall@{top} {recall:.4f} vs {base:.4f} "
-        f"(+{settings.min_improvement}), ndcg@{top} {ndcg:.4f} vs {base_ndcg:.4f}"
+        f"(+{settings.min_improvement}), ndcg@{top} {ndcg:.4f} vs {base_ndcg:.4f}{skipped}"
     )
 
 

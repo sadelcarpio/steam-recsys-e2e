@@ -106,6 +106,21 @@ class TrainingSettings(_SsmSettings):
     # Probability of replacing a game_idx with OOV so the OOV row learns a generic item and
     # games without training interactions fall back to their content features.
     item_id_dropout: float = Field(0.1, ge=0, le=1)
+    # The same id dropout for the hard negatives (explicit, mined). Without it the OOV row only
+    # ever learns from positives (in-batch negatives are logQ-corrected, so a trending dropped
+    # target is barely pushed away), and a trending unseen game scores high for everyone.
+    hard_negative_id_dropout: float = Field(0.0, ge=0, le=1)
+    # A6: id dropout for games released at most NEW_ITEM_DAYS before the example (targets and
+    # hard negatives): the games that are unseen when serving. None = ITEM_ID_DROPOUT.
+    new_item_id_dropout: float | None = Field(None, ge=0, le=1)
+    new_item_days: int = Field(90, ge=1)
+    # A6: probability of zeroing an item's recency features in training (targets and hard
+    # negatives), so "trending this week" can't carry a score alone (popular games flooding)
+    recency_dropout: float = Field(0.0, ge=0, lt=1)
+    # Exposure check over the current catalog (`pipeline.current_concentration`): top-K lists of
+    # CONCENTRATION_ROWS warm validation users (0 = off).
+    concentration_rows: int = Field(20_000, ge=0)
+    concentration_k: int = Field(10, ge=1)
     # Steam user tags as an item feature (marts `game_tags` + `lkp_tags`, spec 8).
     use_game_tags: bool = True
     # A4 (spec 17): the user tower also reads a tag profile of the history (needs the tags)
@@ -201,6 +216,10 @@ class TrainingSettings(_SsmSettings):
             raise ValueError(f"primary_k={self.primary_k} must be one of recall_ks")
         if self.model_id == CHAMPION:
             raise ValueError(f"model_id '{CHAMPION}' is reserved")
+        if self.new_item_id_dropout is not None and not self.item_recency:
+            raise ValueError("NEW_ITEM_ID_DROPOUT needs ITEM_RECENCY (release dates)")
+        if self.recency_dropout and not self.item_recency:
+            raise ValueError("RECENCY_DROPOUT needs ITEM_RECENCY")
         if self.validation_fraction + self.test_fraction >= 0.5:
             raise ValueError("validation_fraction + test_fraction must be < 0.5")
         if self.game_embedding_dim % self.attention_heads:
@@ -221,6 +240,8 @@ class TrainingSettings(_SsmSettings):
 
 # Settings that do not change what is trained (a checkpoint stays valid when they change).
 NOT_FINGERPRINTED = {
+    "concentration_rows",
+    "concentration_k",
     "model_artifacts_bucket",
     "model_id",
     "glue_database",
@@ -302,6 +323,11 @@ class RankerSettings(_SsmSettings):
     ranker_early_stopping_rounds: int = Field(30, ge=1)
     ranker_min_data_in_leaf: int = Field(100, ge=1)
     ranker_feature_fraction: float = Field(0.8, gt=0, le=1)
+    # features left out of the ranker (names from `ranker.features.FEATURES`; the env takes a
+    # JSON list, RANKER_EXCLUDE_FEATURES='["log_positives"]'), e.g. the popularity ones,
+    # which pile the most popular games into every list. Inference and serving compute every
+    # feature; the ranker reads its subset.
+    ranker_exclude_features: list[str] = Field(default_factory=list)
     num_threads: int = Field(0, ge=0)  # 0 = LightGBM default
 
     # ---- report / gate ----
@@ -317,6 +343,13 @@ class RankerSettings(_SsmSettings):
             raise ValueError(f"ranker_id '{CHAMPION}' is reserved")
         if self.ranker_top_k > self.ranker_candidates:
             raise ValueError("RANKER_TOP_K must be <= RANKER_CANDIDATES")
+        from steam_training.ranker.features import FEATURES
+
+        unknown = sorted(set(self.ranker_exclude_features) - set(FEATURES))
+        if unknown:
+            raise ValueError(f"RANKER_EXCLUDE_FEATURES: unknown features {unknown}")
+        if set(FEATURES) <= set(self.ranker_exclude_features):
+            raise ValueError("RANKER_EXCLUDE_FEATURES leaves no feature")
         return self
 
 
@@ -358,6 +391,12 @@ class PairSettings(_SsmSettings):
     pair_list_users: int = Field(20_000, ge=0)
     pair_list_horizon_days: int = Field(7, ge=1)
     pair_list_max_snapshots: int = Field(4, ge=1)
+    # Exposure gate (`evaluation.concentration`): a new retriever whose top-PAIR_CONCENTRATION_K
+    # lists over the current catalog send their most common game to more than this share of
+    # recent users is rejected (the old champion: ~0.15 at k=10; the flooded 2155771: ~0.6).
+    pair_max_game_reach: float = Field(0.3, gt=0, le=1)
+    pair_concentration_k: int = Field(10, ge=1)
+    pair_concentration_rows: int = Field(20_000, ge=1)
     pair_popularity_source: Literal["mart", "interactions"] = "mart"
 
     # final list: recall@top_k must beat the serving pair by this much, NDCG@top_k not drop

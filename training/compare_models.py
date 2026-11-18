@@ -3,16 +3,22 @@ model's cutoff, so none trained on them), like promotion does, without writing a
 Usage (worktree training/): PYTHONPATH=src <venv>/python compare_models.py champion <id> ...
 Needs the same env as a training run (AWS_PROFILE, MODEL_ARTIFACTS_BUCKET, DATA_CACHE_DIR).
 With an A6 model (item recency) it also scores the weekly recent-popularity baseline, and
-prints recall@50 by activity bucket for every row of the table."""
+prints recall@50 by activity bucket for every row of the table, and each model's exposure over
+the current catalog (`concentration`: how many users' top 10 its most common game reaches).
+COMPARE_ONLY_CONCENTRATION=true skips the recall table."""
 
 import logging
+import os
 import sys
+
+import numpy as np
 
 from steam_training.artifacts import ArtifactStore
 from steam_training.config import TrainingSettings
-from steam_training.data import IcebergSource
+from steam_training.data import IcebergSource, current_catalog
 from steam_training.diagnostics import retrieval_diagnostics
 from steam_training.evaluation import (
+    model_concentration,
     model_scores,
     popularity_scores,
     rank_rows,
@@ -57,6 +63,31 @@ def diagnose(score_fn, rescore=None):
     )
     return retrieval_diagnostics(ranks, exposure, data.validation, ks)
 
+
+current = current_catalog(
+    source,
+    data.vocab.games,
+    with_tags=data.vocab.tags is not None,
+    with_recency=data.catalog.recency is not None,
+    snapshots=dict(data.snapshots),
+)
+warm = data.validation.take(np.flatnonzero(data.validation.is_warm))
+users = warm.sample(settings.concentration_rows, settings.seed)
+print(f"\nexposure over the current catalog ({len(current)} games), {len(users)} warm users:")
+print(
+    f"{'model':45s} {'reach@10':>9s} {'top game':>9s} {'top10':>7s} {'unseen':>7s} {'distinct':>8s}"
+)
+for name, model in models.items():
+    c = model_concentration(
+        model.to(device).eval(), current, users.history, settings.concentration_k,
+        settings.eval_batch_size, device, exclude=users.reviewed, language=users.language,
+    )  # fmt: skip
+    print(
+        f"{name:45s} {c.reach:9.3f} {c.top_game_idx:9d} {c.top10_share:7.3f} "
+        f"{c.unseen_share:7.3f} {c.distinct:8d}"
+    )
+if os.environ.get("COMPARE_ONLY_CONCENTRATION") == "true":
+    sys.exit(0)
 
 results = {}
 for name, model in models.items():

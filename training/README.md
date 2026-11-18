@@ -127,7 +127,9 @@ flowchart TB
   ranking. `HISTORY_DROPOUT` randomly truncates warm histories so short histories are learned
   well. Games without training interactions, and ids newer than the model's vocabularies, map to
   OOV (id 1). `ITEM_ID_DROPOUT` trains that OOV row, so new games are ranked by their content
-  features.
+  features. `HARD_NEGATIVE_ID_DROPOUT` does the same for the hard negatives, and (A6)
+  `NEW_ITEM_ID_DROPOUT` uses another rate for games released at most `NEW_ITEM_DAYS` (90) before
+  the example: see [unseen releases](#unseen-releases-flooding-2026-11-18).
 - **Steam user tags** (spec 8, `USE_GAME_TAGS=true` by default). Genres are too coarse ("Action"
   is on most AAA games); players' tags ("Psychological Horror", "Story Rich", "Noir") separate
   them. Steam's tag weights are normalized to sum 1 per game, so the bag is a weighted mean
@@ -488,6 +490,43 @@ Promoting an A6 + A7 retriever while a ranker serves (deploy first: ETL with the
    `APPLY_REPORT`;
 4. run inference.
 
+### Unseen releases flooding (2026-11-18)
+
+The first A6 + A7 champion (`2155771`, cutoff 2026-10-02) sent a few new releases to almost
+everyone: replaying 2,938 users' liked games online, Phantom Blade Zero was in 61% of top-10
+lists (the previous champion's most common game: 15%), Football Manager 27 in 32%, Queen's Domain
+in 23%, and the lists had half as many distinct games (1,751 vs 3,225). All three were released
+after the cutoff, so they are OOV: scored from content + recency only. The OOV row only ever
+learned from positives (dropped targets; as in-batch negatives a trending game's per-week logQ
+correction removes most of the push), so "OOV + trending" scores high for every user. Offline
+recall can't see it: validation is the 4 weeks after the cutoff, and the big releases came later.
+
+Two changes:
+- **Exposure check** (`evaluation.concentration`): each model's top 10 over the current catalog
+  (every released game now, A6 recency as of the newest week) for 20k warm validation users: the reach of
+  its most common game, the share of slots the top 10 games take, the unseen share. Logged by
+  every training run (`concentration/*`, `CONCENTRATION_ROWS` / `CONCENTRATION_K`), printed by
+  `compare_models.py` (`COMPARE_ONLY_CONCENTRATION=true`: only that), and a gate in `pair`
+  (`PAIR_MAX_GAME_REACH`).
+- **OOV training** (experiment): `HARD_NEGATIVE_ID_DROPOUT` (the OOV row also learns from games a
+  user skipped or disliked) and `NEW_ITEM_ID_DROPOUT` (a higher rate for recent releases, the
+  ones unseen when serving).
+
+First round (seed 42, same rows after the 2026-10-02 cutoff; reach = share of 20k users'
+top-10 lists, released games only):
+
+| Model | warm recall@50 | Phantom Blade Zero | Football Manager 27 | Counter-Strike 2 | top game |
+|---|---|---|---|---|---|
+| 2155771 (A6 + A7) | 0.3182 | 43.5% | 35.7% | 37.0% | Phantom Blade Zero |
+| `NEW_ITEM_ID_DROPOUT=0.5` | 0.3328 | 30.0% | 29.1% | 35.8% | Counter-Strike 2 |
+| + `HARD_NEGATIVE_ID_DROPOUT=0.1` | 0.3123 | | | | Counter-Strike 2, 38.2% |
+| 9cc8927 (A3, no recency) | 0.1998 | 0.0% | 0.1% | 0.6% | R.E.P.O., 26.2% |
+
+Halving the new releases' id only dilutes the flood, and A6 also concentrates on games it
+knows (Counter-Strike 2, Cyberpunk 2077 ~35%): recency pushes "trending this week" to
+everyone. Second round: `NEW_ITEM_ID_DROPOUT=1.0`, `RECENCY_DROPOUT` (zero the recency
+features of 30% of training items, so taste carries the score), and both.
+
 ## Evaluation
 
 For every **positive** validation review, the history as of before that review scores the whole
@@ -694,9 +733,15 @@ challengers; with a new retriever, the pairs (it + `RANKER_ID`), (it + the servi
 compared retrievers' split ends (cutoffs) and rankers' T2, so nothing compared was trained or
 selected on them:
 
-1. a new retriever: retrieval recall@`PAIR_RETRIEVAL_K` (50) must beat the serving one's by
-   `RETRIEVER_MIN_IMPROVEMENT`, and recall@`PAIR_CANDIDATES` (100, the ranker's ceiling) must
-   not drop;
+1. a new retriever: its exposure over the current catalog (every game now, recency as of the
+   newest week) must not flood one game: its most common game may reach at most
+   `PAIR_MAX_GAME_REACH` (0.3) of the top-`PAIR_CONCENTRATION_K` (10) lists of the
+   `PAIR_CONCENTRATION_ROWS` most recent groups' users. The same limit applies to each pair's
+   final lists (its ranker re-orders the top `PAIR_CANDIDATES` on features of the current
+   catalog): a ranker that piles popular games into everyone's top 10 is skipped for the next
+   best pair. Retrieval recall@`PAIR_RETRIEVAL_K` (50)
+   must beat the serving one's by `RETRIEVER_MIN_IMPROVEMENT`, and recall@`PAIR_CANDIDATES`
+   (100, the ranker's ceiling) must not drop;
 2. the best challenger's final recall@`PAIR_TOP_K` (20) must beat the serving pair's by
    `MIN_IMPROVEMENT`, with NDCG@20 not lower.
 
@@ -745,6 +790,11 @@ forwards them to the job:
 | `FIT_ON` | train | `train` (evaluate on validation) or `train+validation` (evaluate on test; needs `TEST_FRACTION` > 0) |
 | `COLD_ROW_FRACTION` | 0.1 | share of empty-history rows trained on |
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |
+| `HARD_NEGATIVE_ID_DROPOUT` | 0 | id dropout (to OOV) of the hard negatives too |
+| `NEW_ITEM_ID_DROPOUT` / `NEW_ITEM_DAYS` | unset / 90 | A6: id dropout rate of games released at most `NEW_ITEM_DAYS` before the example (targets and hard negatives); unset = `ITEM_ID_DROPOUT` |
+| `RANKER_EXCLUDE_FEATURES` | [] | `rank`: features left out of the ranker (JSON list of `ranker.features.FEATURES` names); inference and serving still compute all, the ranker reads its subset |
+| `RECENCY_DROPOUT` | 0 | A6: probability of zeroing an item's recency features in training (targets and hard negatives), so "trending this week" can't carry a score alone |
+| `CONCENTRATION_ROWS` / `CONCENTRATION_K` | 20000 / 10 | exposure over the current catalog logged by every run (0 rows = off) |
 | `LOGQ_CORRECTION` | true | |
 | `USER_TABLE_SYNC_STEPS` | 0 | also re-sync the user tower's frozen game table every N steps (0 = once per epoch; in epoch 1 that copy is the random init) |
 | `EXPLICIT_NEGATIVES` / `MINED_NEGATIVES` | true / true | hard negatives |

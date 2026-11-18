@@ -89,6 +89,7 @@ def run_ranking(
     test_idx = _subsample(np.arange(cut, len(rows)), settings.ranker_max_test_groups, rng)
 
     device = resolve_device(settings.device)
+    retriever = retriever.to(device).eval()  # loaded on the CPU; scored on `device`
     # A6: each group's candidates as of its ISO week
     scores_at = weekly_scores(retriever, data.catalog, settings.eval_batch_size, device)
     index = CatalogIndex.of(data.catalog, device)
@@ -138,7 +139,10 @@ def run_ranking(
 
     top_k = settings.ranker_top_k
     ks = sorted({*REPORT_KS, top_k})
-    fit = _fit(settings, train, FEATURES)
+    features = [f for f in FEATURES if f not in settings.ranker_exclude_features]
+    if settings.ranker_exclude_features:
+        log.info("ranker features: %s (left out: %s)", features, settings.ranker_exclude_features)
+    fit = _fit(settings, train, features)
     ranker_position = target_positions(fit.predict(test), test)
     retrieval_position = target_positions(retrieval_score(test), test)
     comparison = RankerComparison(
@@ -168,7 +172,9 @@ def run_ranking(
     if settings.ranker_ablation:
         base = comparison.ranker.recall[top_k]
         for family, names in FAMILIES.items():
-            kept = [f for f in FEATURES if f not in names]
+            kept = [f for f in features if f not in names]
+            if not kept or kept == features:
+                continue
             reduced = _fit(settings, train, kept)
             recall = ranking_metrics(target_positions(reduced.predict(test), test), [top_k])
             ablation[family] = recall.recall[top_k] - base

@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+import numpy as np
 import torch
 
 from steam_training.artifacts import ArtifactStore
@@ -13,6 +14,7 @@ from steam_training.batching import build_examples
 from steam_training.config import CHAMPION, TrainingSettings
 from steam_training.contracts import (
     ARCHITECTURE_VERSION,
+    Concentration,
     EmbeddingHealth,
     EvaluationReport,
     ModelEvaluation,
@@ -20,11 +22,12 @@ from steam_training.contracts import (
     RecallMetrics,
     RetrievalDiagnostics,
 )
-from steam_training.data import TableSource, TrainingData, load_training_data
+from steam_training.data import TableSource, TrainingData, current_catalog, load_training_data
 from steam_training.diagnostics import embedding_health, retrieval_diagnostics
 from steam_training.evaluation import (
     embed_catalog,
     evaluate,
+    model_concentration,
     model_scores,
     popularity_scores,
     rank_rows,
@@ -99,6 +102,54 @@ def _evaluate_all(
     }
     baseline = run(popularity_scores(data.train_positive_counts, data.catalog, device))
     return results, baseline
+
+
+def current_concentration(
+    settings: TrainingSettings,
+    source: TableSource,
+    data: TrainingData,
+    model: TwoTowerModel,
+    device: torch.device,
+) -> Concentration | None:
+    """The model's top-`CONCENTRATION_K` exposure over the current catalog (every game now,
+    recency as of the newest week) for a sample of warm validation users: catches a model that
+    sends one game (an unseen new release) to most users, which recall on the validation window
+    can't see. None when `CONCENTRATION_ROWS` is 0."""
+    if not settings.concentration_rows:
+        return None
+    warm = data.validation.take(np.flatnonzero(data.validation.is_warm))
+    rows = warm.sample(settings.concentration_rows, settings.seed)
+    catalog = current_catalog(
+        source,
+        data.vocab.games,
+        with_tags=data.vocab.tags is not None,
+        with_recency=model.config.item_recency,
+        snapshots=dict(data.snapshots),
+    )
+    result = model_concentration(
+        model.to(device).eval(),
+        catalog,
+        rows.history,
+        settings.concentration_k,
+        settings.eval_batch_size,
+        device,
+        exclude=rows.reviewed,
+        language=rows.language,
+    )
+    log.info(
+        "concentration@%d over the current catalog (%d games, %d users): the top game "
+        "(game_idx %d) reaches %.1f%% of lists, the top 10 fill %.1f%% of slots, unseen games "
+        "%.1f%%, %d distinct",
+        result.k,
+        len(catalog),
+        result.lists,
+        result.top_game_idx,
+        100 * result.reach,
+        100 * result.top10_share,
+        100 * result.unseen_share,
+        result.distinct,
+    )
+    return result
 
 
 # Warm validation rows embedded by the user tower for the collapse check.
@@ -249,6 +300,7 @@ def _train(
         item_health.mean_cosine,
         item_health.effective_rank,
     )
+    exposure = current_concentration(settings, source, data, model, device)
 
     metadata = ModelMetadata(
         model_id=settings.model_id,
@@ -267,6 +319,7 @@ def _train(
         model=diagnostics,
         popularity=baseline,
         recent_popularity=recent,
+        concentration=exposure,
         item_embeddings=item_health,
         user_embeddings=user_health,
     )

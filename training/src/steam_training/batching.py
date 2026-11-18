@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 
 from steam_training.contracts import OOV_ID, PADDING_ID
 from steam_training.data import (
+    NUM_RECENCY_FEATURES,
     Catalog,
     ItemFeatures,
     NegativeRows,
@@ -206,6 +207,10 @@ class Collator:
         *,
         history_dropout: float = 0.0,
         item_id_dropout: float = 0.0,
+        hard_negative_id_dropout: float = 0.0,
+        new_item_id_dropout: float | None = None,
+        new_item_days: int = 90,
+        recency_dropout: float = 0.0,
         explicit_negatives: bool = True,
         mined_negatives: bool = True,
         seed: int = 0,
@@ -215,6 +220,10 @@ class Collator:
         self.log_probs = log_probs
         self.history_dropout = history_dropout
         self.item_id_dropout = item_id_dropout
+        self.hard_negative_id_dropout = hard_negative_id_dropout
+        self.new_item_id_dropout = new_item_id_dropout
+        self.new_item_days = new_item_days
+        self.recency_dropout = recency_dropout
         self.explicit_negatives = explicit_negatives
         self.mined_negatives = mined_negatives
         self.seed = seed
@@ -239,6 +248,10 @@ class Collator:
             assert as_of is not None
             day = as_of[idx]
             numeric = np.concatenate([numeric, self.recency.features(target, day)], axis=1)
+            numeric = self._drop_recency(numeric)
+        if self.new_item_id_dropout is not None:  # new releases: the games unseen at serving
+            young = self._young(target, day)
+            dropped = np.where(young, self.rng.random(len(idx)) < self.new_item_id_dropout, dropped)
         items = to_item_batch(
             self.catalog.items.take(ex.catalog_row[idx]),
             game_idx=np.where(dropped, OOV_ID, target),
@@ -259,6 +272,38 @@ class Collator:
             language=self._language(idx),
             negatives=negatives,
         )
+
+    def _drop_recency(self, numeric: np.ndarray) -> np.ndarray:
+        """A6: zero an item's recency features w.p. `recency_dropout` (all four, so the
+        release reads as unknown), so taste has to carry the score and "trending this week"
+        can't win alone. Serving always has them."""
+        if not self.recency_dropout:
+            return numeric
+        dropped = self.rng.random(len(numeric)) < self.recency_dropout
+        numeric = numeric.copy()
+        numeric[dropped, -NUM_RECENCY_FEATURES:] = 0.0
+        return numeric
+
+    def _young(self, games: np.ndarray, day: np.ndarray | None) -> np.ndarray:
+        """Bool per game: released at most `new_item_days` before `day` (known release only)."""
+        assert self.recency is not None and day is not None, "NEW_ITEM_ID_DROPOUT needs A6"
+        release_day = self.recency.release_day
+        inside = (games >= 0) & (games < len(release_day))
+        release = np.where(inside, release_day[np.clip(games, 0, len(release_day) - 1)], -1)
+        age = np.asarray(day, np.int64) - release
+        return (release >= 0) & (age >= 0) & (age <= self.new_item_days)
+
+    def _negative_id_dropout(self, games: np.ndarray, day: np.ndarray | None) -> np.ndarray:
+        """Bool per hard negative: its id is replaced by OOV (same rates as the targets)."""
+        if not self.hard_negative_id_dropout and self.new_item_id_dropout is None:
+            return np.zeros(len(games), bool)
+        dropped = self.rng.random(len(games)) < self.hard_negative_id_dropout
+        if self.new_item_id_dropout is not None:
+            young = self._young(games, day)
+            dropped = np.where(
+                young, self.rng.random(len(games)) < self.new_item_id_dropout, dropped
+            )
+        return dropped
 
     def _language(self, idx: np.ndarray) -> torch.Tensor | None:
         """A7: the user's language, dropped to unknown w.p. LANGUAGE_DROPOUT (the online path
@@ -290,8 +335,12 @@ class Collator:
             numeric = np.concatenate(
                 [base_numeric(items), self.recency.features(items.game_idx, day)], axis=1
             )
+            numeric = self._drop_recency(numeric)
+        dropped = self._negative_id_dropout(np.where(valid, games, NO_GAME), day)
         return HardNegatives(
-            items=to_item_batch(items, numeric=numeric),
+            items=to_item_batch(
+                items, game_idx=np.where(dropped, OOV_ID, items.game_idx), numeric=numeric
+            ),
             game_idx=torch.from_numpy(np.where(valid, games, NO_GAME)),
             valid=torch.from_numpy(valid),
         )

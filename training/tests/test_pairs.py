@@ -156,6 +156,12 @@ def test_a6_retriever_through_ranker_and_pair(settings, store, user_language):
         ("a6", None),
     }
     assert (store.read_pair().retriever_id, store.read_pair().ranker_id) == ("a6", "k6")
+    # exposure over the current catalog: the retriever's lists and each pair's final ones
+    for evaluation in [report.champion, *report.challengers]:
+        assert evaluation.concentration is not None and evaluation.final_concentration is not None
+        assert evaluation.final_concentration.lists == evaluation.concentration.lists > 0
+    alone = next(c for c in report.challengers if c.ranker_id is None)
+    assert alone.final_concentration == alone.concentration
 
 
 def test_launcher_modes():

@@ -911,6 +911,60 @@ def catalog_at(
     return catalog_from_table(latest, num_games)
 
 
+def current_catalog(
+    source: TableSource,
+    num_games: int,
+    *,
+    with_tags: bool,
+    with_recency: bool,
+    snapshots: dict[str, int | None] | None = None,
+) -> Catalog:
+    """Every game as serving scores it now: its newest `game_features` row, its current tags
+    and (`with_recency`) A6 recency as of the newest week of `game_popularity_weekly`. Games
+    unreleased in `game_details` (spec 10: never recommended) are left out. Reads the current
+    snapshots unless `snapshots` pins them (missing tables are added to it)."""
+    snapshots = {} if snapshots is None else snapshots
+    tables = ["game_features", "game_details", "lkp_games", *(["game_tags"] if with_tags else [])]
+    tables += RECENCY_TABLES if with_recency else []
+    for table in tables:
+        if table not in snapshots:
+            snapshots[table] = source.snapshot_id(table)
+    latest = latest_game_rows(
+        source.batches("game_features", GAME_FEATURE_COLUMNS, snapshots["game_features"]),
+        num_games,
+    )
+    unreleased = unreleased_games(
+        source.batches("game_details", ["game_id", "game_coming_soon"], snapshots["game_details"]),
+        source.batches("lkp_games", ["game_idx", "game_id"], snapshots["lkp_games"]),
+    )
+    latest = latest.filter(
+        pc.invert(pc.is_in(latest["game_idx"], value_set=pa.array(unreleased, pa.int64())))
+    )
+    if with_tags:
+        tags = source.batches("game_tags", GAME_TAG_COLUMNS, snapshots["game_tags"])
+        latest = attach_game_tags(latest, tags, num_games)
+    catalog = catalog_from_table(latest, num_games)
+    if not with_recency:
+        return catalog
+    recency = load_recency(source, snapshots, num_games)
+    weeks = recency.counts.keys & 0xFFFF
+    newest = int(weeks.max()) if len(weeks) else int(week_of_day(0))
+    return replace(catalog, recency=recency).at_day(int(week_start_day(newest)))
+
+
+def unreleased_games(
+    detail_batches: Iterable[pa.RecordBatch], lookup_batches: Iterable[pa.RecordBatch]
+) -> np.ndarray:
+    """game_idx of the games `game_details` marks as coming soon (spec 10)."""
+    details = pa.Table.from_batches(list(detail_batches))
+    lookup = pa.Table.from_batches(list(lookup_batches))
+    if details.num_rows == 0 or lookup.num_rows == 0:
+        return np.zeros(0, np.int64)
+    soon = details.filter(pc.fill_null(details["game_coming_soon"], False))["game_id"]
+    keep = pc.is_in(lookup["game_id"], value_set=soon.combine_chunks())
+    return _int64(lookup.filter(keep)["game_idx"])
+
+
 def attach_game_tags(
     latest: pa.Table, tag_batches: Iterable[pa.RecordBatch], num_games: int
 ) -> pa.Table:
