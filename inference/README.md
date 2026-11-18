@@ -54,8 +54,8 @@ steam_marts (Iceberg, pyiceberg)
    features of `steam_training.ranker.features`: the user's last liked games, the catalog's
    tags / developers / genres, `game_details` price and release date, and popularity from the
    `game_popularity_weekly` mart as of the run (the weeks before its week). `RANKER_MODE`:
-   `shadow` (default) computes the ranker order and logs its overlap with retrieval order, but
-   writes retrieval order; `on` writes the ranker's top `RANKER_TOP_K` (20); `off` skips it.
+   `on` (default) writes the ranker's top `RANKER_TOP_K` (20); `shadow` computes the ranker
+   order and logs its overlap with retrieval order, but writes retrieval order; `off` skips it.
    A failing chunk of users keeps retrieval order. Anything else (no pair, a pair with another
    retriever, a missing mart, an old feature schema) keeps retrieval order and the summary's
    `ranker_reason` says why. Item scores stay the retrieval cosine (in list order).
@@ -264,7 +264,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `USER_INDEX_PREFIX` | `serving/users` | Demo user index (spec 13), `index.bin` + `index.json` (dry runs: `online/index.*`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
 | `TOP_K` | 30 | Candidates kept and written per user (no ranker, or `RANKER_MODE=shadow`) |
-| `RANKER_MODE` | shadow | Spec 9 ranker: `off`, `shadow` (compared, not written) or `on` (Terraform `inference_ranker_mode`) |
+| `RANKER_MODE` | on | Spec 9 ranker: `off`, `shadow` (compared, not written) or `on` (Terraform `inference_ranker_mode`) |
 | `RETRIEVAL_CANDIDATES` / `RANKER_TOP_K` | 100 / 20 | Candidates the ranker re-orders / written with `RANKER_MODE=on` (`EXPLAIN_TOP_N` must be <= it) |
 | `ONLINE_CHECK_USERS` | 20000 | Users whose lists the next run scores (delayed-label check); `0` = off |
 | `MAX_USERS` | 0 (all) | Only the N most active users. Scheduled runs: 200000 (SSM, `inference_max_users`, spec 14) |
