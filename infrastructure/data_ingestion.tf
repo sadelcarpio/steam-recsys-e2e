@@ -307,7 +307,7 @@ resource "aws_ecs_task_definition" "scraping" {
 
   runtime_platform {
     operating_system_family = "LINUX"
-    cpu_architecture        = "X86_64"
+    cpu_architecture        = "ARM64" # spec 14: Graviton, multi-arch image
   }
 
   container_definitions = jsonencode([{
@@ -378,7 +378,7 @@ resource "aws_ecs_task_definition" "anonymize_raw_reviews" {
 
   runtime_platform {
     operating_system_family = "LINUX"
-    cpu_architecture        = "X86_64"
+    cpu_architecture        = "ARM64" # spec 14: Graviton, multi-arch image
   }
 
   container_definitions = jsonencode([{
