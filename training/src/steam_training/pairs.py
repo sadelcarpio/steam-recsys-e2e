@@ -145,6 +145,8 @@ def run_pair(
         raise ValueError(f"no query groups after {start} to compare the pairs on")
 
     device = resolve_device(settings.device)
+    # loaded on the CPU; scored on `device` (a GPU when DEVICE=cuda)
+    retrievers = {rid: (model.to(device).eval(), meta) for rid, (model, meta) in retrievers.items()}
     index = CatalogIndex.of(data.catalog, device)
     k, top_k = settings.pair_candidates, settings.pair_top_k
     ks = sorted({*REPORT_KS, top_k, settings.pair_retrieval_k, k})

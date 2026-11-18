@@ -89,6 +89,7 @@ def run_ranking(
     test_idx = _subsample(np.arange(cut, len(rows)), settings.ranker_max_test_groups, rng)
 
     device = resolve_device(settings.device)
+    retriever = retriever.to(device).eval()  # loaded on the CPU; scored on `device`
     # A6: each group's candidates as of its ISO week
     scores_at = weekly_scores(retriever, data.catalog, settings.eval_batch_size, device)
     index = CatalogIndex.of(data.catalog, device)
