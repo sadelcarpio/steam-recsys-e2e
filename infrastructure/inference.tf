@@ -73,6 +73,7 @@ resource "aws_ssm_parameter" "inference" {
     RERANK_BLEND_WEIGHT    = tostring(var.inference_rerank_blend_weight)
     RERANK_SHUFFLE         = tostring(var.inference_rerank_shuffle)
     RANKER_MODE            = var.inference_ranker_mode
+    EXPLANATION_LANGUAGE   = var.inference_explanation_language
   }
   name  = "${local.inference_ssm_prefix}/${each.key}"
   type  = "String"

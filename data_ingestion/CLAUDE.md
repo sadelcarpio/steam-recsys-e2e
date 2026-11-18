@@ -35,8 +35,9 @@ ids). Human docs: `README.md`.
     `reviews_scraping/scraper.py` (+ `__main__.py` for `python -m`): forward pass, then the
     backward (backfill) pass through `SteamClient.iter_review_pages(until_ts=...)`
   - `tags_scraping/scraper.py`: one task per run, every `scraped` / `pending` appid, tags via
-    `SteamClient.get_game_tags` (GetItems, ≤ 200 ids per call) + `get_tag_list` (names). Both
-    endpoints are keyless and undocumented; responses are validated (`GameTagsRecord`)
+    `SteamClient.get_game_tags` (GetItems, ≤ 200 ids per call; `StoreItem`: tags + content
+    descriptors, spec 19) + `get_tag_list` (names). Both endpoints are keyless and
+    undocumented; responses are validated (`GameTagsRecord`)
   - `anonymize.py`: `hash_user_id` (HMAC-SHA256 of the SteamID64, 63 bits) and
     `resolve_user_id_key` (secret `data-ingestion/user-id-hmac-key`, or `USER_ID_HMAC_KEY`)
   - `anonymize_raw_reviews.py`: one-off (ECS task `anonymize-raw-reviews`), rewrites the raw
@@ -87,7 +88,8 @@ ids). Human docs: `README.md`.
   non-zero so Step Functions retries). Never exit 0 on a stop: the partition would count as done.
 - Tags: output only adds rows (`game_tags/<date>-<part>`, `next_part_number`); the ETL keeps
   the latest `scraped_at` per appid. A failed batch is skipped (budget `MAX_FAILURE_RATIO`), a
-  tag id without a name is dropped, a game without tags writes no row.
+  tag id without a name is dropped, a game without tags writes no row. `content_descriptors`
+  (spec 19) is sorted and `[]` when the game declares none (GetItems omits the field then).
 - Partition keys: `games/<run_id>/appids-NNN.json`, `reviews/<run_id>/part-NNN.json`.
   The worker id in the output names comes from `NNN`.
 - No SteamID64 is ever stored or logged: `build_review_record` hashes the author into

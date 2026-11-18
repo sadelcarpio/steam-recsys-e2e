@@ -41,6 +41,7 @@ GAME_TAGS_SCHEMA = pl.Schema(
         "tag_ids": pl.List(pl.Int64),
         "tag_names": pl.List(pl.String),
         "tag_weights": pl.List(pl.Int64),
+        "content_descriptors": pl.List(pl.Int64),
         "scraped_at": pl.Int64,
         "scrape_date": pl.Date,
     }

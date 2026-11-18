@@ -252,6 +252,16 @@ variable "inference_rerank_stages" {
   }
 }
 
+variable "inference_explanation_language" {
+  description = "Language of the LLM explanations and their template fallback: en (default since 2026-11-18, the frontend's default) or es."
+  type        = string
+  default     = "en"
+  validation {
+    condition     = contains(["en", "es"], var.inference_explanation_language)
+    error_message = "inference_explanation_language must be en or es."
+  }
+}
+
 variable "inference_rerank_blend_weight" {
   description = "Final order = ascending w * llm_rank + (1 - w) * retrieval_rank (1 = LLM order, 0 = retrieval order)."
   type        = number

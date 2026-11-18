@@ -1,5 +1,7 @@
 -- One row per tags scrape of a game (spec 8): tag names and Steam's weights as aligned arrays,
 -- in the scraper's order (weight descending). Names trimmed; pairs without a name dropped.
+-- content_descriptors (spec 19): Steam's mature content descriptors, sorted, [] when the game
+-- declares none, null for scrapes before they were kept.
 with scrapes as (
     select
         cast(appid as bigint) as game_id,
@@ -13,6 +15,7 @@ with scrapes as (
             ),
             t -> t.name is not null
         ) as tags,
+        content_descriptors,
         cast(scraped_at as bigint) as scraped_at,
         scrape_date
     from {{ source('steam', 'game_tags') }}
@@ -23,6 +26,8 @@ select
     game_id,
     transform(tags, t -> t.name) as game_tags,
     transform(tags, t -> t.weight) as game_tag_weights,
+    array_sort(array_distinct(filter(content_descriptors, d -> d is not null)))
+        as game_content_descriptors,
     scraped_at,
     scrape_date
 from scrapes

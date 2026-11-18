@@ -33,8 +33,8 @@ Browser ──► CloudFront
 - **English and Spanish UI.** Every text the app renders is in `src/i18n.ts`, in both
   languages (Steam's genre names are translated in Spanish). English by default; `?lang=es` /
   `?lang=en` or the header link switches it and remembers the choice (localStorage). Game
-  names, descriptions and the LLM explanations (written in Spanish by inference) are shown as
-  the data has them.
+  names, descriptions and the LLM explanations (written by inference in one language,
+  `EXPLANATION_LANGUAGE`: English by default) are shown as the data has them.
 - Images come straight from Steam's CDN (`header_image`).
 
 Infrastructure: `infrastructure/frontend.tf` (+ the CloudFront Functions in

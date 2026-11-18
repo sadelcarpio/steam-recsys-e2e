@@ -61,6 +61,8 @@ TABLES = [
 TAG_TABLES = ["lkp_tags", "game_tags"]
 # Tags listed per game in the rerank prompt (the heaviest ones).
 PROMPT_TAGS = 5
+# Steam's content descriptors (spec 19) in the `game_tags` mart; older marts lack the column.
+CONTENT_DESCRIPTORS_COLUMN = "game_content_descriptors"
 # Rows buffered before the latest-row-per-user reduction runs again.
 REDUCE_ROWS = 1_000_000
 
@@ -89,6 +91,16 @@ class Games:
     tag_names: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=object))
     # bool per catalog row: unreleased at its latest scrape (spec 10); None = all released
     coming_soon: np.ndarray | None = None
+    # int64 per catalog row (spec 19): Steam's content descriptors as a bitmask (bit d set =
+    # descriptor d declared, 0 = none declared), -1 when not known; None = not loaded
+    content_descriptors: np.ndarray | None = None
+
+    def has_descriptor(self, descriptor: int) -> np.ndarray:
+        """bool per catalog row: the game declares `descriptor` (false when not known)."""
+        if self.content_descriptors is None:
+            return np.zeros(len(self), dtype=bool)
+        known = self.content_descriptors >= 0
+        return known & ((self.content_descriptors >> descriptor) & 1).astype(bool)
 
     def __len__(self) -> int:
         return len(self.catalog)
@@ -277,10 +289,14 @@ def load_games(
         num_games,
     )
     tag_names = np.zeros(0, dtype=object)
+    descriptors = None
     if set(TAG_TABLES) <= set(snapshots):
         tags = source.batches("game_tags", GAME_TAG_COLUMNS, snapshots["game_tags"])
         latest = attach_game_tags(latest, tags, num_games)
         tag_names = _lookup_names(source, "lkp_tags", snapshots["lkp_tags"])
+        descriptors = _content_descriptors(
+            source, snapshots["game_tags"], _int64(latest["game_idx"]), num_games
+        )
     else:
         log.warning("marts %s not found: games without Steam tags", TAG_TABLES)
     game_id = _int64(latest["game_id"])
@@ -294,7 +310,41 @@ def load_games(
         description=details.description,
         tag_names=tag_names,
         coming_soon=details.coming_soon,
+        content_descriptors=descriptors,
     )
+
+
+def _content_descriptors(
+    source: TableSource, snapshot_id: int | None, game_idx: np.ndarray, num_games: int
+) -> np.ndarray | None:
+    """Per catalog row, the `game_tags` mart's content descriptors as a bitmask (`Games`); -1
+    for games without a row or scraped before they were kept. None when the mart predates
+    them (spec 19: the column is added by the first ETL run after the deploy)."""
+    by_game = np.full(num_games, -1, dtype=np.int64)
+    try:
+        batches = list(
+            source.batches("game_tags", ["game_idx", CONTENT_DESCRIPTORS_COLUMN], snapshot_id)
+        )
+    except (KeyError, ValueError) as exc:  # pyiceberg: ValueError, unknown column
+        log.warning(
+            "game_tags has no %s (%s): no content descriptors", CONTENT_DESCRIPTORS_COLUMN, exc
+        )
+        return None
+    for batch in batches:
+        for g, descriptors in zip(
+            batch["game_idx"].to_pylist(),
+            batch[CONTENT_DESCRIPTORS_COLUMN].to_pylist(),
+            strict=True,
+        ):
+            if g is None or not 0 <= g < num_games or descriptors is None:
+                continue
+            by_game[g] = sum(1 << d for d in set(descriptors) if d is not None and 0 <= d < 63)
+    inside = (game_idx >= 0) & (game_idx < num_games)
+    out = np.where(inside, by_game[np.clip(game_idx, 0, num_games - 1)], -1)
+    log.info(
+        "content descriptors known for %d of %d catalog games", int((out >= 0).sum()), len(out)
+    )
+    return out
 
 
 def with_recency_as_of(

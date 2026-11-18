@@ -80,7 +80,7 @@ Order: EventBridge → 1 → 2 → 3 → 4
 - scraping tasks ↔ DynamoDB `game-ids-state`, `reviews-state-cursor` (read/write scrape state)
 - scraping tasks → S3 `raw-steam-data-<account-id>/games/*.parquet`, `raw-steam-data-<account-id>/reviews/*.parquet`
   (reviews: newest first, then a per-run backfill of older reviews, spec 6), `raw-steam-data-<account-id>/game_tags/*.parquet`
-  (Steam user tags, spec 8). Review authors are stored only as a pseudonymous `user_id` (keyed
+  (Steam user tags, spec 8, and content descriptors, spec 19: inference's adult filter). Review authors are stored only as a pseudonymous `user_id` (keyed
   hash of the SteamID64, spec 13)
 
 ### Data lake

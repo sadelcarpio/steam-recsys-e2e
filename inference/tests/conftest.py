@@ -156,24 +156,38 @@ def user_index_table(reviews: dict[int, list[tuple[int, bool]]]) -> pa.Table:
 N_TAGS = 8
 
 
-def add_tags(marts: dict[str, pa.Table], tags_of=None) -> dict[str, pa.Table]:
-    """Marts `lkp_tags` ("Tag 0".."Tag 7") and `game_tags` (weight descending). Default: every
-    game but the last gets Tag (idx % 8) and Tag ((idx + 1) % 8)."""
+def add_tags(
+    marts: dict[str, pa.Table], tags_of=None, weights_of=None, descriptors_of=None
+) -> dict[str, pa.Table]:
+    """Marts `lkp_tags` ("Tag 0".."Tag 7") and `game_tags` (weight descending, or
+    `weights_of(game_idx)`). Default: every game but the last gets Tag (idx % 8) and Tag
+    ((idx + 1) % 8). `descriptors_of(game_idx)`: the content descriptors (spec 19; None =
+    scraped before them); without it the mart has no such column (an older mart)."""
     games = marts["lkp_games"]["game_idx"].to_pylist()
     tags_of = tags_of or (lambda g: [FIRST_GAME + g % N_TAGS, FIRST_GAME + (g + 1) % N_TAGS])
+
+    def weights(g: int, tags: list[int]) -> list[float]:
+        given = weights_of(g) if weights_of else None
+        return given or [100.0 * (len(tags) - i) for i in range(len(tags))]
+
     rows = [
-        {"game_idx": g, "game_tags": tags, "game_tag_weights": [100.0 * (len(tags) - i)
-                                                               for i in range(len(tags))]}
+        {
+            "game_idx": g,
+            "game_tags": tags,
+            "game_tag_weights": weights(g, tags),
+            **({"game_content_descriptors": descriptors_of(g)} if descriptors_of else {}),
+        }
         for g in games[:-1]
         if (tags := tags_of(g))
-    ]  # fmt: skip
-    schema = pa.schema(
-        [
-            ("game_idx", pa.int64()),
-            ("game_tags", LIST_TYPE),
-            ("game_tag_weights", pa.list_(pa.float64())),
-        ]
-    )
+    ]
+    fields = [
+        ("game_idx", pa.int64()),
+        ("game_tags", LIST_TYPE),
+        ("game_tag_weights", pa.list_(pa.float64())),
+    ]
+    if descriptors_of:
+        fields.append(("game_content_descriptors", pa.list_(pa.int64())))
+    schema = pa.schema(fields)
     return {
         **marts,
         "lkp_tags": pa.table(

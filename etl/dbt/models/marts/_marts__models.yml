@@ -51,6 +51,12 @@ models:
         description: Ids from lkp_tags, by weight descending.
       - name: game_tag_weights
         description: Steam's tag weights (relative votes), aligned with game_tags.
+      - name: game_content_descriptors
+        description: >
+          Steam's mature content descriptors of the same scrape (spec 19), sorted: 1 some
+          nudity or sexual content, 2 frequent violence or gore, 3 adult only sexual content,
+          4 frequent nudity or sexual content, 5 general mature content. Empty when the game
+          declares none, null when scraped before they were kept.
       - name: scraped_at
         description: Unix seconds of the scrape the tags come from.
 

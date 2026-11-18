@@ -237,6 +237,7 @@ def run_inference(
                 stages=settings.rerank_enabled_stages,
                 blend_weight=settings.rerank_blend_weight,
                 shuffle=settings.rerank_shuffle,
+                language=settings.explanation_language,
             ),
             concurrency=settings.rerank_concurrency,
         )

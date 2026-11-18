@@ -59,6 +59,17 @@ class GameTag:
 
 
 @dataclass(frozen=True)
+class StoreItem:
+    """What the tags scraper keeps of a GetItems store item."""
+
+    tags: list[GameTag]  # top tags, weight descending
+    # Steam's mature content descriptors (the developer's survey), sorted: 1 some nudity or
+    # sexual content, 2 frequent violence or gore, 3 adult only sexual content, 4 frequent
+    # nudity or sexual content, 5 general mature content. Empty when the game declares none.
+    content_descriptors: list[int]
+
+
+@dataclass(frozen=True)
 class ReviewPage:
     reviews: list[dict[str, Any]]
     # Only present on the first page (cursor="*").
@@ -191,9 +202,9 @@ class SteamClient:
         tags = (body.get("response") or {}).get("tags") or []
         return {int(t["tagid"]): str(t["name"]) for t in tags if "tagid" in t and t.get("name")}
 
-    def get_game_tags(self, appids: list[int], tag_count: int = 20) -> dict[int, list[GameTag]]:
-        """Top `tag_count` user tags of each app, by weight descending. Apps Steam does not know
-        (or with no tags) are left out."""
+    def get_game_tags(self, appids: list[int], tag_count: int = 20) -> dict[int, StoreItem]:
+        """Top `tag_count` user tags of each app, by weight descending, with its content
+        descriptors. Apps Steam does not know (or with no tags) are left out."""
         if len(appids) > MAX_STORE_ITEMS_PER_CALL:
             raise ValueError(f"at most {MAX_STORE_ITEMS_PER_CALL} appids per GetItems call")
         request = {
@@ -204,7 +215,7 @@ class SteamClient:
         body = self._get_json(
             STORE_ITEMS_URL, {"input_json": json.dumps(request, separators=(",", ":"))}, "GetItems"
         )
-        out: dict[int, list[GameTag]] = {}
+        out: dict[int, StoreItem] = {}
         for item in (body.get("response") or {}).get("store_items") or []:
             appid = item.get("appid") or item.get("id")
             if item.get("success") != 1 or appid is None:
@@ -215,7 +226,12 @@ class SteamClient:
                 if "tagid" in t
             ]
             if tags:
-                out[int(appid)] = sorted(tags, key=lambda t: -t.weight)[:tag_count]
+                # `content_descriptorids` is absent (not []) when the game declares none
+                descriptors = {int(d) for d in item.get("content_descriptorids") or []}
+                out[int(appid)] = StoreItem(
+                    tags=sorted(tags, key=lambda t: -t.weight)[:tag_count],
+                    content_descriptors=sorted(descriptors),
+                )
         return out
 
     def _get_app_reviews(self, request: dict[str, Any]) -> dict[str, Any]:

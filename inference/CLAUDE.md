@@ -2,7 +2,8 @@
 
 Specs: `specs/4-inference-pipeline.md`, `specs/7-rerank-two-stage.md` (two-stage rerank +
 evaluation), `specs/9-ranking-model.md` (the ranker, delayed-label check), `specs/10-coming-soon-games.md` (unreleased games),
-`specs/13-anonymize-user-ids.md` (pseudonymous user ids, demo user index).
+`specs/13-anonymize-user-ids.md` (pseudonymous user ids, demo user index),
+`specs/19-content-descriptors.md` (adult filter).
 Human docs: `README.md`.
 
 ## Layout
@@ -39,7 +40,9 @@ Human docs: `README.md`.
   - `rerank.py`: stage 3, two calls per user. `llm_ranking` (shuffled prompt,
     `permutation_error` + one retry, else retrieval order), `blend`, then explanations of the
     final top N checked by `explanation_problem` (no candidate name, grounded, length), one
-    re-ask of the failed ones, `template_explanation` for the rest. `rerank_user` /
+    re-ask of the failed ones, `template_explanation` for the rest (both in
+    `EXPLANATION_LANGUAGE`: `system_prompt` / `explain_prompt` / `explain_tool` / `TEMPLATES`
+    per `Language`, English by default; candidate lines and the ranking prompt stay English). `rerank_user` /
     `rerank_all` (threads, per-user failure isolation, `RerankStats`), `BedrockRerankLlm`
     (forced tools with min/max items, token usage per stage)
   - `evaluate_rerank.py`: `python -m steam_inference.evaluate_rerank`: cohort active after
@@ -64,8 +67,11 @@ Human docs: `README.md`.
     None when missing / empty, raises when not exactly 1..n), `encode_user_index` (int64 LE),
     published by `BundleStore.publish_user_index` (index.bin, then index.json pinned to its
     version; `UserIndexManifest`)
-  - `adult.py`: `adult_mask` / `is_adult` (Steam's "Sexual Content" / "Nudity" genres, an
-    explicit word in the name, or the adult Steam tags of `ADULT_TAGS` / top `ADULT_TOP_TAGS`)
+  - `adult.py`: `adult_mask` / `is_adult` (Steam's content descriptor 3, "Adult Only Sexual
+    Content", spec 19; the "Sexual Content" / "Nudity" genres; an explicit word in the name;
+    or the `ADULT_TAGS` holding `ADULT_TAG_SHARE` of the tag votes, `ADULT_TOP_TAG_SHARE` when
+    one is the most voted tag). `Games.content_descriptors` (bitmask, -1 unknown, None when
+    the mart predates the column) comes from the `game_tags` mart
   - `pipeline.py`: `run_inference` (skip when the model is missing), `ChangedOnly` (filters
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`

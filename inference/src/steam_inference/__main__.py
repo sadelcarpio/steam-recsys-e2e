@@ -67,6 +67,7 @@ def main() -> None:
             temperature=settings.rerank_temperature,
             region=settings.aws_region,
             concurrency=settings.rerank_concurrency,
+            language=settings.explanation_language,
         )
     run_inference(
         settings,

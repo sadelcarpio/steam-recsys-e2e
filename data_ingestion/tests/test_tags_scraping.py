@@ -15,7 +15,13 @@ from steam_ingestion.models import GameTagsRecord
 from steam_ingestion.schemas import GAME_TAGS_SCHEMA
 from steam_ingestion.shutdown import Shutdown, ShutdownRequested
 from steam_ingestion.state import GameIdsState
-from steam_ingestion.steam_api import STORE_ITEMS_URL, TAG_LIST_URL, GameTag, SteamClient
+from steam_ingestion.steam_api import (
+    STORE_ITEMS_URL,
+    TAG_LIST_URL,
+    GameTag,
+    SteamClient,
+    StoreItem,
+)
 from steam_ingestion.storage import list_keys
 from steam_ingestion.tags_scraping.scraper import build_tags_record, games_to_tag, scrape_tags
 
@@ -31,7 +37,9 @@ def _requested_appids(call: responses.Call) -> list[int]:
 
 
 def _mock_steam(
-    tags_by_appid: dict[int, list[tuple[int, int]]], failing: frozenset[int] = frozenset()
+    tags_by_appid: dict[int, list[tuple[int, int]]],
+    failing: frozenset[int] = frozenset(),
+    descriptors: dict[int, list[int]] | None = None,
 ):
     responses.get(
         TAG_LIST_URL,
@@ -49,6 +57,11 @@ def _mock_steam(
                 "id": a,
                 "success": 1,
                 "tags": [{"tagid": t, "weight": w} for t, w in tags],
+                **(
+                    {"content_descriptorids": descriptors[a]}
+                    if descriptors and a in descriptors
+                    else {}
+                ),
             }
             if (tags := tags_by_appid.get(a)) is not None
             else {"id": a, "success": 15}
@@ -80,13 +93,14 @@ def test_games_to_tag_keeps_scraped_and_pending(aws: SimpleNamespace) -> None:
 
 def test_build_tags_record_drops_unknown_tag_ids() -> None:
     tags = [GameTag(19, 900), GameTag(99999, 500), GameTag(1742, 100)]
-    record = build_tags_record(7, tags, NAMES, 1_700_000_000, TODAY)
+    record = build_tags_record(7, StoreItem(tags, [1, 3]), NAMES, 1_700_000_000, TODAY)
     assert record is not None
     assert record.tag_ids == [19, 1742]
     assert record.tag_names == ["Action", "Story Rich"]
     assert record.tag_weights == [900, 100]
-    assert build_tags_record(7, [GameTag(99999, 1)], NAMES, 0, TODAY) is None
-    assert build_tags_record(7, [], NAMES, 0, TODAY) is None
+    assert record.content_descriptors == [1, 3]
+    assert build_tags_record(7, StoreItem([GameTag(99999, 1)], [3]), NAMES, 0, TODAY) is None
+    assert build_tags_record(7, StoreItem([], []), NAMES, 0, TODAY) is None
 
 
 def test_tags_record_lists_must_align() -> None:
@@ -106,7 +120,7 @@ def test_scrape_tags_writes_one_row_per_tagged_game(
     aws: SimpleNamespace, settings: IngestionSettings, client: SteamClient
 ) -> None:
     _seed(aws, {1: "scraped", 2: "pending", 3: "scraped", 4: "unavailable", 5: "scraped"})
-    _mock_steam({1: [(1742, 100), (19, 900)], 2: [(1667, 50)], 3: []})
+    _mock_steam({1: [(1742, 100), (19, 900)], 2: [(1667, 50)], 3: []}, descriptors={1: [5, 1, 2]})
     settings = settings.model_copy(update={"tags_batch_size": 2, "tags_flush_every": 1})
 
     assert scrape_tags(settings, client, aws.s3, aws.dynamodb, today=TODAY, clock=lambda: 42.0)
@@ -116,6 +130,7 @@ def test_scrape_tags_writes_one_row_per_tagged_game(
     assert df["appid"].to_list() == [1, 2]  # 3 has no tags, 5 is unknown to Steam
     assert df["tag_names"].to_list() == [["Action", "Story Rich"], ["Horror"]]  # by weight
     assert df["tag_weights"].to_list() == [[900, 100], [50]]
+    assert df["content_descriptors"].to_list() == [[1, 2, 5], []]  # 2 declares none
     assert df["scraped_at"].to_list() == [42, 42]
     assert df["scrape_date"].to_list() == [TODAY, TODAY]
     # unavailable games are never requested; batches of 2 ids
