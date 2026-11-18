@@ -138,6 +138,7 @@ def test_explain_only_is_the_default():
 
     assert InferenceSettings.model_fields["rerank_enabled_stages"].default == "explain"
     assert InferenceSettings.model_fields["explain_top_n"].default == 3
+    assert InferenceSettings.model_fields["ranker_mode"].default == "on"
 
 
 def test_rerank_disabled(settings, source, store, champion):
