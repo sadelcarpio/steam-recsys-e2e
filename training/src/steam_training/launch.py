@@ -147,17 +147,79 @@ def training_job_request(
     }
 
 
+LOG_GROUP = "/aws/sagemaker/TrainingJobs"
+NOT_FOUND = "ResourceNotFoundException"
+
+
+class LogTail:
+    """Prints the job's new CloudWatch log lines (its streams are `<job name>/algo-1-...`), so
+    the workflow shows the job's progress. Best effort: a read error is logged once and the
+    tail stops, the wait goes on."""
+
+    def __init__(self, logs, name: str, write=print):
+        self.logs, self.name, self.write = logs, name, write
+        self.start_ms = 0
+        self.seen: set[str] = set()  # event ids at `start_ms` (filter_log_events is inclusive)
+        self.broken = False
+
+    def poll(self) -> int:
+        if self.broken:
+            return 0
+        printed = 0
+        kwargs = {
+            "logGroupName": LOG_GROUP,
+            "logStreamNamePrefix": f"{self.name}/",
+            "startTime": self.start_ms,
+        }
+        try:
+            while True:
+                page = self.logs.filter_log_events(**kwargs)
+                for event in page.get("events", []):
+                    if event["eventId"] in self.seen:
+                        continue
+                    if event["timestamp"] > self.start_ms:
+                        self.start_ms, self.seen = event["timestamp"], set()
+                    self.seen.add(event["eventId"])
+                    self.write(event["message"].rstrip())
+                    printed += 1
+                token = page.get("nextToken")
+                if not token:
+                    return printed
+                kwargs["nextToken"] = token
+        except Exception as err:  # noqa: BLE001 - the tail must never fail the launch
+            if getattr(err, "response", {}).get("Error", {}).get("Code") == NOT_FOUND:
+                return printed  # no log stream yet (the job is still starting)
+            log.warning("stopped printing the job's logs: %s", err)
+            self.broken = True
+            return printed
+
+
 def wait_for_job(
-    sagemaker, name: str, timeout_seconds: float, poll_seconds: float = 60, clock=time.monotonic
+    sagemaker,
+    name: str,
+    timeout_seconds: float,
+    poll_seconds: float = 60,
+    clock=time.monotonic,
+    tail: LogTail | None = None,
 ) -> dict:
     """Poll until the job ends or `timeout_seconds` pass (then it is returned still running:
-    the job itself keeps going, only the workflow stops watching it)."""
+    the job itself keeps going, only the workflow stops watching it). With `tail`, the job's new
+    log lines are printed at every poll, and once more at the end."""
     deadline = clock() + timeout_seconds
+    status = None
     while True:
         job = sagemaker.describe_training_job(TrainingJobName=name)
+        if tail is not None:
+            tail.poll()
         if job["TrainingJobStatus"] in TERMINAL or clock() >= deadline:
+            if tail is not None and job["TrainingJobStatus"] in TERMINAL:
+                time.sleep(min(poll_seconds, 10))  # the last lines reach CloudWatch late
+                tail.poll()
             return job
-        log.info("%s: %s / %s", name, job["TrainingJobStatus"], job.get("SecondaryStatus"))
+        current = (job["TrainingJobStatus"], job.get("SecondaryStatus"))
+        if current != status:  # status lines only on a change: the job's logs say the rest
+            log.info("%s: %s / %s", name, *current)
+            status = current
         time.sleep(poll_seconds)
 
 
@@ -243,6 +305,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--instance-type", help="override INSTANCE_TYPE (e.g. ml.g4dn.xlarge)")
     # GitHub OIDC credentials of the deploy role last 1 h: stop watching before they expire.
     parser.add_argument("--wait-minutes", type=float, default=50)
+    parser.add_argument(
+        "--no-logs", action="store_true", help="don't print the job's CloudWatch logs while waiting"
+    )
     args = parser.parse_args(argv)
     configure_logging("INFO")
 
@@ -266,7 +331,10 @@ def main(argv: list[str] | None = None) -> int:
     sagemaker.create_training_job(**request)
     log.info("started %s (%s)", name, settings.instance_type)
 
-    job = wait_for_job(sagemaker, name, args.wait_minutes * 60)
+    tail = None
+    if not args.no_logs:
+        tail = LogTail(boto3.client("logs", region_name=settings.aws_region), name)
+    job = wait_for_job(sagemaker, name, args.wait_minutes * 60, tail=tail)
     status = job["TrainingJobStatus"]
     log.info("%s: %s %s", name, status, job.get("FailureReason", ""))
     if status == "InProgress":

@@ -818,7 +818,8 @@ items = model.item_tower(to_item_batch(features))  # steam_training.batching.to_
   (`torch_variant=cu128`: `training:<sha>-cu128`), then starts the SageMaker training job
   `steam-recsys-train-<sha12>-<ts>` on `instance_type` (default SSM `INSTANCE_TYPE`,
   `ml.m5.2xlarge`). The deploy role's credentials last 1 h, so the workflow watches the job for
-  `wait_minutes` (50). A longer job keeps running, and its result is in CloudWatch
+  `wait_minutes` (50), printing the job's own log lines (CloudWatch, data loading, epochs,
+  recall) in the workflow log as they arrive (`--no-logs` turns that off). A longer job keeps running, and its result is in CloudWatch
   (`/aws/sagemaker/TrainingJobs`) and `models/<sha>/metadata.json`. Re-running the same commit
   resumes from its checkpoint.
 - *training promote* (manual, inputs `retriever_id`, optional `image_tag`): runs the promotion job and
