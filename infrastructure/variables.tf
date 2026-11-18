@@ -163,9 +163,21 @@ variable "training_instance_type" {
 }
 
 variable "training_pipeline_image_tag" {
-  description = "Image tag of ECR training the training Step Function runs by default (training image CD moves :latest on merges). GPU retriever runs pass retriever_image_tag = <sha>-cu128 in the execution input."
+  description = "Image tag of ECR training the training Step Function's CPU jobs run by default (ranker, pair evaluation, promotion; training image CD moves :latest on merges)."
   type        = string
   default     = "latest"
+}
+
+variable "training_pipeline_retriever_image_tag" {
+  description = "Image tag of ECR training the training Step Function's retriever job runs by default: the GPU build (training image CD moves :latest-cu128 on merges). A CPU retriever: \"latest\" with a CPU instance."
+  type        = string
+  default     = "latest-cu128"
+}
+
+variable "training_pipeline_retriever_instance_type" {
+  description = "SageMaker instance of the training Step Function's retriever job (GPU, needs a training job quota). The A6 + A7 recipe needs ~32 GB RAM: ml.g4dn.xlarge (16 GB) runs out of memory on the real marts."
+  type        = string
+  default     = "ml.g5.2xlarge"
 }
 
 variable "training_pipeline_cpu_instance_type" {

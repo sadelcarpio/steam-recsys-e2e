@@ -62,7 +62,7 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # cpu: <sha> + latest (what promote and later runs use); cu128: <sha>-cu128
+      # cpu: <sha> + latest (what promote and later runs use); cu128: <sha>-cu128 + latest-cu128
       - name: Build and push training image
         id: image
         env:
@@ -72,9 +72,8 @@ jobs:
           if [ "$VARIANT" = cpu ]; then TAG="$GITHUB_SHA"; else TAG="$GITHUB_SHA-$VARIANT"; fi
           docker build --build-arg TORCH_VARIANT="$VARIANT" -t "$REPO:$TAG" .
           docker push "$REPO:$TAG"
-          if [ "$VARIANT" = cpu ]; then
-            docker tag "$REPO:$TAG" "$REPO:latest" && docker push "$REPO:latest"
-          fi
+          if [ "$VARIANT" = cpu ]; then LATEST=latest; else LATEST="latest-$VARIANT"; fi
+          docker tag "$REPO:$TAG" "$REPO:$LATEST" && docker push "$REPO:$LATEST"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Train on SageMaker

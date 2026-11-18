@@ -815,7 +815,7 @@ items = model.item_tower(to_item_batch(features))  # steam_training.batching.to_
 
 - *training CI* (PRs and main, `training/**`): ruff, tests, image build.
 - *training CD* (manual, from `main`): tests, pushes `training:<sha>` and `:latest` to ECR
-  (`torch_variant=cu128`: `training:<sha>-cu128`), then starts the SageMaker training job
+  (`torch_variant=cu128`: `training:<sha>-cu128` and `:latest-cu128`), then starts the SageMaker training job
   `steam-recsys-train-<sha12>-<ts>` on `instance_type` (default SSM `INSTANCE_TYPE`,
   `ml.m5.2xlarge`). The deploy role's credentials last 1 h, so the workflow watches the job for
   `wait_minutes` (50), printing the job's own log lines (CloudWatch, data loading, epochs,

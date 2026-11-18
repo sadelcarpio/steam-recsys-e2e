@@ -42,9 +42,14 @@ ARN=$(aws stepfunctions list-state-machines \
   --query "stateMachines[?name=='steam-recsys-training'].stateMachineArn" --output text)
 # name: letters, digits and hyphens, at most 40 (SageMaker job names derive from it)
 aws stepfunctions start-execution --state-machine-arn "$ARN" --name ct-2026-11 --input '{}'
-# GPU retriever (a training CD run with torch_variant=cu128 pushed training:<sha>-cu128):
-#   --input '{"retriever_image_tag": "<sha>-cu128", "retriever_instance_type": "ml.g4dn.xlarge"}'
+# a specific commit's GPU image (training image CD pushes <sha>-cu128 on every training merge):
+#   --input '{"retriever_image_tag": "<sha>-cu128", "image_tag": "<sha>"}'
 ```
+
+Defaults: the champion's recipe (A3 + A4 + A6 + A7) on a GPU retriever
+(`training_pipeline_retriever_image_tag` = `latest-cu128`,
+`training_pipeline_retriever_instance_type` = `ml.g5.2xlarge`: `ml.g4dn.xlarge`'s 16 GB run out
+of memory), the other jobs on the CPU image `latest` and `training_pipeline_cpu_instance_type`.
 
 Input keys (all optional): `image_tag`, `retriever_image_tag`, `retriever_instance_type`,
 `cpu_instance_type`, `run_inference`, and `retriever_env` / `ranker_env` / `pair_env` (env maps

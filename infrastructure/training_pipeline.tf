@@ -3,7 +3,11 @@
 # schedule); the weekly data pipeline (orchestration.tf) is separate.
 #
 #   aws stepfunctions start-execution --state-machine-arn <arn> --name <name ≤ 40 chars> \
-#     --input '{"retriever_image_tag": "<sha>-cu128", "retriever_instance_type": "ml.g4dn.xlarge"}'
+#     --input '{}'
+#
+# The retriever trains on GPU by default (training_pipeline_retriever_image_tag
+# `latest-cu128`, pushed by training image CD on every training merge;
+# training_pipeline_retriever_instance_type); the other jobs run the CPU image.
 #
 # Every input key is optional (defaults: local.training_pipeline_defaults). Ids follow the
 # execution name: retriever `ct-<name>`, ranker `ct-<name>-rank`, the dry-run report
@@ -19,17 +23,20 @@ locals {
   # default map, so pass the whole recipe when changing it).
   training_pipeline_defaults = {
     image_tag               = var.training_pipeline_image_tag
-    retriever_image_tag     = var.training_pipeline_image_tag
-    retriever_instance_type = var.training_instance_type
+    retriever_image_tag     = var.training_pipeline_retriever_image_tag
+    retriever_instance_type = var.training_pipeline_retriever_instance_type
     cpu_instance_type       = var.training_pipeline_cpu_instance_type
     run_inference           = true
-    # the champion's recipe (A3 len 20 attention + A4 tag profile), on time-based windows
+    # the champion's recipe (A3 len 20 attention + A4 tag profile + A6 item recency + A7 user
+    # language; champion 2155771, 2026-11-18), on time-based windows
     retriever_env = {
       HOLDOUT_WEEKS         = "6"
       TEST_WEEKS            = "2"
       HISTORY_LENGTH        = "20"
       HISTORY_ENCODER       = "attention"
       USER_TAG_PROFILE      = "true"
+      ITEM_RECENCY          = "true"
+      USER_LANGUAGE         = "true"
       EPOCHS                = "3"
       BATCH_SIZE            = "4096"
       LEARNING_RATE         = "0.005"
