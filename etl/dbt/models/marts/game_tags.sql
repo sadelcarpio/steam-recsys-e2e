@@ -1,10 +1,14 @@
-{{ config(unique_key='game_id') }}
+{{ config(unique_key='game_id', on_schema_change='append_new_columns') }}
 
 -- Current Steam user tags of every catalog game (spec 8): its latest tags scrape, encoded with
 -- lkp_tags, with Steam's weights in the same order (weight descending). Static per game, like
 -- its genres: not time-versioned (later votes leak into older training rows, accepted).
 -- Incremental: scrapes since the latest loaded scrape_date minus games_lookback_days; only
 -- games whose scrape is newer than the loaded one (or new to the mart) are merged.
+-- game_content_descriptors (spec 19): Steam's mature content descriptors of the same scrape
+-- (3 = adult only sexual content, inference's adult filter), [] = none declared, null = scraped
+-- before they were kept. Added with append_new_columns: old rows stay null until the next
+-- tags scrape (every run) merges them.
 
 with source_window as (
     select *
@@ -40,6 +44,7 @@ select
     l.game_idx,
     {{ encode_array('s.game_tags', 'm.tags') }} as game_tags,
     transform(s.game_tag_weights, w -> cast(w as double)) as game_tag_weights,
+    s.game_content_descriptors,
     s.scraped_at,
     s.scrape_date,
     {{ batch_timestamp() }} as _batch_at

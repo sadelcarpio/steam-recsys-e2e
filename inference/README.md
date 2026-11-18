@@ -146,10 +146,13 @@ steam_marts (Iceberg, pyiceberg)
 8. **Adult games** (`adult.py`) are excluded from everything the run publishes: retrieval
    (never a candidate, so never recommended or explained), the popularity fallback, the
    online catalog and the search index, and liked adult games stay out of LLM prompts. A game
-   is adult when it has Steam's "Sexual Content" / "Nudity" genre or an explicit word in its
-   name (hentai, nsfw, porn…): the genres alone miss most of them, and `required_age` mostly
-   marks violence. With the tag marts, also a game tagged `NSFW` / `Hentai`, or with
-   `Sexual Content` / `Nudity` among its top 5 tags (lower down they also tag mainstream RPGs). About 2,500 of 176k games today. `EXCLUDE_ADULT=false` turns it off.
+   is adult when it declares Steam's content descriptor 3, "Adult Only Sexual Content" (spec
+   19, the developer's own answer, what Steam hides by default), has Steam's "Sexual Content" /
+   "Nudity" genre, or has an explicit word in its name (hentai, nsfw, porn…). With the tag
+   marts, also when `NSFW` / `Hentai` / `Sexual Content` / `Nudity` hold at least 17% of its tag
+   votes (10% when one of them is its most voted tag). Mature mainstream games (Cyberpunk 2077,
+   GTA V, The Witcher 3: descriptors 1, 2, 5, adult tags at 7-16%) stay in.
+   `EXCLUDE_ADULT=false` turns it off.
    **Unreleased games** (`game_details.game_coming_soon`, spec 10, about 50k) are excluded the
    same way, always: they cannot have been played, and their details are only refreshed when
    they are re-scraped after the release.
@@ -215,7 +218,8 @@ item with the serving package, so a contract change that breaks serving fails he
 `recommendations` is ordered best first: the LLM order when `reranked`, the model order
 otherwise. `score` is the two-tower cosine similarity, so it is not monotonic after reranking.
 The first `EXPLAIN_TOP_N` entries of a reranked list always have an `explanation` (written in
-Spanish, set in the prompts in `rerank.py`), and only those. `score` and
+`EXPLANATION_LANGUAGE`, English by default, Spanish with `es`; the prompts and the templates are
+in `rerank.py`), and only those. `score` and
 `generated_at` are as of the last write: an unchanged list keeps them. `user_id` is the
 pseudonymous id of spec 13 (a keyed hash of the SteamID64, never the SteamID itself) as a
 string, because it exceeds JavaScript's safe integers.
@@ -275,6 +279,7 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `EXPLAIN_TOP_N` | 3 | Explained recommendations per explained user (the `RERANK_MAX_USERS` most active) |
 | `RERANK_ENABLED_STAGES` | `explain` | Keep the retriever's / ranker's order and only explain it; `rank+explain`: the LLM reorders first (Terraform `inference_rerank_stages`) |
 | `RERANK_BLEND_WEIGHT` | 1.0 | Final order = `w * llm_rank + (1 - w) * retrieval_rank` (Terraform `inference_rerank_blend_weight`) |
+| `EXPLANATION_LANGUAGE` | `en` | Language of the explanations, LLM and template alike: `en` or `es` (Terraform `inference_explanation_language`). A change rewrites every explained user once (the text is in `content_hash`) |
 | `RERANK_SHUFFLE` | true | Shuffle the ranking prompt's candidates, seeded by the user id (Terraform `inference_rerank_shuffle`) |
 | `RERANK_TEMPERATURE` / `RERANK_MAX_TOKENS` | 0.2 / 2000 | Explanations' temperature (the ranking always uses 0) / max output tokens per call |
 | `RERANK_DESCRIPTION_CHARS` | 200 | Short description per prompt game, cut at a word boundary; `0` = none (the mart `game_details` is then not read) |

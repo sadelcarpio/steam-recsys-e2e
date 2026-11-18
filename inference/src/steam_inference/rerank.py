@@ -43,13 +43,29 @@ RANK_TOOL = "submit_ranking"
 EXPLAIN_TOOL = "submit_explanations"
 MAX_EXPLANATION_CHARS = 600
 Stages = Literal["rank+explain", "explain"]
-SYSTEM_PROMPT = (
-    "You are a Steam game recommendation assistant. A recommender model retrieved candidate "
-    "games for one user; you help order them using the games the user liked, and you explain "
-    "the best picks to the user. Use only the information given. Write every explanation in "
-    'Spanish (neutral Latin American, informal "tú"). Always answer by calling the tool you '
-    "are given."
-)
+# Language of the explanations (`EXPLANATION_LANGUAGE`): the prompts ask for it and the
+# templates are written in it. The candidate lines and the ranking stay in English.
+Language = Literal["en", "es"]
+LANGUAGE_NAMES: dict[Language, str] = {
+    "en": "English",
+    "es": 'Spanish (neutral Latin American, informal "tú")',
+}
+# how the explain prompt addresses the user, per language
+ADDRESS: dict[Language, str] = {
+    "en": 'addressed to the user as "you"',
+    "es": 'addressed to the user as "tú"',
+}
+
+
+def system_prompt(language: Language = "en") -> str:
+    return (
+        "You are a Steam game recommendation assistant. A recommender model retrieved candidate "
+        "games for one user; you help order them using the games the user liked, and you "
+        "explain the best picks to the user. Use only the information given. Write every "
+        f"explanation in {LANGUAGE_NAMES[language]}. Always answer by calling the tool you are "
+        "given."
+    )
+
 
 # Steam genre names (English in the lookups) as a Spanish explanation may write them.
 GENRES_ES = {
@@ -92,6 +108,7 @@ class RerankOptions:
     stages: Stages = "rank+explain"
     blend_weight: float = 1.0  # 1 = LLM order, 0 = retrieval order
     shuffle: bool = True
+    language: Language = "en"  # of the template explanations (the LLM's is its own setting)
 
 
 class RerankLlm(Protocol):
@@ -133,15 +150,18 @@ def rank_prompt(liked: list[str], candidates: list[str], error: str | None = Non
     return "\n".join(lines)
 
 
-def explain_prompt(liked: list[str], candidates: list[str], note: str | None = None) -> str:
+def explain_prompt(
+    liked: list[str], candidates: list[str], note: str | None = None, language: Language = "en"
+) -> str:
     n = len(candidates)
+    language_name = LANGUAGE_NAMES[language].split(" (")[0]
     lines = _liked_lines(liked)
     lines += ["", "Games recommended to this user (they have NOT played them yet):"]
     lines += [f"{i}. {game}" for i, game in enumerate(candidates, start=1)]
     lines += [
         "",
         f"Call {EXPLAIN_TOOL} with exactly {n} explanations, one per recommended game number "
-        f'(1-{n}): one or two sentences in Spanish, addressed to the user as "tú", on why the '
+        f"(1-{n}): one or two sentences in {language_name}, {ADDRESS[language]}, on why the "
         "game fits their taste. Name at least one game from the liked list by its exact name, "
         "or a genre or developer they share. Keep game names as given. Do not name the "
         "recommended game itself (your text is shown next to it), and never say the user "
@@ -227,20 +247,46 @@ def _genre_es(genre: str) -> str:
     return GENRES_ES.get(genre.casefold(), genre)
 
 
-def template_explanation(candidate: GameInfo, liked: list[GameInfo]) -> str:
+# template_explanation's sentences per language: {game}, {studio}, {genre} filled from the data
+TEMPLATES: dict[Language, dict[str, str]] = {
+    "en": {
+        "studio": "Because you liked {game}, from the same studio ({studio}).",
+        "genre": "Because you liked {game}, which is also {genre}.",
+        "liked": "Because you liked {game}.",
+        "taste": "Fits your taste for {genre} games.",
+        "reviews": "Recommended from your reviews.",
+    },
+    "es": {
+        "studio": "Porque te gustó {game}, del mismo estudio ({studio}).",
+        "genre": "Porque te gustó {game}, que también es de {genre}.",
+        "liked": "Porque te gustó {game}.",
+        "taste": "Encaja con tu gusto por los juegos de {genre}.",
+        "reviews": "Recomendado a partir de tus reseñas.",
+    },
+}
+
+
+def template_explanation(
+    candidate: GameInfo, liked: list[GameInfo], language: Language = "en"
+) -> str:
     """A grounded explanation built from the data (the last resort of stage 2)."""
+    text = TEMPLATES[language]
+
+    def genre(name: str) -> str:
+        return _genre_es(name) if language == "es" else name
+
     for game in liked:
         shared = [d for d in game.developers if d in candidate.developers]
         if shared:
-            return f"Porque te gustó {game.name}, del mismo estudio ({shared[0]})."
+            return text["studio"].format(game=game.name, studio=shared[0])
         shared = [g for g in game.genres if g in candidate.genres]
         if shared:
-            return f"Porque te gustó {game.name}, que también es de {_genre_es(shared[0])}."
+            return text["genre"].format(game=game.name, genre=genre(shared[0]))
     if liked:
-        return f"Porque te gustó {liked[0].name}."
+        return text["liked"].format(game=liked[0].name)
     if candidate.genres:
-        return f"Encaja con tu gusto por los juegos de {_genre_es(candidate.genres[0])}."
-    return "Recomendado a partir de tus reseñas."
+        return text["taste"].format(genre=genre(candidate.genres[0]))
+    return text["reviews"]
 
 
 # ---- ordering ---------------------------------------------------------------------------------
@@ -330,7 +376,9 @@ def rerank_user(llm: RerankLlm, request: RerankRequest, options: RerankOptions) 
         # nothing came from the LLM (e.g. Bedrock unavailable): the user keeps retrieval order
         raise rank_error or explain_error  # type: ignore[misc]
     for position in pending:
-        explanations[position] = template_explanation(request.candidates[position], request.liked)
+        explanations[position] = template_explanation(
+            request.candidates[position], request.liked, options.language
+        )
     return Reranked(
         order=order,
         explanations=explanations,
@@ -413,7 +461,7 @@ def rank_tool(n: int) -> dict:
     }
 
 
-def explain_tool(n: int) -> dict:
+def explain_tool(n: int, language: Language = "en") -> dict:
     return {
         "toolSpec": {
             "name": EXPLAIN_TOOL,
@@ -435,7 +483,10 @@ def explain_tool(n: int) -> dict:
                                     },
                                     "text": {
                                         "type": "string",
-                                        "description": "Why it fits this user (Spanish).",
+                                        "description": (
+                                            "Why it fits this user "
+                                            f"({LANGUAGE_NAMES[language].split(' (')[0]})."
+                                        ),
                                     },
                                 },
                                 "required": ["candidate", "text"],
@@ -487,9 +538,11 @@ class BedrockRerankLlm:
         region: str,
         concurrency: int = 10,
         invalid_answer_retries: int = 2,
+        language: Language = "en",
         client=None,
     ) -> None:
         self.model_id = model_id
+        self.language = language
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.invalid_answer_retries = invalid_answer_retries
@@ -521,8 +574,8 @@ class BedrockRerankLlm:
     ) -> dict[int, str]:
         answer = self._call(
             "explain",
-            explain_prompt(liked, candidates, note),
-            explain_tool(len(candidates)),
+            explain_prompt(liked, candidates, note, self.language),
+            explain_tool(len(candidates), self.language),
             temperature=self.temperature,
             parse=lambda r: parse_tool_input(r, EXPLAIN_TOOL, LlmExplanations),
         )
@@ -542,7 +595,7 @@ class BedrockRerankLlm:
         name = tool["toolSpec"]["name"]
         response = self.client.converse(
             modelId=self.model_id,
-            system=[{"text": SYSTEM_PROMPT}],
+            system=[{"text": system_prompt(self.language)}],
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             toolConfig={"tools": [tool], "toolChoice": {"tool": {"name": name}}},
             inferenceConfig={"maxTokens": self.max_tokens, "temperature": temperature},

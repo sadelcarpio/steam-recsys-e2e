@@ -150,17 +150,56 @@ def test_filter_catalog_keeps_names_aligned():
     assert [got[o[i] : o[i + 1]].decode() for i in range(2)] == ["A", "Ç"]
 
 
-def test_mask_by_tags(marts):
-    # Tag 0 = "NSFW" anywhere; Tag 1 = "Nudity" only among the top 5 tags
-    tags_by_game = {
-        4: [FIRST_GAME + 5, FIRST_GAME + 6, FIRST_GAME + 0],  # NSFW, 3rd tag
-        5: [FIRST_GAME + 1],  # Nudity, top tag
-        6: [FIRST_GAME + t for t in (2, 3, 4, 5, 6, 7, 1)],  # Nudity, 7th tag: mainstream
+def test_mask_by_tag_votes(marts):
+    """Tag 0 = "NSFW", Tag 1 = "Nudity", Tag 2 = "Sexual Content": what counts is their share of
+    the game's tag votes (real data, 2026-11-18: Cyberpunk 2077 7%, adult-only games 20-66%)."""
+    other = [FIRST_GAME + t for t in (3, 4, 5, 6, 7)]
+    tags_and_votes = {
+        # adult-only: Nudity + Sexual Content hold 60% of the votes
+        4: ([FIRST_GAME + 1, FIRST_GAME + 2, *other[:2]], [40.0, 20.0, 25.0, 15.0]),
+        # under 17% (16.8%) but Nudity is the most voted tag (e.g. House Party)
+        5: ([FIRST_GAME + 1, *other], [10.0, 9.9, 9.9, 9.9, 9.9, 9.9]),
+        # mature mainstream: Nudity 3rd with 8% of the votes (Cyberpunk 2077)
+        6: ([other[0], other[1], FIRST_GAME + 1, *other[2:]], [30.0, 22.0, 8.0, 20.0, 12.0, 8.0]),
+        # troll tag: NSFW last with 1% (Marvel Rivals' "Hentai")
+        7: ([*other, FIRST_GAME + 0], [30.0, 25.0, 24.0, 10.0, 10.0, 1.0]),
+        # 12%, not on top: mainstream (GTA V Enhanced 11%)
+        8: ([other[0], FIRST_GAME + 2, *other[1:]], [40.0, 12.0, 20.0, 10.0, 9.0, 9.0]),
     }
-    tagged = add_tags(marts, tags_of=lambda g: tags_by_game.get(g, [FIRST_GAME + 7]))
+    tagged = add_tags(
+        marts,
+        tags_of=lambda g: tags_and_votes.get(g, ([FIRST_GAME + 7], None))[0],
+        weights_of=lambda g: tags_and_votes.get(g, (None, None))[1],
+    )
     names = tagged["lkp_tags"].to_pylist()
-    names[0]["name"], names[1]["name"] = "NSFW", "Nudity"
+    for i, name in enumerate(["NSFW", "Nudity", "Sexual Content"]):
+        names[i]["name"] = name
     tagged["lkp_tags"] = pa.Table.from_pylist(names)
     data = load_inference_data(FakeSource(tagged))
     flagged = {int(g) for g in data.games.catalog.items.game_idx[adult_mask(data.games)]}
-    assert flagged == {4, 5}  # 6 has "Nudity" only as its 7th tag
+    assert flagged & set(tags_and_votes) == {4, 5}
+
+
+def test_mask_by_content_descriptors(marts):
+    """Spec 18: descriptor 3 ("Adult Only Sexual Content") is adult; the mature ones (1, 2, 4,
+    5) are not, nor a game scraped before descriptors were kept (null)."""
+    descriptors = {4: [1, 3, 4, 5], 5: [1, 2, 5], 6: [], 7: None, 8: [3]}
+    tagged = add_tags(
+        marts, tags_of=lambda g: [FIRST_GAME + 7], descriptors_of=lambda g: descriptors.get(g)
+    )
+    data = load_inference_data(FakeSource(tagged))
+    games = data.games
+    known = {
+        int(g): int(d)
+        for g, d in zip(games.catalog.items.game_idx, games.content_descriptors, strict=True)
+    }
+    assert (known[4], known[5], known[6], known[7]) == (0b111010, 0b100110, 0, -1)
+    flagged = {int(g) for g in games.catalog.items.game_idx[adult_mask(games)]}
+    assert flagged & set(descriptors) == {4, 8}
+
+
+def test_mart_without_descriptors(marts):
+    """A `game_tags` mart from before spec 19: loads, without descriptors."""
+    data = load_inference_data(FakeSource(add_tags(marts, tags_of=lambda g: [FIRST_GAME + 7])))
+    assert data.games.content_descriptors is None
+    assert not data.games.has_descriptor(3).any()

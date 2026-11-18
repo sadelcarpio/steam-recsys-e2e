@@ -8,7 +8,6 @@ from steam_inference.rerank import (
     EXPLAIN_TOOL,
     MAX_EXPLANATION_CHARS,
     RANK_TOOL,
-    SYSTEM_PROMPT,
     BedrockRerankLlm,
     RerankError,
     RerankOptions,
@@ -23,6 +22,7 @@ from steam_inference.rerank import (
     rerank_all,
     rerank_user,
     shuffled_positions,
+    system_prompt,
     template_explanation,
 )
 
@@ -140,7 +140,10 @@ def test_failed_explanations_are_reasked_then_templated():
     )
     result = rerank_user(llm, REQUEST, OPTIONS)
     assert result.explanations[0] == GOOD
-    assert result.explanations[1] == "Porque te gustó Hades, del mismo estudio (Supergiant Games)."
+    assert (
+        result.explanations[1]
+        == "Because you liked Hades, from the same studio (Supergiant Games)."
+    )
     assert (result.explain_retries, result.templates) == (1, 1)
     retried = llm.explain_calls[1]
     assert retried[1] == [CANDIDATES[1].text]  # only the failed one, renumbered
@@ -159,6 +162,13 @@ def test_failed_explain_call_uses_templates():
     llm = ScriptedLlm(ranks=[[2, 1, 3, 4]], explains=[RuntimeError("throttled")])
     result = rerank_user(llm, REQUEST, OPTIONS)
     assert result.order == [1, 0, 2, 3] and result.templates == 2
+    assert all(text.startswith("Because you liked") for text in result.explanations.values())
+
+
+def test_templates_follow_the_language_option():
+    llm = ScriptedLlm(ranks=[[2, 1, 3, 4]], explains=[RuntimeError("throttled")])
+    spanish = RerankOptions(explain_top_n=OPTIONS.explain_top_n, language="es")
+    result = rerank_user(llm, REQUEST, spanish)
     assert all(text.startswith("Porque te gustó") for text in result.explanations.values())
 
 
@@ -190,13 +200,24 @@ def test_candidate_name_is_matched_as_whole_words():
 
 def test_template_prefers_a_shared_developer_then_genre():
     assert template_explanation(CANDIDATES[1], [CELESTE, HADES]) == (
-        "Porque te gustó Hades, del mismo estudio (Supergiant Games)."
+        "Because you liked Hades, from the same studio (Supergiant Games)."
     )
     assert template_explanation(CANDIDATES[0], [HADES]) == (
+        "Because you liked Hades, which is also Action."
+    )
+    assert template_explanation(CANDIDATES[2], [HADES]) == "Because you liked Hades."
+    assert template_explanation(CANDIDATES[2], []) == "Fits your taste for Simulation games."
+
+
+def test_spanish_templates():
+    assert template_explanation(CANDIDATES[1], [CELESTE, HADES], "es") == (
+        "Porque te gustó Hades, del mismo estudio (Supergiant Games)."
+    )
+    assert template_explanation(CANDIDATES[0], [HADES], "es") == (
         "Porque te gustó Hades, que también es de acción."
     )
-    assert template_explanation(CANDIDATES[2], [HADES]) == "Porque te gustó Hades."
-    assert template_explanation(CANDIDATES[2], []) == (
+    assert template_explanation(CANDIDATES[2], [HADES], "es") == "Porque te gustó Hades."
+    assert template_explanation(CANDIDATES[2], [], "es") == (
         "Encaja con tu gusto por los juegos de simulación."
     )
 
@@ -209,9 +230,13 @@ def test_prompts():
     assert "- Hades" in ranking and "2. Bastion" in ranking
     assert "from 1 to 2 exactly once" in ranking and "(missing 2)" in ranking
     explaining = explain_prompt(["Hades"], ["Dead Cells"], note="too long")
-    assert "exactly 1 explanations" in explaining and "Spanish" in explaining
+    assert "exactly 1 explanations" in explaining and "in English" in explaining
+    assert '"you"' in explaining and "Spanish" not in explaining
     assert "Do not name the recommended game" in explaining and "too long" in explaining
-    assert "Spanish" in SYSTEM_PROMPT
+    assert "in English." in system_prompt() and "Spanish" not in system_prompt()
+    spanish = explain_prompt(["Hades"], ["Dead Cells"], language="es")
+    assert "in Spanish" in spanish and '"tú"' in spanish
+    assert "Spanish" in system_prompt("es") and "tú" in system_prompt("es")
 
 
 def test_parse_tool_input_and_text_fallback():
@@ -290,6 +315,22 @@ def test_bedrock_forces_each_tool_and_counts_tokens_per_stage():
         "rank": (100, 20),
         "explain": (100, 20),
     }
+
+
+def test_bedrock_language_reaches_the_system_prompt_and_tool():
+    english, spanish = StubBedrock(), StubBedrock()
+    _llm(english).explain(["Hades"], ["a", "b"])
+    BedrockRerankLlm(
+        "model-x", max_tokens=500, temperature=0.3, region="us-east-1", language="es",
+        client=spanish,
+    ).explain(["Hades"], ["a", "b"])  # fmt: skip
+    for client, language in ((english, "English"), (spanish, "Spanish")):
+        call = client.calls[0]
+        assert language in call["system"][0]["text"]
+        assert f"in {language}" in call["messages"][0]["content"][0]["text"]
+        schema = call["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
+        text = schema["properties"]["explanations"]["items"]["properties"]["text"]
+        assert language in text["description"]
 
 
 def test_unusable_answers_are_retried_and_bounded():

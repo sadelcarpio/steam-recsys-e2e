@@ -136,6 +136,9 @@ class InferenceSettings(BaseSettings):
     rerank_blend_weight: float = Field(1.0, ge=0, le=1)
     # Shuffle the candidates of the ranking prompt (seeded by the user id) against position bias.
     rerank_shuffle: bool = True
+    # Language of the explanations, LLM and template alike: "en" (the default since
+    # 2026-11-18, the frontend's default language) or "es" (before).
+    explanation_language: Literal["en", "es"] = "en"
 
     # ---- output ----
     # Parallel DynamoDB scan segments / batch writers. Only changed items are written; stored

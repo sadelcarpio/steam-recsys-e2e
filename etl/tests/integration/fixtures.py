@@ -89,6 +89,7 @@ GAME_TAGS_SCHEMA = pa.schema(
         ("tag_ids", pa.list_(pa.int64())),
         ("tag_names", _STR_LIST),
         ("tag_weights", pa.list_(pa.int64())),
+        ("content_descriptors", pa.list_(pa.int64())),  # spec 19
         ("scraped_at", pa.int64()),
         ("scrape_date", pa.date32()),
     ]
@@ -226,13 +227,15 @@ BATCH2_REVIEWS = [
 ]
 
 
-def _tags(appid, tags, *, scraped_at, scrape_date):
-    """tags: [(name, weight), ...] by weight descending (the scraper's order)."""
+def _tags(appid, tags, *, scraped_at, scrape_date, descriptors=None):
+    """tags: [(name, weight), ...] by weight descending (the scraper's order). descriptors: None
+    for a scrape from before they were kept (spec 19)."""
     return {
         "appid": appid,
         "tag_ids": list(range(len(tags))),
         "tag_names": [n for n, _ in tags],
         "tag_weights": [w for _, w in tags],
+        "content_descriptors": descriptors,
         "scraped_at": scraped_at,
         "scrape_date": scrape_date,
     }
@@ -240,17 +243,24 @@ def _tags(appid, tags, *, scraped_at, scrape_date):
 
 # Tags (spec 8): 10 is re-scraped by a retry (the later scrape wins) and a blank name is
 # dropped; 40 is not a catalog game (no row, no lookup id); 50 is tagged in batch 1 but only
-# kept in batch 2. Batch 2 re-tags 10 only (21 keeps its batch 1 tags).
+# kept in batch 2. Batch 2 re-tags 10 only (21 keeps its batch 1 tags). Content descriptors
+# (spec 19): 21's scrape predates them (null), 10 declares 5 and 2 in batch 1, none in batch 2.
 BATCH1_TAGS = [
     _tags(10, [("FPS", 900), ("Action", 500), (" ", 100)], scraped_at=T0, **_d1),
-    _tags(10, [("FPS", 950), ("Action", 500)], scraped_at=T0 + 60, **_d1),
+    _tags(10, [("FPS", 950), ("Action", 500)], scraped_at=T0 + 60, descriptors=[5, 2], **_d1),
     _tags(21, [(" Indie ", 300), ("Cozy", 200)], scraped_at=T0, **_d1),
     _tags(40, [("Weird", 10)], scraped_at=T0, **_d1),
     _tags(50, [("Strategy", 700), ("Space", 600)], scraped_at=T0, **_d1),
 ]
 
 BATCH2_TAGS = [
-    _tags(10, [("Action", 990), ("FPS", 950), ("Co-op", 400)], scraped_at=T0 + 604_800, **_d2),
+    _tags(
+        10,
+        [("Action", 990), ("FPS", 950), ("Co-op", 400)],
+        scraped_at=T0 + 604_800,
+        descriptors=[],
+        **_d2,
+    ),
 ]
 
 

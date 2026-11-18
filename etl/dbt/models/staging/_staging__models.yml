@@ -21,6 +21,8 @@ models:
         description: Tag names, weight descending. Pairs without a name are dropped.
       - name: game_tag_weights
         description: Steam's tag weights, aligned with game_tags.
+      - name: game_content_descriptors
+        description: Steam's content descriptors (spec 19), sorted; null for older scrapes.
       - name: scraped_at
         description: Unix seconds of the scrape (orders scrapes of the same day).
   - name: stg_steam__reviews

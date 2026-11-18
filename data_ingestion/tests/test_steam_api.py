@@ -17,6 +17,7 @@ from steam_ingestion.steam_api import (
     SteamApiError,
     SteamClient,
     SteamEndpointGone,
+    StoreItem,
 )
 
 from .conftest import REVIEWS_URL, reviews_request
@@ -271,6 +272,7 @@ def test_get_game_tags_sorts_by_weight_and_skips_unknown_apps(client: SteamClien
                     {
                         "appid": 10,
                         "success": 1,
+                        "content_descriptorids": [5, 1, 3, 1],
                         "tags": [
                             {"tagid": 1, "weight": 5},
                             {"tagid": 2, "weight": 9},
@@ -278,15 +280,19 @@ def test_get_game_tags_sorts_by_weight_and_skips_unknown_apps(client: SteamClien
                         ],
                     },
                     {"appid": 20, "success": 1},
+                    {"appid": 40, "success": 1, "tags": [{"tagid": 1, "weight": 1}]},
                     {"id": 30, "success": 15},
                 ]
             }
         },
     )
-    tags = client.get_game_tags([10, 20, 30], tag_count=2)
-    assert tags == {10: [GameTag(2, 9), GameTag(3, 7)]}
+    items = client.get_game_tags([10, 20, 30, 40], tag_count=2)
+    assert items == {
+        10: StoreItem([GameTag(2, 9), GameTag(3, 7)], content_descriptors=[1, 3, 5]),
+        40: StoreItem([GameTag(1, 1)], content_descriptors=[]),  # declares none: no field
+    }
     query = json.loads(responses.calls[0].request.params["input_json"])
-    assert query["ids"] == [{"appid": 10}, {"appid": 20}, {"appid": 30}]
+    assert query["ids"] == [{"appid": 10}, {"appid": 20}, {"appid": 30}, {"appid": 40}]
     assert query["data_request"] == {"include_tag_count": 2}
 
 

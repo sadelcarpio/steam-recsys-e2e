@@ -1,6 +1,6 @@
 # etl
 
-Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-coming-soon-games.md`,
+Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/19-content-descriptors.md`, `specs/10-coming-soon-games.md`,
 `specs/13-anonymize-user-ids.md`, `specs/16-kaggle-dataset.md`). Human docs: `README.md`.
 
 ## Layout
@@ -45,7 +45,9 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
 - No stored user history (`user_features` and `games_reviewed_positive` were dropped, A3):
   training and inference derive each user's last N positives from `interactions`. Don't add a
   fixed-length history back. `interactions` is `on_schema_change: sync_all_columns` (a dropped
-  column is an Iceberg `DROP COLUMN`); every other model stays `fail`.
+  column is an Iceberg `DROP COLUMN`); `game_tags` is `append_new_columns` (spec 19 added
+  `game_content_descriptors`; old rows stay null until the next tags scrape merges them);
+  every other model stays `fail`.
 - Raw cumulative review counts stay in `int_game_review_counts`; `game_features` /
   `interactions` expose only the Laplace-smoothed ratio. The one exception is
   `game_popularity_weekly` (spec 9): counts per (game, ISO week), point in time by
@@ -59,7 +61,9 @@ Spec: `specs/2-data-transformation.md` (+ `specs/8-game-tags.md`, `specs/10-comi
   `scrape_date`. Consumers join it to `interactions` on `review_id`; never add `language` to
   `interactions` instead (a schema change of the largest mart).
 - `game_tags` (spec 8) is one row per catalog game with tags, merged on `game_id` only when a
-  newer scrape (`scraped_at`) arrives, so a rerun writes nothing. `lkp_tags` covers the tags
+  newer scrape (`scraped_at`) arrives, so a rerun writes nothing. `game_content_descriptors`
+  (spec 19) comes from the same scrape: `[]` = none declared, null = scraped before them,
+  never mixed across scrapes. `lkp_tags` covers the tags
   of `int_games__deduplicated` games only.
 - `game_details` is display data, never a time-versioned feature: the spec 9 ranker reads its
   `game_price` (the price at the last scrape, not as of t) and `game_release_date` (static)
