@@ -792,6 +792,7 @@ forwards them to the job:
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |
 | `HARD_NEGATIVE_ID_DROPOUT` | 0 | id dropout (to OOV) of the hard negatives too |
 | `NEW_ITEM_ID_DROPOUT` / `NEW_ITEM_DAYS` | unset / 90 | A6: id dropout rate of games released at most `NEW_ITEM_DAYS` before the example (targets and hard negatives); unset = `ITEM_ID_DROPOUT` |
+| `RANKER_EXCLUDE_FEATURES` | [] | `rank`: features left out of the ranker (JSON list of `ranker.features.FEATURES` names); inference and serving still compute all, the ranker reads its subset |
 | `RECENCY_DROPOUT` | 0 | A6: probability of zeroing an item's recency features in training (targets and hard negatives), so "trending this week" can't carry a score alone |
 | `CONCENTRATION_ROWS` / `CONCENTRATION_K` | 20000 / 10 | exposure over the current catalog logged by every run (0 rows = off) |
 | `LOGQ_CORRECTION` | true | |

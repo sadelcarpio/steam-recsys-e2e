@@ -323,6 +323,11 @@ class RankerSettings(_SsmSettings):
     ranker_early_stopping_rounds: int = Field(30, ge=1)
     ranker_min_data_in_leaf: int = Field(100, ge=1)
     ranker_feature_fraction: float = Field(0.8, gt=0, le=1)
+    # features left out of the ranker (names from `ranker.features.FEATURES`; the env takes a
+    # JSON list, RANKER_EXCLUDE_FEATURES='["log_positives"]'), e.g. the popularity ones,
+    # which pile the most popular games into every list. Inference and serving compute every
+    # feature; the ranker reads its subset.
+    ranker_exclude_features: list[str] = Field(default_factory=list)
     num_threads: int = Field(0, ge=0)  # 0 = LightGBM default
 
     # ---- report / gate ----
@@ -338,6 +343,13 @@ class RankerSettings(_SsmSettings):
             raise ValueError(f"ranker_id '{CHAMPION}' is reserved")
         if self.ranker_top_k > self.ranker_candidates:
             raise ValueError("RANKER_TOP_K must be <= RANKER_CANDIDATES")
+        from steam_training.ranker.features import FEATURES
+
+        unknown = sorted(set(self.ranker_exclude_features) - set(FEATURES))
+        if unknown:
+            raise ValueError(f"RANKER_EXCLUDE_FEATURES: unknown features {unknown}")
+        if set(FEATURES) <= set(self.ranker_exclude_features):
+            raise ValueError("RANKER_EXCLUDE_FEATURES leaves no feature")
         return self
 
 

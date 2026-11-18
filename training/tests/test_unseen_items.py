@@ -142,8 +142,9 @@ def test_pair_gate_rejects_a_ranker_that_floods_one_game():
     champion = _evaluation("old", 0.10, 0.12)
     with_ranker = _evaluation("new", 0.25, 0.18, final_reach=0.45, ranker="k")
     alone = _evaluation("new", 0.20, 0.18)
-    chosen, _ = decide_pair(champion, [with_ranker, alone], True, settings)
+    chosen, reason = decide_pair(champion, [with_ranker, alone], True, settings)
     assert chosen is alone  # higher recall, but the ranker floods
+    assert "skipped new + k (game_idx 7 in 45.0% of lists)" in reason
     chosen, reason = decide_pair(champion, [with_ranker], True, settings)
     assert chosen is None and "every challenger floods" in reason and "45.0%" in reason
 

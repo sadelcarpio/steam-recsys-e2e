@@ -395,13 +395,20 @@ def decide_pair(
         )
     best = max(challengers, key=lambda e: (e.final.recall[top], e.final.ndcg[top]))
     name = f"{best.retriever_id} + {best.ranker_id or 'no ranker'}"
+    skipped = "".join(
+        f"; skipped {e.retriever_id} + {e.ranker_id or 'no ranker'} (game_idx "
+        f"{e.final_concentration.top_game_idx} in {e.final_concentration.reach:.1%} of lists)"
+        for e in flooding
+    )
     recall, base = best.final.recall[top], champion.final.recall[top]
     ndcg, base_ndcg = best.final.ndcg[top], champion.final.ndcg[top]
     if recall > base + settings.min_improvement and ndcg >= base_ndcg:
-        return best, f"{name}: recall@{top} {recall:.4f} > {base:.4f}, ndcg@{top} {ndcg:.4f}"
+        return best, (
+            f"{name}: recall@{top} {recall:.4f} > {base:.4f}, ndcg@{top} {ndcg:.4f}{skipped}"
+        )
     return None, (
         f"best pair {name}: recall@{top} {recall:.4f} vs {base:.4f} "
-        f"(+{settings.min_improvement}), ndcg@{top} {ndcg:.4f} vs {base_ndcg:.4f}"
+        f"(+{settings.min_improvement}), ndcg@{top} {ndcg:.4f} vs {base_ndcg:.4f}{skipped}"
     )
 
 
