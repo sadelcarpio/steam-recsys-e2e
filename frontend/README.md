@@ -1,6 +1,6 @@
 # Frontend
 
-Static web app over the serving API, in Spanish: search Steam games, pick up to 20 you liked,
+Static web app over the serving API, in English or Spanish: search Steam games, pick up to 20 you liked,
 and get recommendations as game cards. Or open a user's precomputed recommendations by user
 number at `/u/<n>` (1 = the most active reviewer; spec 13: no Steam id is stored or accepted).
 No login.
@@ -30,8 +30,11 @@ Browser ──► CloudFront
   tolerant, ranked by relevance only). There is no search server.
 - **No adult games.** Inference leaves them out of the index, the catalog and every
   recommendation list (`inference/src/steam_inference/adult.py`).
-- **Spanish UI.** Every text the app renders is in `src/i18n.ts`, including Steam's genre
-  names. Game names, descriptions and LLM explanations are shown as the data has them.
+- **English and Spanish UI.** Every text the app renders is in `src/i18n.ts`, in both
+  languages (Steam's genre names are translated in Spanish). English by default; `?lang=es` /
+  `?lang=en` or the header link switches it and remembers the choice (localStorage). Game
+  names, descriptions and the LLM explanations (written in Spanish by inference) are shown as
+  the data has them.
 - Images come straight from Steam's CDN (`header_image`).
 
 Infrastructure: `infrastructure/frontend.tf` (+ the CloudFront Functions in

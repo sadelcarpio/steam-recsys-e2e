@@ -11,10 +11,30 @@ import {
   type RecommendationsResponse,
 } from "./api";
 import { cardGrid, detailsView, h, likedStrip, responseSummary } from "./cards";
-import { t } from "./i18n";
+import { LOCALE, LOCALES, rememberLocale, t } from "./i18n";
 import { LikedGames } from "./liked";
 import { neighbours, parseRoute, userPath } from "./router";
 import type { GameHit } from "./search";
+
+// The shell's texts (index.html carries the English ones for the first paint) and the link to
+// the other language: it reloads the page, as `t` is chosen when i18n.ts loads.
+function applyLocale(): void {
+  document.documentElement.lang = LOCALE;
+  document.title = t.brand.replace(/^\S+\s/, "");
+  document.querySelector('meta[name="description"]')?.setAttribute("content", t.description);
+  document.querySelector(".brand")!.textContent = t.brand;
+  const input = document.querySelector<HTMLInputElement>("#user-form input")!;
+  input.placeholder = t.userIdPlaceholder;
+  input.setAttribute("aria-label", t.userIdLabel);
+  document.querySelector("#user-form button")!.textContent = t.userIdSubmit;
+  const other = LOCALES.find((l) => l !== LOCALE)!;
+  const link = document.querySelector<HTMLAnchorElement>("#lang-switch")!;
+  link.textContent = t.languageSwitch;
+  link.hreflang = other;
+  link.href = `${location.pathname}?lang=${other}`;
+  link.addEventListener("click", () => rememberLocale(other));
+}
+applyLocale();
 
 const main = document.querySelector<HTMLElement>("#main")!;
 const dialog = document.querySelector<HTMLDialogElement>("#details")!;

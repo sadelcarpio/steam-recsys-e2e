@@ -90,6 +90,11 @@ header {
   display: flex;
   gap: 0.5rem;
 }
+.lang-switch {
+  color: var(--muted);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
 #user-form input {
   flex: 1 1 auto;
   width: 14rem;
