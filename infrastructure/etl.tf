@@ -47,6 +47,8 @@ locals {
     game_tags = [
       ["appid", "bigint"], ["tag_ids", "array<bigint>"], ["tag_names", "array<string>"],
       ["tag_weights", "array<bigint>"], ["scraped_at", "bigint"], ["scrape_date", "date"],
+      # spec 19; null in files scraped before it (columns are matched by name)
+      ["content_descriptors", "array<bigint>"],
     ]
   }
 

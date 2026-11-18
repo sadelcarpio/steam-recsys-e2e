@@ -111,6 +111,8 @@ class GameTagsRecord(_Strict):
     tag_ids: list[int] = Field(min_length=1)
     tag_names: list[str] = Field(min_length=1)
     tag_weights: list[int] = Field(min_length=1)
+    # Steam's content descriptors (steam_api.StoreItem), sorted; [] when the game declares none
+    content_descriptors: list[int] = Field(default_factory=list)
     scraped_at: int  # unix seconds
     scrape_date: date
 

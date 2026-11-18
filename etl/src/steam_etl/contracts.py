@@ -87,6 +87,8 @@ class GameTagsRow(_Row):
     # lkp_tags ids by weight descending, aligned with game_tag_weights
     game_tags: list[EncodedId] = Field(min_length=1)
     game_tag_weights: list[Annotated[float, Field(ge=0)]] = Field(min_length=1)
+    # Steam's content descriptors (spec 19), sorted; None for scrapes before they were kept
+    game_content_descriptors: list[Annotated[int, Field(ge=1)]] | None = None
     scraped_at: int
     scrape_date: date
 

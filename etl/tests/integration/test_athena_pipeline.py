@@ -390,12 +390,16 @@ def test_game_tags_latest_scrape_per_catalog_game(runs):
     assert set(batch1) == {10, 21}
     assert (batch1[10]["game_tags"], batch1[10]["game_tag_weights"]) == ([4, 2], [950.0, 500.0])
     assert (batch1[21]["game_idx"], batch1[21]["game_tags"]) == (3, [5, 3])
+    # content descriptors of the winning scrape, sorted; null for a scrape before spec 19
+    assert batch1[10]["game_content_descriptors"] == [2, 5]
+    assert batch1[21]["game_content_descriptors"] is None
     batch2 = by(runs["batch2"]["game_tags"], "game_id")
     assert set(batch2) == {10, 21, 50}  # 50 joined the catalog with its batch 1 tags
     assert (batch2[10]["game_tags"], batch2[10]["game_tag_weights"]) == (
         [2, 4, 6],
         [990.0, 950.0, 400.0],
     )
+    assert batch2[10]["game_content_descriptors"] == []  # declares none
     assert batch2[21] == batch1[21]  # not re-scraped: not merged again
     assert (batch2[50]["game_idx"], batch2[50]["game_tags"]) == (12, [8, 7])
 

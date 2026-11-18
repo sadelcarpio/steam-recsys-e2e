@@ -1,4 +1,5 @@
-"""ECS task `tags-scraping`: the Steam user tags of every known game (spec 8).
+"""ECS task `tags-scraping`: the Steam user tags of every known game (spec 8), with its content
+descriptors from the same GetItems response (spec 19, the adult filter's exact signal).
 
 Games: every appid in `game-ids-state` that is `scraped` or `pending` (pending games are real
 apps from GetAppList, so the games scraped in the same run get their tags too). Tags change as
@@ -26,7 +27,7 @@ from steam_ingestion.models import GameStatus, GameTagsRecord
 from steam_ingestion.schemas import GAME_TAGS_SCHEMA
 from steam_ingestion.shutdown import EXIT_CODE, Shutdown, ShutdownRequested
 from steam_ingestion.state import GameIdsState
-from steam_ingestion.steam_api import GameTag, SteamApiError, SteamClient
+from steam_ingestion.steam_api import SteamApiError, SteamClient, StoreItem
 from steam_ingestion.storage import next_part_number, put_parquet
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,10 @@ def games_to_tag(state: GameIdsState) -> list[int]:
 
 
 def build_tags_record(
-    appid: int, tags: list[GameTag], names: dict[int, str], scraped_at: int, scrape_date: date
+    appid: int, item: StoreItem, names: dict[int, str], scraped_at: int, scrape_date: date
 ) -> GameTagsRecord | None:
     """None when none of the tags has a known name."""
-    named = [t for t in tags if t.tag_id in names]
+    named = [t for t in item.tags if t.tag_id in names]
     if not named:
         return None
     return GameTagsRecord(
@@ -50,6 +51,7 @@ def build_tags_record(
         tag_ids=[t.tag_id for t in named],
         tag_names=[names[t.tag_id] for t in named],
         tag_weights=[t.weight for t in named],
+        content_descriptors=item.content_descriptors,
         scraped_at=scraped_at,
         scrape_date=scrape_date,
     )
@@ -98,7 +100,7 @@ def scrape_tags(
     for i, batch in enumerate(batches, 1):
         try:
             shutdown.check()
-            tags = client.get_game_tags(batch, settings.tags_per_game)
+            items = client.get_game_tags(batch, settings.tags_per_game)
         except ShutdownRequested:
             stopped = True
             break
@@ -108,7 +110,8 @@ def scrape_tags(
             continue
         scraped_at = int(clock())
         for appid in batch:
-            record = build_tags_record(appid, tags.get(appid, []), names, scraped_at, today)
+            item = items.get(appid)
+            record = item and build_tags_record(appid, item, names, scraped_at, today)
             if record is not None:
                 buffer.append(record)
         if len(buffer) >= settings.tags_flush_every:
