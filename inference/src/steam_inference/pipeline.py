@@ -255,6 +255,7 @@ def run_inference(
                 excluded=excluded,
                 ranker_id=ranker.ranker_id if ranker and settings.ranker_mode == "on" else None,
                 ranked=ranker_stats.ranked,
+                llm_order=settings.rerank_enabled_stages == "rank+explain",
             ),
             [popular] if popular else [],
         ),
@@ -437,9 +438,12 @@ def user_recommendations(
     excluded: np.ndarray | None = None,
     ranker_id: str | None = None,
     ranked: np.ndarray | None = None,
+    llm_order: bool = True,
 ) -> Iterator[UserRecommendations]:
     """`ranker_id`: the ranker that ordered the written candidates (RANKER_MODE=on), recorded on
-    the users it ranked (`ranked`, per user; None = all)."""
+    the users it ranked (`ranked`, per user; None = all). `llm_order`: the LLM ordered the
+    reranked users' lists (`rank+explain`); False = it only explained them (`reranked` stays
+    False, `rerank_model` names the model that wrote the explanations)."""
     games = data.games
     for user in range(len(data.users)):
         rows, scores = candidates.of(user)
@@ -461,7 +465,7 @@ def user_recommendations(
             ],
             model_id=model_id,
             generated_at=now,
-            reranked=result is not None,
+            reranked=result is not None and llm_order,
             rerank_model=rerank_model if result else None,
             ranker_id=ranker_id if ranked is None or ranked[user] else None,
             liked=liked_games(data, user, excluded),

@@ -55,6 +55,8 @@ export const t = {
     `Personalizadas para este jugador (${models}), reordenadas y explicadas por un LLM (${when}).`,
   summaryPersonalized: (when: string, models: string) =>
     `Personalizadas para este jugador (${models}, ${when}).`,
+  summaryExplained: (when: string, models: string) =>
+    `Personalizadas para este jugador (${models}), explicadas por un LLM (${when}).`,
   summaryOnline: (models: string) =>
     `Calculadas ahora a partir de los juegos que elegiste (${models}).`,
   // the retriever (two-tower model) and, when one ordered the list, the ranker

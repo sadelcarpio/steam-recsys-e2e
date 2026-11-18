@@ -128,6 +128,16 @@ def test_explain_only_keeps_the_retrieval_order(settings, source, store, champio
     recs = _items()["101"]["recommendations"]
     assert [r["score"] for r in recs] == sorted((r["score"] for r in recs), reverse=True)
     assert [("explanation" in r) for r in recs] == [True, True, False, False, False]
+    # not reordered by the LLM: `reranked` stays false, the model that explained is named
+    item = _items()["101"]
+    assert item["reranked"] is False and item["rerank_model"] == explain_only.bedrock_model_id
+
+
+def test_explain_only_is_the_default():
+    from steam_inference.config import InferenceSettings
+
+    assert InferenceSettings.model_fields["rerank_enabled_stages"].default == "explain"
+    assert InferenceSettings.model_fields["explain_top_n"].default == 3
 
 
 def test_rerank_disabled(settings, source, store, champion):

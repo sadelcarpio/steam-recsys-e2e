@@ -89,6 +89,14 @@ describe("cards", () => {
     expect(responseSummary({ ...personalized, source: "online" })).toMatch(/juegos que elegiste/);
   });
 
+  it("says when the LLM only explained the list", () => {
+    const explained = responseSummary({ ...personalized, reranked: false });
+    expect(explained).toMatch(/explicadas por un LLM/);
+    expect(explained).not.toMatch(/reordenadas/);
+    const plain = { ...personalized, reranked: false, rerank_model: undefined };
+    expect(responseSummary(plain)).not.toMatch(/LLM/);
+  });
+
   it("names the retriever and, when one ordered the list, the ranker", () => {
     const sha = "3692462786496a912d90a4fb79b66cdba04d6ea6";
     const online = { ...personalized, source: "online" as const, model_id: "local-9cc8927-a3" };

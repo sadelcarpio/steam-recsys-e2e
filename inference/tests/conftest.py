@@ -394,6 +394,8 @@ def settings(monkeypatch) -> InferenceSettings:
         rerank_min_reviews=6,
         rerank_max_users=10,
         rerank_concurrency=2,
+        # the LLM ordering path (the default is explain only)
+        rerank_enabled_stages="rank+explain",
         rerank_shuffle=False,  # the fake LLM's reversal is then the reverse retrieval order
         user_batch_size=2,
         item_batch_size=7,

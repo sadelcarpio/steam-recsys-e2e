@@ -82,13 +82,16 @@ steam_marts (Iceberg, pyiceberg)
      numbers), a second failure keeps the retrieval order (`rank_fallbacks`). The final order
      is ascending `w * llm_rank + (1 - w) * retrieval_rank` (`RERANK_BLEND_WEIGHT`, 1 = LLM
      order).
-   - **Explanations** (`submit_explanations`): only the final top `EXPLAIN_TOP_N` (5), exactly
+   - **Explanations** (`submit_explanations`): only the final top `EXPLAIN_TOP_N` (3), exactly
      one text each. Each text is checked in code: it must not name the recommended game itself
      (the text is shown next to it; this catches "you played <game>" claims), it must name a
      liked game, or a genre, tag or developer from the prompt, and it is at most 600
      characters. Failed ones are re-asked once, then replaced by a template built from the data
      ("Porque te gustó Hades, del mismo estudio (Supergiant Games).").
-   `RERANK_ENABLED_STAGES=explain` skips the ranking (retrieval order, LLM explanations). An
+   `RERANK_ENABLED_STAGES=explain` (the default since 2026-11-18) skips the ranking: the order
+   stays the retriever's / ranker's and the LLM only explains the top N (the item's `reranked`
+   is false, `rerank_model` names the explaining model). The LLM's ranking was never shown to
+   beat the ranker on a budget model; `rank+explain` keeps it available. An
    answer with no usable tool call (e.g. stop reason `malformed_tool_use`) is retried up to
    twice. A user whose calls all fail keeps the retrieval order without explanations. The run
    logs the retries, fallbacks and templates in its summary, and the Bedrock usage per stage.
@@ -269,8 +272,8 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `RERANK_ENABLED` | true | |
 | `BEDROCK_MODEL_ID` | `us.amazon.nova-2-lite-v1:0` | Any Converse model with tool use |
 | `RERANK_MIN_REVIEWS` / `RERANK_MAX_USERS` | 6 / 100 | Who gets reranked |
-| `EXPLAIN_TOP_N` | 5 | Explained recommendations per reranked user |
-| `RERANK_ENABLED_STAGES` | `rank+explain` | Or `explain`: keep the retrieval order, only explain it (Terraform `inference_rerank_stages`) |
+| `EXPLAIN_TOP_N` | 3 | Explained recommendations per explained user (the `RERANK_MAX_USERS` most active) |
+| `RERANK_ENABLED_STAGES` | `explain` | Keep the retriever's / ranker's order and only explain it; `rank+explain`: the LLM reorders first (Terraform `inference_rerank_stages`) |
 | `RERANK_BLEND_WEIGHT` | 1.0 | Final order = `w * llm_rank + (1 - w) * retrieval_rank` (Terraform `inference_rerank_blend_weight`) |
 | `RERANK_SHUFFLE` | true | Shuffle the ranking prompt's candidates, seeded by the user id (Terraform `inference_rerank_shuffle`) |
 | `RERANK_TEMPERATURE` / `RERANK_MAX_TOKENS` | 0.2 / 2000 | Explanations' temperature (the ranking always uses 0) / max output tokens per call |
