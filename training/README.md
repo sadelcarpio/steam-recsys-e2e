@@ -721,7 +721,10 @@ selected on them:
 1. a new retriever: its exposure over the current catalog (every game now, recency as of the
    newest week) must not flood one game: its most common game may reach at most
    `PAIR_MAX_GAME_REACH` (0.3) of the top-`PAIR_CONCENTRATION_K` (10) lists of the
-   `PAIR_CONCENTRATION_ROWS` most recent groups' users. Retrieval recall@`PAIR_RETRIEVAL_K` (50)
+   `PAIR_CONCENTRATION_ROWS` most recent groups' users. The same limit applies to each pair's
+   final lists (its ranker re-orders the top `PAIR_CANDIDATES` on features of the current
+   catalog): a ranker that piles popular games into everyone's top 10 is skipped for the next
+   best pair. Retrieval recall@`PAIR_RETRIEVAL_K` (50)
    must beat the serving one's by `RETRIEVER_MIN_IMPROVEMENT`, and recall@`PAIR_CANDIDATES`
    (100, the ranker's ceiling) must not drop;
 2. the best challenger's final recall@`PAIR_TOP_K` (20) must beat the serving pair's by

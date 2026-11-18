@@ -90,19 +90,29 @@ def _metrics(r: float) -> RankingMetrics:
     return RankingMetrics(groups=10, recall=values, ndcg=values)
 
 
-def _evaluation(retriever: str, recall: float, reach: float | None) -> PairEvaluation:
-    exposure = None
-    if reach is not None:
-        exposure = Concentration(
-            k=10, lists=100, reach=reach, top_game_idx=7, top10_share=0.3, unseen_share=0.2,
-            distinct=500,
-        )  # fmt: skip
+def _exposure(reach: float | None) -> Concentration | None:
+    if reach is None:
+        return None
+    return Concentration(
+        k=10, lists=100, reach=reach, top_game_idx=7, top10_share=0.3, unseen_share=0.2,
+        distinct=500,
+    )  # fmt: skip
+
+
+def _evaluation(
+    retriever: str,
+    recall: float,
+    reach: float | None,
+    final_reach: float | None = None,
+    ranker: str | None = None,
+) -> PairEvaluation:
     return PairEvaluation(
         retriever_id=retriever,
-        ranker_id=None,
+        ranker_id=ranker,
         final=_metrics(recall),
         retrieval=_metrics(recall),
-        concentration=exposure,
+        concentration=_exposure(reach),
+        final_concentration=_exposure(final_reach if final_reach is not None else reach),
     )
 
 
@@ -118,6 +128,19 @@ def test_pair_gate_rejects_a_retriever_that_floods_one_game():
     assert decide_pair(champion, [_evaluation("new", 0.2, None)], True, settings)[0] is not None
     looser = settings.model_copy(update={"pair_max_game_reach": 0.7})
     assert decide_pair(champion, [flooded], True, looser)[0] is flooded
+
+
+def test_pair_gate_rejects_a_ranker_that_floods_one_game():
+    """The ranker re-orders the retriever's top 100: its final lists are gated too, and a
+    flooding pair is skipped for the next best one."""
+    settings = PairSettings(model_artifacts_bucket=BUCKET, retriever_id="new")
+    champion = _evaluation("old", 0.10, 0.12)
+    with_ranker = _evaluation("new", 0.25, 0.18, final_reach=0.45, ranker="k")
+    alone = _evaluation("new", 0.20, 0.18)
+    chosen, _ = decide_pair(champion, [with_ranker, alone], True, settings)
+    assert chosen is alone  # higher recall, but the ranker floods
+    chosen, reason = decide_pair(champion, [with_ranker], True, settings)
+    assert chosen is None and "every challenger floods" in reason and "45.0%" in reason
 
 
 # ---- the id dropout ----

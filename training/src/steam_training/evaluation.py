@@ -340,23 +340,28 @@ def concentration(
     games, scores = top_candidates(
         score_fn, history, index, k, batch_size, exclude=exclude, language=language
     )
-    valid = np.isfinite(scores)
-    listed = games[valid]
-    lists = len(history)
-    if not lists or not len(listed):
+    return list_concentration(np.where(np.isfinite(scores), games, -1), seen)
+
+
+def list_concentration(lists: np.ndarray, seen: np.ndarray) -> Concentration:
+    """`Concentration` of ready lists: int64 [users, k] game_idx, best first, -1 = empty slot
+    (e.g. a ranker's re-ordered top k)."""
+    users, k = lists.shape
+    listed = lists[lists >= 0]
+    if not users or not len(listed):
         return Concentration(
-            k=k, lists=lists, reach=0.0, top_game_idx=-1, top10_share=0.0, unseen_share=0.0,
+            k=k, lists=users, reach=0.0, top_game_idx=-1, top10_share=0.0, unseen_share=0.0,
             distinct=0,
         )  # fmt: skip
     ids, counts = np.unique(listed, return_counts=True)  # a game appears once per list
     order = np.argsort(-counts, kind="stable")
-    inside = (listed >= 0) & (listed < len(seen))
+    inside = listed < len(seen)
     known = np.zeros(len(listed), bool)
     known[inside] = seen[listed[inside]]
     return Concentration(
         k=k,
-        lists=lists,
-        reach=float(counts[order[0]]) / lists,
+        lists=users,
+        reach=float(counts[order[0]]) / users,
         top_game_idx=int(ids[order[0]]),
         top10_share=float(counts[order[:10]].sum()) / len(listed),
         unseen_share=float((~known).mean()),

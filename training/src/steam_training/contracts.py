@@ -374,8 +374,10 @@ class PairEvaluation(_Frozen):
     final: RankingMetrics
     retrieval: RankingMetrics
     user_lists: ListMetrics | None = None
-    # the retriever's top-k over the current catalog (gated by PAIR_MAX_GAME_REACH)
+    # the retriever's top-k over the current catalog, and the pair's final (ranker) top-k
+    # there (both gated by PAIR_MAX_GAME_REACH)
     concentration: Concentration | None = None
+    final_concentration: Concentration | None = None
 
 
 class PairReport(_Frozen):
