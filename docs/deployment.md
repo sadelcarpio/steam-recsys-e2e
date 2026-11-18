@@ -468,7 +468,8 @@ deleted, reranked, `game_details_written`, `online_bundle`.
 
 **Ranker (spec 9).** Once a pair promotion (step 9, *training promote* `mode=pair`) has put a
 ranker in `evaluation/champion/pair.json`, inference runs it in `RANKER_MODE` (Terraform
-`inference_ranker_mode`, default `shadow`). Rollout:
+`inference_ranker_mode`, default `on` since 2026-11-18; the rollout below started from
+`shadow`). Rollout:
 
 1. Deploy (*infrastructure CD*: the role's reads of `rankers/*` / `pair.json` and
    `evaluation/online/*`, and the SSM `RANKER_MODE`; then *inference CD*).
@@ -478,7 +479,7 @@ ranker in `evaluation/champion/pair.json`, inference runs it in `RANKER_MODE` (T
 3. The next run's `online_check` (and `evaluation/online/<run>.json`) scores the previous run's
    lists against the reviews written since: `written` (retrieval order) vs `alternative` (the
    ranker's lists), precision / recall / MAP@{10, 20}.
-4. Switch it on: `inference_ranker_mode = "on"` (infrastructure CD), or for the next run only
+4. Switch it on: `inference_ranker_mode = "on"` (infrastructure CD; the default now), or for the next run only
    `aws ssm put-parameter --name /inference/RANKER_MODE --value on --overwrite` (the next
    apply sets it back to the Terraform value). `off` is the kill switch, the same way.
 

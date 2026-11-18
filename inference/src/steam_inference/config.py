@@ -93,8 +93,9 @@ class InferenceSettings(BaseSettings):
     # The serving pair (evaluation/champion/pair.json) names the ranker; it runs only when the
     # pair's retriever is the model this run serves. off: retrieval order (TOP_K); shadow: the
     # ranker order is computed and compared (summary), retrieval order is written; on: the
-    # ranker re-orders RETRIEVAL_CANDIDATES and its top RANKER_TOP_K is written.
-    ranker_mode: Literal["off", "shadow", "on"] = "shadow"
+    # ranker re-orders RETRIEVAL_CANDIDATES and its top RANKER_TOP_K is written (the default
+    # since 2026-11-18: the A6 + A7 pair's ranker; shadow was the rollout step).
+    ranker_mode: Literal["off", "shadow", "on"] = "on"
     retrieval_candidates: int = Field(100, ge=1, le=500)
     ranker_top_k: int = Field(20, ge=1, le=200)
     ranker_chunk_users: int = Field(256, ge=1)
