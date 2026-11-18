@@ -15,5 +15,6 @@ export default defineConfig({
       }
     : undefined,
   build: { target: "es2022" },
-  test: { environment: "jsdom" },
+  // tests/setup.ts: the suites assert the Spanish texts (tests/i18n.test.ts covers English)
+  test: { environment: "jsdom", setupFiles: ["tests/setup.ts"] },
 });

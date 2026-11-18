@@ -9,7 +9,8 @@ Human docs: `README.md`.
   - `src/api.ts`: types mirroring `serving/src/steam_serving/contracts.py` (responses) and
     `inference/src/steam_inference/contracts.py` (`SearchIndex`), fetch helpers under `/api`,
     `sha256Hex` for the `POST` signing header
-  - `src/i18n.ts`: every UI text (Spanish), genre name translations, date formatting
+  - `src/i18n.ts`: every UI text in English (`en`, default) and Spanish (`es`), the locale
+    choice (`?lang=` > localStorage > English), Spanish genre names, date formatting
   - `src/search.ts`: `buildSearch` (MiniSearch, prefix + fuzzy, relevance only);
     `src/search.worker.ts` downloads `/data/games.json` and answers queries off the main thread
   - `src/cards.ts`: DOM rendering (`h` helper, cards with the explanation's model, the liked
@@ -31,8 +32,11 @@ Human docs: `README.md`.
 - `POST` bodies must be sent exactly as hashed (`x-amz-content-sha256`), and no request may set
   `Authorization`: CloudFront's OAC signs the Function URL call.
 - API text (names, descriptions, LLM explanations) is set with `textContent`, never as HTML.
-- The UI is Spanish: no user-visible string outside `src/i18n.ts`. API errors reach the page
-  as Spanish messages by status (`ApiError.message`); the server's text is only in `detail`.
+- No user-visible string outside `src/i18n.ts`, and every key in both languages (`Messages`
+  type; `tests/i18n.test.ts` checks the keys). `t` is chosen when i18n.ts loads, so switching
+  language reloads the page; `index.html` carries the English shell, `main.ts` sets it from `t`.
+  API errors reach the page as messages by status (`ApiError.message`); the server's text is
+  only in `detail`. Tests run in Spanish (`tests/setup.ts`); i18n.test.ts covers English.
 - `LIMIT` (30) mirrors serving's `MAX_LIMIT`. `MAX_LIKED_GAMES` (20) is the champion user tower's
   history length (training `HISTORY_LENGTH`; A3 len20-attn), enforced by `LikedGames`; serving accepts
   up to 100.

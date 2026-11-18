@@ -1,6 +1,6 @@
 # Frontend
 
-Static web app over the serving API, in Spanish: search Steam games, pick up to 20 you liked,
+Static web app over the serving API, in English or Spanish: search Steam games, pick up to 20 you liked,
 and get recommendations as game cards. Or open a user's precomputed recommendations by user
 number at `/u/<n>` (1 = the most active reviewer; spec 13: no Steam id is stored or accepted).
 No login.
@@ -8,7 +8,7 @@ No login.
 | Page          | What it does                                                        | API                                          |
 |---------------|---------------------------------------------------------------------|----------------------------------------------|
 | `/`           | Search, pick up to 20 liked games, **Recomendar**. Each pick shows its position in the model's history (1 = most recent; a new pick becomes 1); drag a pick onto another one, or focus it and use the arrow keys, to change the order | `POST /api/recommendations`         |
-| `/u/<n>`      | Demo user `n`'s recommendations (popular games for users without a list), with ← / → links to the neighbouring users. Above them, the user's last liked games (the model's input); under each LLM explanation, the model that wrote it (`modelo: <rerank_model>`). The summary above the list names the models that produced it: the retriever (`modelo de dos torres: <model_id>`), plus the ranker when one ordered the list (`recuperación: <model_id>, ranking: <ranker_id>`; commit shas shortened to 7 characters), on `/u/<n>` and on the discover page. Numbers are reassigned every pipeline run | `GET /api/users/<n>/recommendations` |
+| `/u/<n>`      | Demo user `n`'s recommendations (popular games for users without a list), with ← / → links to the neighbouring users. Above them, the user's last liked games (the model's input); under each LLM explanation, the model that wrote it (`modelo: <rerank_model>`). The summary above the list names the models that produced it: the retriever (`modelo de dos torres: <model_id>`), plus the ranker when one ordered the list (`retrieval: <model_id>, ranking: <ranker_id>`; commit shas shortened to 7 characters), on `/u/<n>` and on the discover page. Numbers are reassigned every pipeline run | `GET /api/users/<n>/recommendations` |
 | card click    | Game details dialog + Steam store link                              | details come with the list (`details=true`)  |
 
 ## How it is served
@@ -30,8 +30,11 @@ Browser ──► CloudFront
   tolerant, ranked by relevance only). There is no search server.
 - **No adult games.** Inference leaves them out of the index, the catalog and every
   recommendation list (`inference/src/steam_inference/adult.py`).
-- **Spanish UI.** Every text the app renders is in `src/i18n.ts`, including Steam's genre
-  names. Game names, descriptions and LLM explanations are shown as the data has them.
+- **English and Spanish UI.** Every text the app renders is in `src/i18n.ts`, in both
+  languages (Steam's genre names are translated in Spanish). English by default; `?lang=es` /
+  `?lang=en` or the header link switches it and remembers the choice (localStorage). Game
+  names, descriptions and the LLM explanations (written in Spanish by inference) are shown as
+  the data has them.
 - Images come straight from Steam's CDN (`header_image`).
 
 Infrastructure: `infrastructure/frontend.tf` (+ the CloudFront Functions in

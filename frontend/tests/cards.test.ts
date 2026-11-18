@@ -105,10 +105,10 @@ describe("cards", () => {
     );
     expect(responseSummary({ ...online, ranker_id: sha })).toBe(
       "Calculadas ahora a partir de los juegos que elegiste " +
-        "(recuperación: local-9cc8927-a3, ranking: 3692462).",
+        "(retrieval: local-9cc8927-a3, ranking: 3692462).",
     );
     expect(responseSummary({ ...personalized, ranker_id: sha })).toMatch(
-      /^Personalizadas para este jugador \(recuperación: .*, ranking: 3692462\), reordenadas/,
+      /^Personalizadas para este jugador \(retrieval: .*, ranking: 3692462\), reordenadas/,
     );
   });
 
