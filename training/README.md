@@ -512,6 +512,21 @@ Two changes:
   user skipped or disliked) and `NEW_ITEM_ID_DROPOUT` (a higher rate for recent releases, the
   ones unseen when serving).
 
+First round (seed 42, same rows after the 2026-10-02 cutoff; reach = share of 20k users'
+top-10 lists, released games only):
+
+| Model | warm recall@50 | Phantom Blade Zero | Football Manager 27 | Counter-Strike 2 | top game |
+|---|---|---|---|---|---|
+| 2155771 (A6 + A7) | 0.3182 | 43.5% | 35.7% | 37.0% | Phantom Blade Zero |
+| `NEW_ITEM_ID_DROPOUT=0.5` | 0.3328 | 30.0% | 29.1% | 35.8% | Counter-Strike 2 |
+| + `HARD_NEGATIVE_ID_DROPOUT=0.1` | 0.3123 | | | | Counter-Strike 2, 38.2% |
+| 9cc8927 (A3, no recency) | 0.1998 | 0.0% | 0.1% | 0.6% | R.E.P.O., 26.2% |
+
+Halving the new releases' id only dilutes the flood, and A6 also concentrates on games it
+knows (Counter-Strike 2, Cyberpunk 2077 ~35%): recency pushes "trending this week" to
+everyone. Second round: `NEW_ITEM_ID_DROPOUT=1.0`, `RECENCY_DROPOUT` (zero the recency
+features of 30% of training items, so taste carries the score), and both.
+
 ## Evaluation
 
 For every **positive** validation review, the history as of before that review scores the whole
@@ -777,6 +792,7 @@ forwards them to the job:
 | `HISTORY_DROPOUT` / `ITEM_ID_DROPOUT` | 0.3 / 0.1 | augmentation |
 | `HARD_NEGATIVE_ID_DROPOUT` | 0 | id dropout (to OOV) of the hard negatives too |
 | `NEW_ITEM_ID_DROPOUT` / `NEW_ITEM_DAYS` | unset / 90 | A6: id dropout rate of games released at most `NEW_ITEM_DAYS` before the example (targets and hard negatives); unset = `ITEM_ID_DROPOUT` |
+| `RECENCY_DROPOUT` | 0 | A6: probability of zeroing an item's recency features in training (targets and hard negatives), so "trending this week" can't carry a score alone |
 | `CONCENTRATION_ROWS` / `CONCENTRATION_K` | 20000 / 10 | exposure over the current catalog logged by every run (0 rows = off) |
 | `LOGQ_CORRECTION` | true | |
 | `USER_TABLE_SYNC_STEPS` | 0 | also re-sync the user tower's frozen game table every N steps (0 = once per epoch; in epoch 1 that copy is the random init) |

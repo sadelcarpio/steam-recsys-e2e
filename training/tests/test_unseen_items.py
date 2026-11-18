@@ -13,7 +13,12 @@ from steam_training.artifacts import ArtifactStore
 from steam_training.batching import Collator, build_examples, target_log_probs
 from steam_training.config import PairSettings, TrainingSettings
 from steam_training.contracts import OOV_ID, Concentration, PairEvaluation, RankingMetrics
-from steam_training.data import current_catalog, load_training_data, week_of_day
+from steam_training.data import (
+    NUM_RECENCY_FEATURES,
+    current_catalog,
+    load_training_data,
+    week_of_day,
+)
 from steam_training.pairs import decide_pair
 from steam_training.pipeline import run_training
 from steam_training.tracking import final_metrics
@@ -186,12 +191,32 @@ def test_new_item_id_dropout_drops_only_recent_releases(data):
     np.testing.assert_array_equal(dropped, young)
 
 
+def test_recency_dropout_zeroes_the_recency_features(data):
+    tail = slice(-NUM_RECENCY_FEATURES, None)
+    collator, _ = _collator(data, item_id_dropout=0.0)
+    full = collator(list(range(256))).items.numeric
+    has = full[:, tail].abs().sum(dim=1) > 0  # some targets have none (unknown, no reviews)
+    assert has.float().mean() > 0.5
+    collator, _ = _collator(data, item_id_dropout=0.0, recency_dropout=0.5)
+    batch = collator(list(range(256)))
+    zeroed = batch.items.numeric[:, tail].abs().sum(dim=1) == 0
+    assert 0.3 < zeroed[has].float().mean() < 0.7
+    # the other numeric features stay
+    other = slice(0, -NUM_RECENCY_FEATURES)
+    torch.testing.assert_close(batch.items.numeric[:, other], full[:, other])
+    for negatives in batch.negatives:  # hard negatives too
+        values = negatives.items.numeric[negatives.valid][:, tail]
+        assert (values.abs().sum(dim=1) == 0).any()
+
+
 def test_new_item_id_dropout_needs_recency():
     with pytest.raises(ValidationError, match="NEW_ITEM_ID_DROPOUT"):
         TrainingSettings(model_artifacts_bucket=BUCKET, model_id="m", new_item_id_dropout=0.5)
     TrainingSettings(
         model_artifacts_bucket=BUCKET, model_id="m", new_item_id_dropout=0.5, item_recency=True
     )
+    with pytest.raises(ValidationError, match="RECENCY_DROPOUT"):
+        TrainingSettings(model_artifacts_bucket=BUCKET, model_id="m", recency_dropout=0.3)
 
 
 # ---- training records it ----

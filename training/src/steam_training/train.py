@@ -205,6 +205,7 @@ def train_model(
         hard_negative_id_dropout=settings.hard_negative_id_dropout,
         new_item_id_dropout=settings.new_item_id_dropout,
         new_item_days=settings.new_item_days,
+        recency_dropout=settings.recency_dropout,
         explicit_negatives=settings.explicit_negatives,
         mined_negatives=settings.mined_negatives,
         seed=settings.seed,

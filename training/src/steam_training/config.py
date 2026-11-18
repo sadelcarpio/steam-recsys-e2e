@@ -114,6 +114,9 @@ class TrainingSettings(_SsmSettings):
     # hard negatives): the games that are unseen when serving. None = ITEM_ID_DROPOUT.
     new_item_id_dropout: float | None = Field(None, ge=0, le=1)
     new_item_days: int = Field(90, ge=1)
+    # A6: probability of zeroing an item's recency features in training (targets and hard
+    # negatives), so "trending this week" can't carry a score alone (popular games flooding)
+    recency_dropout: float = Field(0.0, ge=0, lt=1)
     # Exposure check over the current catalog (`pipeline.current_concentration`): top-K lists of
     # CONCENTRATION_ROWS warm validation users (0 = off).
     concentration_rows: int = Field(20_000, ge=0)
@@ -215,6 +218,8 @@ class TrainingSettings(_SsmSettings):
             raise ValueError(f"model_id '{CHAMPION}' is reserved")
         if self.new_item_id_dropout is not None and not self.item_recency:
             raise ValueError("NEW_ITEM_ID_DROPOUT needs ITEM_RECENCY (release dates)")
+        if self.recency_dropout and not self.item_recency:
+            raise ValueError("RECENCY_DROPOUT needs ITEM_RECENCY")
         if self.validation_fraction + self.test_fraction >= 0.5:
             raise ValueError("validation_fraction + test_fraction must be < 0.5")
         if self.game_embedding_dim % self.attention_heads:
