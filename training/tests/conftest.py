@@ -174,6 +174,8 @@ def game_details(games) -> pa.Table:
                 [None if g % 10 == 9 else float(g % 4) * 10 for g in games], pa.float64()
             ),
             "game_release_date": pa.array([release_date(g) for g in games], pa.string()),
+            # spec 10: "Coming soon" games are unreleased
+            "game_coming_soon": pa.array([release_date(g) == "Coming soon" for g in games]),
         }
     )
 

@@ -503,7 +503,7 @@ recall can't see it: validation is the 4 weeks after the cutoff, and the big rel
 
 Two changes:
 - **Exposure check** (`evaluation.concentration`): each model's top 10 over the current catalog
-  (every game now, A6 recency as of the newest week) for 20k warm validation users: the reach of
+  (every released game now, A6 recency as of the newest week) for 20k warm validation users: the reach of
   its most common game, the share of slots the top 10 games take, the unseen share. Logged by
   every training run (`concentration/*`, `CONCENTRATION_ROWS` / `CONCENTRATION_K`), printed by
   `compare_models.py` (`COMPARE_ONLY_CONCENTRATION=true`: only that), and a gate in `pair`

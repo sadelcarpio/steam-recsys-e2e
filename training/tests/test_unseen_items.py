@@ -69,7 +69,9 @@ def test_concentration_counts_reach_top10_share_and_unseen_slots(data):
 def test_current_catalog_has_every_game_with_recency_as_of_the_newest_week(marts, data):
     source = FakeSource(marts)
     catalog = current_catalog(source, data.vocab.games, with_tags=True, with_recency=True)
-    assert len(catalog) == N_GAMES
+    # unreleased games ("Coming soon": game_idx % 10 == 7) are never recommended: left out
+    assert len(catalog) == N_GAMES - 4
+    assert not (catalog.items.game_idx % 10 == 7).any()
     # newest features: the conftest's second game_features row (ratio 0.7)
     assert np.allclose(catalog.items.reviews_ratio, 0.7)
     weeks = marts["game_popularity_weekly"]["week_start"].to_numpy()
