@@ -184,6 +184,21 @@ class ActivityBucket(_Frozen):
     recall: dict[int, Recall]
 
 
+class Concentration(_Frozen):
+    """How concentrated a model's top-k lists are over the current catalog (every game's newest
+    features; A6 recency as of the newest week), for a sample of recent users: what a deployed
+    model would serve now, weeks past its cutoff. A model that sends one game to most users
+    (e.g. an unseen new release scored from content + recency alone) shows a high `reach`."""
+
+    k: int
+    lists: int
+    reach: float  # share of the lists containing the most common game
+    top_game_idx: int  # that game
+    top10_share: float  # share of all slots taken by the 10 most common games
+    unseen_share: float  # share of slots with games the model never trained on (OOV)
+    distinct: int  # distinct games over all lists
+
+
 class RetrievalDiagnostics(_Frozen):
     """Every offline metric of one model (or the popularity baseline) on the validation rows."""
 
@@ -239,6 +254,8 @@ class TrackingRecord(_Frozen):
     user_embeddings: EmbeddingHealth
     # A6 runs: the weekly recent-popularity baseline (`evaluation.recent_popularity_scores`)
     recent_popularity: RetrievalDiagnostics | None = None
+    # exposure over the current catalog (`evaluation.concentration`); None for older records
+    concentration: Concentration | None = None
 
 
 # ---- ranker (spec 9) ----
@@ -357,6 +374,8 @@ class PairEvaluation(_Frozen):
     final: RankingMetrics
     retrieval: RankingMetrics
     user_lists: ListMetrics | None = None
+    # the retriever's top-k over the current catalog (gated by PAIR_MAX_GAME_REACH)
+    concentration: Concentration | None = None
 
 
 class PairReport(_Frozen):

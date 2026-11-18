@@ -911,6 +911,39 @@ def catalog_at(
     return catalog_from_table(latest, num_games)
 
 
+def current_catalog(
+    source: TableSource,
+    num_games: int,
+    *,
+    with_tags: bool,
+    with_recency: bool,
+    snapshots: dict[str, int | None] | None = None,
+) -> Catalog:
+    """Every game as serving scores it now: its newest `game_features` row, its current tags
+    and (`with_recency`) A6 recency as of the newest week of `game_popularity_weekly`. Reads
+    the current snapshots unless `snapshots` pins them (missing tables are added to it)."""
+    snapshots = {} if snapshots is None else snapshots
+    tables = ["game_features", *(["game_tags"] if with_tags else [])]
+    tables += RECENCY_TABLES if with_recency else []
+    for table in tables:
+        if table not in snapshots:
+            snapshots[table] = source.snapshot_id(table)
+    latest = latest_game_rows(
+        source.batches("game_features", GAME_FEATURE_COLUMNS, snapshots["game_features"]),
+        num_games,
+    )
+    if with_tags:
+        tags = source.batches("game_tags", GAME_TAG_COLUMNS, snapshots["game_tags"])
+        latest = attach_game_tags(latest, tags, num_games)
+    catalog = catalog_from_table(latest, num_games)
+    if not with_recency:
+        return catalog
+    recency = load_recency(source, snapshots, num_games)
+    weeks = recency.counts.keys & 0xFFFF
+    newest = int(weeks.max()) if len(weeks) else int(week_of_day(0))
+    return replace(catalog, recency=recency).at_day(int(week_start_day(newest)))
+
+
 def attach_game_tags(
     latest: pa.Table, tag_batches: Iterable[pa.RecordBatch], num_games: int
 ) -> pa.Table:

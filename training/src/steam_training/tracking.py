@@ -164,6 +164,12 @@ def final_metrics(record: TrackingRecord) -> dict[str, float]:
     out |= _diagnostic_metrics("popularity/", record.popularity)
     if record.recent_popularity is not None:  # A6 runs
         out |= _diagnostic_metrics("recent_popularity/", record.recent_popularity)
+    if record.concentration is not None:  # exposure over the current catalog
+        c = record.concentration
+        out[f"concentration/top_game_reach_at_{c.k}"] = c.reach
+        out[f"concentration/top10_share_at_{c.k}"] = c.top10_share
+        out[f"concentration/unseen_share_at_{c.k}"] = c.unseen_share
+        out[f"concentration/distinct_at_{c.k}"] = float(c.distinct)
     for segment in ("warm", "all"):
         model = getattr(record.model.recall, segment).recall
         baseline = getattr(record.popularity.recall, segment).recall

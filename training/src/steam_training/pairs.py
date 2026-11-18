@@ -41,8 +41,13 @@ from steam_training.contracts import (
     PairReport,
     RankerMetadata,
 )
-from steam_training.data import TableSource
-from steam_training.evaluation import CatalogIndex, weekly_scores, weekly_top_candidates
+from steam_training.data import TableSource, current_catalog
+from steam_training.evaluation import (
+    CatalogIndex,
+    model_concentration,
+    weekly_scores,
+    weekly_top_candidates,
+)
 from steam_training.languages import load_review_languages
 from steam_training.ranker.data import epoch_seconds, load_ranker_data
 from steam_training.ranker.features import FEATURE_SCHEMA_VERSION, SECONDS_PER_DAY
@@ -157,6 +162,34 @@ def run_pair(
         )
         scored[rid] = (scores_at, groups)
 
+    # exposure over the current catalog for the most recent groups' users (the gate)
+    current = current_catalog(
+        source,
+        data.vocab.games,
+        with_tags=data.vocab.tags is not None,
+        with_recency=any(m.config.item_recency for m, _ in retrievers.values()),
+        snapshots=dict(data.snapshots),
+    )
+    recent = rows.take(np.arange(max(len(rows) - settings.pair_concentration_rows, 0), len(rows)))
+    exposure = {}
+    for rid, (model, _) in retrievers.items():
+        exposure[rid] = model_concentration(
+            model,
+            current,
+            recent.history,
+            settings.pair_concentration_k,
+            settings.eval_batch_size,
+            device,
+            exclude=recent.reviewed,
+            language=recent.language,
+        )
+        log.info(
+            "retriever %s over the current catalog: top game (game_idx %d) in %.1f%% of top-%d "
+            "lists, unseen games %.1f%% of slots",
+            rid, exposure[rid].top_game_idx, 100 * exposure[rid].reach, exposure[rid].k,
+            100 * exposure[rid].unseen_share,
+        )  # fmt: skip
+
     def evaluate(pair: Pair) -> PairEvaluation:
         scores_at, groups = scored[pair.retriever_id]
         fit = rankers_[pair.ranker_id][0] if pair.ranker_id else None
@@ -176,6 +209,7 @@ def run_pair(
             final=ranking_metrics(final, ks),
             retrieval=ranking_metrics(retrieval, ks),
             user_lists=user_lists,
+            concentration=exposure[pair.retriever_id],
         )
         log.info(
             "pair %s: recall@%d %.4f ndcg@%d %.4f (retrieval recall@%d %.4f, @%d %.4f)",
@@ -262,6 +296,13 @@ def decide_pair(
     """The challenger pair to promote (None: keep the serving pair) and why."""
     k, rk, top = settings.pair_candidates, settings.pair_retrieval_k, settings.pair_top_k
     if retriever_changed:
+        exposure = challengers[0].concentration
+        if exposure is not None and exposure.reach > settings.pair_max_game_reach:
+            return None, (
+                f"retriever {challengers[0].retriever_id}: its most common game (game_idx "
+                f"{exposure.top_game_idx}) is in {exposure.reach:.1%} of top-{exposure.k} lists "
+                f"over the current catalog (> PAIR_MAX_GAME_REACH {settings.pair_max_game_reach})"
+            )
         new, old = challengers[0].retrieval, champion.retrieval
         if not new.recall[rk] > old.recall[rk] + settings.retriever_min_improvement:
             return None, (
