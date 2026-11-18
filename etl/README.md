@@ -21,6 +21,8 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
                                            game_details                  human-readable details (serving)
                                            game_tags                     current Steam user tags per game
                                            user_index                    demo user numbers (rebuilt every run)
+                                           game_popularity_weekly        reviews per game and ISO week (spec 9)
+                                           review_languages              language of each review (spec 17, A7)
 ```
 
 ## Marts
@@ -33,6 +35,8 @@ steam_raw (Glue external, Terraform)  ─► steam_staging (views)
 | `game_tags` | one catalog game with tags (spec 8) | `game_idx`, `game_tags` (`lkp_tags` ids, weight descending), `game_tag_weights` (Steam's weights, same order), `scraped_at`, `scrape_date`. The latest tags scrape: a static feature like the genres, not time-versioned (later votes leak into older training rows, accepted) |
 | `interactions` | `review_id` | `timestamp`, `user_id`, `game_id`, `is_positive` (label) + the game features **as of strictly before** the review. No stored user history: training and inference take each user's last N positives before a row from these rows (N per model, A3) |
 | `user_index` | one user of `interactions` (spec 13) | `user_idx` (1 = most reviews ... `count(*)`, ties by lowest `user_id`: the order inference uses for `MAX_USERS` and the rerank), `user_id`, `num_reviews`, `num_positive`, `last_reviewed_at`. A plain Iceberg table **rebuilt every run**: `user_idx` changes as reviews arrive, so it is for demo queries only (`/u/<user_idx>`), never a join key or an export column. Inference publishes it for serving. |
+| `game_popularity_weekly` | (`game_id`, `week_start`) (spec 9) | `game_idx`, `week_start` (Monday UTC of the reviews' week), `positives`, `reviews`: counted from `interactions`. The one definition of popularity (ranker features, popularity lists): a consumer at time t reads only the weeks before t's week. An incremental run recounts every (game, week) its new `interactions` rows touch, so late (backfilled) reviews land in their week. |
+| `review_languages` | `review_id` (spec 17, A7) | `language` (Steam API name, lower case: `english`, `schinese`, `brazilian`, ...), `scrape_date` (of the copy kept, the incremental watermark). Join to `interactions` on `review_id` for the user and time: the retriever's user tower reads the language of the user's previous review. First seen copy with a language wins (like `int_reviews__deduplicated`); reviews without one are left out. A table of its own so `interactions` keeps its schema. |
 
 `user_id` is pseudonymous everywhere (spec 13): the scraper stores a keyed hash of the Steam
 author id (63-bit, non-negative), never the SteamID64.

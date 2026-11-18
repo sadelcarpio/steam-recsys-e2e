@@ -47,6 +47,8 @@ class StoredRecommendations(_Stored):
     generated_at: datetime
     reranked: bool
     rerank_model: str | None = None
+    # spec 9: the ranker that ordered the list (absent: retrieval order, or an older run)
+    ranker_id: str | None = None
     # The user's last liked games, most recent first (absent on items of older runs)
     liked: list[StoredLikedGame] = Field(default_factory=list)
 
@@ -114,6 +116,9 @@ class RecommendationsResponse(_Response):
     # POST /recommendations only: liked games that made up the history / that were unknown
     used_game_ids: list[int] | None = None
     ignored_game_ids: list[int] | None = None
+    # spec 9: the ranker that ordered the list (personalized: the stored item's; online: this
+    # request's). Absent: retrieval order
+    ranker_id: str | None = None
     # GET /users/{user_idx}/recommendations only: the requested demo user number and the
     # highest one (user_idx is reassigned every pipeline run)
     user_idx: int | None = None

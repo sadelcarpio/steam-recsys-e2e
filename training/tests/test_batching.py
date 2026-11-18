@@ -77,3 +77,28 @@ def test_reseed_makes_batches_reproducible(source):
     collator.reseed(3)
     b = collator(idx)
     assert torch.equal(a.history, b.history) and torch.equal(a.items.game_idx, b.items.game_idx)
+
+
+def test_batch_moves_every_tensor_and_keeps_its_structure():
+    from steam_training.batching import Batch, HardNegatives
+    from steam_training.model import Bag, ItemBatch, map_tensors
+
+    def bag(n):
+        return Bag(torch.arange(n), torch.zeros(2, dtype=torch.int64), torch.ones(n))
+
+    items = ItemBatch(
+        torch.tensor([2, 3]), torch.zeros(2, 3), bag(2), bag(1), bag(3), bag(2), bag(4)
+    )
+    batch = Batch(
+        history=torch.zeros(2, 5, dtype=torch.int64),
+        items=items,
+        target=torch.tensor([2, 3]),
+        target_log_prob=torch.zeros(2),
+        negatives=[HardNegatives(items, torch.tensor([4, 5]), torch.tensor([True, False]))],
+    )
+    moved = batch.to(torch.device("cpu"), non_blocking=True)
+    assert isinstance(moved, Batch) and isinstance(moved.negatives[0].items.tags, Bag)
+    assert torch.equal(moved.negatives[0].items.tags.values, batch.items.tags.values)
+    doubled = map_tensors(batch, lambda t: t * 2)
+    assert torch.equal(doubled.items.genres.values, torch.arange(3) * 2)
+    assert torch.equal(batch.items.genres.values, torch.arange(3))  # not modified in place

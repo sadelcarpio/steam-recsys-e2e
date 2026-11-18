@@ -14,28 +14,37 @@ model's vocabularies map to OOV inside the model, so a new game is scored from i
 features. Each game's Steam user tags (`game_tags`, spec 8) are joined when the mart exists: a
 model trained with tags needs them, and the prompt / adult filter use their names. Each game's
 release status comes from `game_details` (spec 10: unreleased games are never published).
+For a model that reads item recency (A6), the catalog carries each game's recency as of the
+run's newest review (`game_popularity_weekly`: only the full ISO weeks before it, as training
+reads it), so the batch lists and the online catalog's item embeddings both include it. A model that
+reads the user's language (A7) gets the language of each user's newest review (any polarity,
+`review_languages`; unknown when that review has none), as training's "previous review".
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from pyiceberg.exceptions import NoSuchTableError
-from steam_training.contracts import PADDING_ID, USER_HISTORY_LENGTH
+from steam_training.contracts import OOV_ID, PADDING_ID, USER_HISTORY_LENGTH
 from steam_training.data import (
+    DAY_SECONDS,
     GAME_FEATURE_COLUMNS,
     GAME_TAG_COLUMNS,
+    RECENCY_TABLES,
     Catalog,
     Ragged,
     TableSource,
     attach_game_tags,
     catalog_from_table,
     latest_game_rows,
+    load_recency,
 )
+from steam_training.languages import LANGUAGE_MART, load_review_languages
 
 from steam_inference.contracts import clean_text
 
@@ -126,6 +135,8 @@ class Users:
     history: np.ndarray
     review_start: np.ndarray  # int64 [n]
     review_count: np.ndarray  # int64 [n]
+    # A7: int8 [n] language id of the newest review (OOV_ID: unknown); None = not loaded
+    language: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.user_id)
@@ -136,6 +147,7 @@ class Users:
             self.history[index],
             self.review_start[index],
             self.review_count[index],
+            self.language[index] if self.language is not None else None,
         )
 
 
@@ -145,6 +157,9 @@ class Reviews:
 
     game_idx: np.ndarray  # int64
     is_positive: np.ndarray | None = None  # bool, same order
+    # int64 microseconds since the epoch of each review, same order (None = not kept)
+    micros: np.ndarray | None = None
+    review_id: np.ndarray | None = None  # int64, same order (A7; None = not kept)
 
     def histories(self, review_users: np.ndarray, user_id: np.ndarray, length: int) -> np.ndarray:
         """[len(user_id), length]: each user's last `length` positively reviewed games, most
@@ -189,11 +204,14 @@ def load_inference_data(
     description_chars: int = 0,
     require_tags: bool = False,
     history_length: int = USER_HISTORY_LENGTH,
+    with_recency: bool = False,
+    with_language: bool = False,
 ) -> InferenceData:
     """`description_chars` > 0 also loads the games' short descriptions (for the rerank
     prompt), truncated to that many characters. `require_tags`: fail when the tag marts are
     missing (the model was trained with tags). `history_length`: the model's
-    (`ModelConfig.history_length`).
+    (`ModelConfig.history_length`). `with_recency`: the model reads item recency (A6);
+    `with_language`: the user's language (A7).
 
     Memory follows the kept users, not the size of the marts: `interactions` is read twice (the
     activity of every user, then the reviews of the selected users only)."""
@@ -203,12 +221,20 @@ def load_inference_data(
         raise RuntimeError(f"the model uses Steam tags but {TAG_TABLES} are missing: run the ETL")
     games = load_games(source, snapshots, description_chars)
     activity = review_activity(source, snapshots["interactions"])
+    if with_recency:
+        games = with_recency_as_of(games, source, snapshots, activity.newest)
     selected = activity.most_active(max_users)
     popular_since = activity.newest - popular_window_days * DAY_MICROS
     review_users, reviews, popular = collect_reviews(
-        source, snapshots["interactions"], selected, popular_since=popular_since
+        source,
+        snapshots["interactions"],
+        selected,
+        popular_since=popular_since,
+        with_review_id=with_language,
     )
     users = users_of(review_users, reviews, selected, history_length)
+    if with_language:
+        users = with_languages(users, reviews, source, snapshots)
     log.info(
         "loaded %d users (of %d with a positive review), %d of %d reviews, %d catalog games "
         "(snapshots %s)",
@@ -269,6 +295,59 @@ def load_games(
         tag_names=tag_names,
         coming_soon=details.coming_soon,
     )
+
+
+def with_recency_as_of(
+    games: Games, source: TableSource, snapshots: dict[str, int | None], micros: int
+) -> Games:
+    """The games with their A6 recency as of the day of `micros` (the newest review; today
+    without reviews). Adds the snapshots read to `snapshots`."""
+    for table in RECENCY_TABLES:
+        if table not in snapshots:
+            try:
+                snapshots[table] = source.snapshot_id(table)
+            except NoSuchTableError as error:
+                raise RuntimeError(
+                    f"the model reads item recency (A6) but mart {table} is missing: run the ETL"
+                ) from error
+    if micros > 0:
+        day = micros // (DAY_SECONDS * 1_000_000)
+    else:
+        day = int(np.datetime64("today", "D").astype(np.int64))
+    recency = load_recency(source, snapshots, len(games.catalog.row_of))
+    catalog = replace(games.catalog, recency=recency).at_day(int(day))
+    log.info("item recency as of day %d (%s)", day, np.datetime64(int(day), "D"))
+    return replace(games, catalog=catalog)
+
+
+def with_languages(
+    users: Users, reviews: Reviews, source: TableSource, snapshots: dict[str, int | None]
+) -> Users:
+    """`users` with the language of their newest review in `reviews` (collected with
+    `with_review_id`), from the `review_languages` mart (adds its snapshot to `snapshots`)."""
+    assert reviews.review_id is not None, "collect_reviews(with_review_id=True)"
+    if LANGUAGE_MART not in snapshots:
+        try:
+            snapshots[LANGUAGE_MART] = source.snapshot_id(LANGUAGE_MART)
+        except NoSuchTableError as error:
+            raise RuntimeError(
+                f"the model reads the user's language (A7) but mart {LANGUAGE_MART} is missing: "
+                "run the ETL"
+            ) from error
+    has = users.review_count > 0
+    newest = np.where(has, reviews.review_id[np.where(has, users.review_start, 0)], -1)
+    if not len(reviews.review_id):
+        newest = np.full(len(users), -1, np.int64)
+    languages = load_review_languages(
+        source, snapshots[LANGUAGE_MART], review_ids=np.unique(newest[newest >= 0])
+    )
+    language = np.where(newest >= 0, languages.of(newest), OOV_ID).astype(np.int8)
+    log.info(
+        "languages: %.1f%% of %d users have a known language",
+        100 * float((language != OOV_ID).mean()) if len(language) else 0.0,
+        len(language),
+    )
+    return replace(users, language=language)
 
 
 def _optional_snapshots(source: TableSource, tables: list[str]) -> dict[str, int | None]:
@@ -341,16 +420,22 @@ def review_rows(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """(user, game_idx, micros, is_positive) of the valid reviews of an `interactions` batch
     (created at or before `until` when given)."""
-    user = _int64(pc.fill_null(batch["user_id"], -1))
-    game = _int64(pc.fill_null(batch["game_idx"], -1))
-    ts = _micros(batch["timestamp"])
+    keep = _valid_reviews(batch, until)
+    user = _int64(pc.fill_null(batch["user_id"], -1))[keep]
+    game = _int64(pc.fill_null(batch["game_idx"], -1))[keep]
     positive = np.asarray(
         pc.fill_null(batch["is_positive"], False).to_numpy(zero_copy_only=False), dtype=bool
-    )
-    keep = (user >= 0) & (game >= 0)
+    )[keep]
+    return user, game, _micros(batch["timestamp"])[keep], positive
+
+
+def _valid_reviews(batch: pa.RecordBatch, until: int | None) -> np.ndarray:
+    """Bool per row of an `interactions` batch: a user and a game (and at or before `until`)."""
+    keep = _int64(pc.fill_null(batch["user_id"], -1)) >= 0
+    keep &= _int64(pc.fill_null(batch["game_idx"], -1)) >= 0
     if until is not None:
-        keep &= ts <= until
-    return user[keep], game[keep], ts[keep], positive[keep]
+        keep &= _micros(batch["timestamp"]) <= until
+    return keep
 
 
 @dataclass(frozen=True)
@@ -424,14 +509,16 @@ def collect_reviews(
     *,
     popular_since: int,
     until: int | None = None,
+    with_review_id: bool = False,
 ) -> tuple[np.ndarray, Reviews, np.ndarray]:
     """Pass 2 over `interactions` -> (sorted user id of every kept review, their reviews newest
     first within a user, popular counts). Only the reviews of `selected` (sorted user ids) are
     kept; the popular counts (positive reviews per game_idx since `popular_since`) cover every
-    user."""
-    users, games, timestamps, positives = [], [], [], []
+    user. `with_review_id` (A7): the reviews keep their `review_id`."""
+    users, games, timestamps, positives, review_ids = [], [], [], [], []
     popular = np.zeros(0, dtype=np.int64)
-    for batch in source.batches("interactions", REVIEW_COLUMNS, snapshot_id):
+    columns = REVIEW_COLUMNS + (["review_id"] if with_review_id else [])
+    for batch in source.batches("interactions", columns, snapshot_id):
         user, game, ts, positive = review_rows(batch, until)
         recent = game[positive & (ts >= popular_since)]
         if len(recent):
@@ -444,15 +531,20 @@ def collect_reviews(
         games.append(game[keep])
         timestamps.append(ts[keep])
         positives.append(positive[keep])
+        if with_review_id:
+            review_id = _int64(pc.fill_null(batch["review_id"], -1))[_valid_reviews(batch, until)]
+            review_ids.append(review_id[keep])
     if not users:
         empty = np.zeros(0, dtype=np.int64)
-        return empty, Reviews(empty, np.zeros(0, dtype=bool)), popular
+        ids = empty if with_review_id else None
+        return empty, Reviews(empty, np.zeros(0, dtype=bool), empty, ids), popular
     user = np.concatenate(users)
     game = np.concatenate(games)
     ts = np.concatenate(timestamps)
     positive = np.concatenate(positives)
     order = np.lexsort((-ts, user))
-    return user[order], Reviews(game[order], positive[order]), popular
+    review_id = np.concatenate(review_ids)[order] if with_review_id else None
+    return user[order], Reviews(game[order], positive[order], ts[order], review_id), popular
 
 
 def popular_counts(

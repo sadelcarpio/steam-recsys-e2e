@@ -19,8 +19,17 @@ summary of the history: tokens = [attn_summary, game_table[ids] + attn_position[
 non-padding slots], then per block x += MHA(LN1(x)), x += FFN(LN2(x)) (ReLU), and the summary
 token's LayerNorm-ed final state (training `HistoryAttention`; padding is masked out of every
 block there, so dropping it here is exact).
+Format 4 (A7) has each optional block iff its arrays are there (tag profile: `tag_table`,
+attention: `attn_summary`) and appends, last, language_table[language id] (the language of the
+user's previous review; online requests don't know it: oov_id, which training's dropout
+trains for).
 Scores are cosine similarities with the (already normalized) item embeddings. The inference
 test `test_online_parity.py` checks this against torch and batch retrieval.
+
+Spec 9: when the manifest names a ranker (`ranker.npz`, written by inference with the catalog,
+only for the serving pair's ranker of this model), the top `candidates` retrieved games are
+re-ordered by it (`ranker_mode` "on") or only compared with retrieval order and logged
+("shadow"). A ranker that fails to load or to rank keeps retrieval order.
 """
 
 from __future__ import annotations
@@ -37,14 +46,17 @@ import numpy as np
 from botocore.config import Config
 from pydantic import BaseModel, ConfigDict
 
+from steam_serving.ranker import OnlineRanker
+
 log = logging.getLogger(__name__)
 
 SUPPORTED_MANIFEST_FORMAT = 2
 # 1: plain user tower; 2: + the A4 tag profile; 3: + the A3 attention encoder, tag profile
 # optional (training `export.py`)
-SUPPORTED_USER_TOWER_FORMATS = (1, 2, 3)
+SUPPORTED_USER_TOWER_FORMATS = (1, 2, 3, 4)
 TAG_PROFILE_FORMAT = 2
 ATTENTION_FORMAT = 3
+LANGUAGE_FORMAT = 4
 EPS = 1e-12  # torch.nn.functional.normalize
 ROUND_DECIMALS = 4  # returned scores; ranking ties at this precision go to the lowest appid
 CATALOG_ARRAYS = (
@@ -88,6 +100,7 @@ ATTENTION_ARRAYS = (
     "attn_ffn_w2",
     "attn_ffn_b2",
 )
+LANGUAGE_ARRAYS = ("language_table", "language_names")
 
 
 @dataclass(frozen=True)
@@ -143,6 +156,12 @@ class BundleManifest(BaseModel):
     catalog_version_id: str | None = None
     catalog_sha256: str
     user_tower_key: str
+    # spec 9: the serving pair's ranker (None: retrieval order)
+    ranker_id: str | None = None
+    ranker_mode: str = "off"  # inference's RANKER_MODE: "on" re-orders, "shadow" only compares
+    ranker_key: str | None = None
+    ranker_version_id: str | None = None
+    ranker_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +171,7 @@ class OnlineResult:
     scores: list[float]  # cosine similarity
     used_game_ids: list[int]  # liked games that made up the history (at most history_length)
     ignored_game_ids: list[int]  # liked games the model does not know (not in the catalog)
+    ranker_id: str | None = None  # the ranker that ordered the list (None: retrieval order)
 
 
 @dataclass(frozen=True)
@@ -174,6 +194,9 @@ class UserTower:
     tag_table: np.ndarray | None = None  # float32 [tags, dim]
     # format 3 only (A3 attention encoder), else None
     attention: HistoryAttention | None = None
+    # format 4 only (A7): float32 [language ids, dim]; names: id = index + 2 (oov_id: unknown)
+    language_table: np.ndarray | None = None
+    language_names: tuple[str, ...] = ()
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> UserTower:
@@ -185,16 +208,26 @@ class UserTower:
             )
         with np.load(io.BytesIO(payload), allow_pickle=False) as npz:
             files = set(npz.files)
-        # format 2 always has the tag profile; format 3 when its arrays are there
+        # format 2 always has the tag profile; formats 3-4 when its arrays are there
         has_profile = version == TAG_PROFILE_FORMAT or (
             version >= ATTENTION_FORMAT and "tag_table" in files
         )
+        # format 3 always has attention; format 4 when its arrays are there
+        has_attention = version == ATTENTION_FORMAT or (
+            version == LANGUAGE_FORMAT and "attn_summary" in files
+        )
+        has_language = version == LANGUAGE_FORMAT
         names = USER_TOWER_ARRAYS + (TAG_PROFILE_ARRAYS if has_profile else ())
-        if version >= ATTENTION_FORMAT:
+        if has_attention:
             names += ATTENTION_ARRAYS
+        if has_language:
+            names += LANGUAGE_ARRAYS
         arrays = _load_npz(payload, names, "user tower")
         profile: dict = {}
-        if version >= ATTENTION_FORMAT:
+        if has_language:
+            profile["language_table"] = arrays["language_table"].astype(np.float32, copy=False)
+            profile["language_names"] = tuple(str(n) for n in arrays["language_names"].tolist())
+        if has_attention:
             profile["attention"] = HistoryAttention(
                 heads=int(arrays["attn_heads"]),
                 eps=float(arrays["attn_ln_eps"]),
@@ -225,8 +258,9 @@ class UserTower:
             b2=arrays["b2"],
         )
 
-    def embed(self, history: np.ndarray) -> np.ndarray:
-        """history: int64 [history_length] game_idx, most recent first, padding-filled."""
+    def embed(self, history: np.ndarray, language: int | None = None) -> np.ndarray:
+        """history: int64 [history_length] game_idx, most recent first, padding-filled.
+        `language` (format 4): language id of the user's previous review (None: unknown)."""
         vocab = len(self.game_table)
         ids = np.where(history < vocab, history, self.oov_id)
         ids = np.where(self.seen_games[ids] | (ids == self.padding_id), ids, self.oov_id)
@@ -239,6 +273,10 @@ class UserTower:
             parts.append(self.attention.summarize(self.game_table[ids[slots]], slots))
         if self.tag_table is not None:
             parts.append(self._tag_profile(history))
+        if self.language_table is not None:
+            row = self.oov_id if language is None else int(language)
+            row = row if 0 <= row < len(self.language_table) else self.oov_id
+            parts.append(self.language_table[row])
         x = np.concatenate(parts).astype(np.float32)
         hidden = np.maximum(x @ self.w1.T + self.b1, 0.0)
         out = hidden @ self.w2.T + self.b2
@@ -268,7 +306,11 @@ class UserTower:
 
 class OnlineModel:
     def __init__(
-        self, manifest: BundleManifest, catalog: dict[str, np.ndarray], user_tower: UserTower
+        self,
+        manifest: BundleManifest,
+        catalog: dict[str, np.ndarray],
+        user_tower: UserTower,
+        ranker: OnlineRanker | None = None,
     ) -> None:
         if user_tower.model_id != manifest.model_id:
             raise ValueError(f"user tower of {user_tower.model_id}, catalog of {manifest.model_id}")
@@ -283,10 +325,17 @@ class OnlineModel:
         order = np.argsort(self.item_game_id, kind="stable")
         self._sorted_ids = self.item_game_id[order]
         self._sorted_rows = order
+        self.ranker = ranker
+        if ranker is not None:
+            check_ranker(ranker, manifest, self._row_game_idx)
 
     @classmethod
     def from_bytes(
-        cls, manifest: BundleManifest, catalog_payload: bytes, user_tower: UserTower
+        cls,
+        manifest: BundleManifest,
+        catalog_payload: bytes,
+        user_tower: UserTower,
+        ranker: OnlineRanker | None = None,
     ) -> OnlineModel:
         if manifest.format_version != SUPPORTED_MANIFEST_FORMAT:
             raise ValueError(
@@ -296,7 +345,11 @@ class OnlineModel:
         if hashlib.sha256(catalog_payload).hexdigest() != manifest.catalog_sha256:
             raise ValueError("catalog sha256 does not match its manifest")
         catalog = _load_npz(catalog_payload, CATALOG_ARRAYS, "catalog")
-        return cls(manifest, catalog, user_tower)
+        return cls(manifest, catalog, user_tower, ranker)
+
+    @property
+    def ranker_mode(self) -> str:
+        return self.manifest.ranker_mode if self.ranker is not None else "off"
 
     @property
     def catalog_games(self) -> int:
@@ -313,9 +366,17 @@ class OnlineModel:
         start, end = self._name_offsets[row], self._name_offsets[row + 1]
         return self._name_bytes[start:end].decode()
 
-    def recommend(self, liked_game_ids: list[int], k: int) -> OnlineResult:
+    def recommend(
+        self,
+        liked_game_ids: list[int],
+        k: int,
+        now_seconds: float | None = None,
+        ranked_k: int | None = None,
+    ) -> OnlineResult:
         """Top k catalog games for a history of liked games (most recent first). Liked games are
-        never recommended; unknown ones are ignored. Empty when no liked game is known."""
+        never recommended; unknown ones are ignored. Empty when no liked game is known. With a
+        ranker, its top `candidates` retrieved games are re-ordered (as of `now_seconds`,
+        default now); a ranked list keeps at most `ranked_k` games."""
         tower = self.user_tower
         liked = np.asarray(list(dict.fromkeys(liked_game_ids)), dtype=np.int64)
         rows = self.rows_of(liked)
@@ -328,14 +389,42 @@ class OnlineModel:
         history[: len(used_rows)] = self._row_game_idx[used_rows]
         scores = self.item_embeddings @ tower.embed(history)
         scores[rows[known]] = -np.inf  # every liked game, not only the first history_length
-        top = self._top(scores, k)
+        mode = self.ranker_mode
+        top = self._top(scores, max(k, self.ranker.candidates) if self.ranker else k)
+        ranker_id = None
+        if self.ranker is not None and mode in ("on", "shadow") and len(top):
+            ranked = self._rank(rows[known], top, scores[top], now_seconds)
+            if ranked is not None and mode == "on":
+                top, ranker_id = ranked, self.ranker.ranker_id
+                k = min(k, ranked_k or k)
+            elif ranked is not None:
+                overlap = len(set(top[:k].tolist()) & set(ranked[:k].tolist())) / len(top[:k])
+                log.info("ranker shadow: overlap@%d %.2f", k, overlap)
+        top = top[:k]
         return OnlineResult(
             game_ids=self.item_game_id[top].tolist(),
             names=[self.name(int(row)) for row in top],
             scores=[round(float(s), ROUND_DECIMALS) for s in scores[top]],
             used_game_ids=self.item_game_id[used_rows].tolist(),
             ignored_game_ids=ignored,
+            ranker_id=ranker_id,
         )
+
+    def _rank(
+        self,
+        history: np.ndarray,
+        top: np.ndarray,
+        scores: np.ndarray,
+        now_seconds: float | None,
+    ) -> np.ndarray | None:
+        """The retrieved rows `top` in the ranker's order; None (retrieval order) on failure."""
+        assert self.ranker is not None
+        try:
+            now = time.time() if now_seconds is None else now_seconds
+            return top[self.ranker.order(history, top, scores, int(now))]
+        except Exception:
+            log.exception("ranker %s failed: retrieval order", self.ranker.ranker_id)
+            return None
 
     def _top(self, scores: np.ndarray, k: int) -> np.ndarray:
         """Rows of the k best scores, ranked by the score as returned (ROUND_DECIMALS) and then
@@ -350,6 +439,21 @@ class OnlineModel:
         candidates = np.flatnonzero(scores >= kth)  # k rows + any ties with the k-th
         order = np.lexsort((self.item_game_id[candidates], -scores[candidates]))
         return candidates[order[:k]]
+
+
+def check_ranker(ranker: OnlineRanker, manifest: BundleManifest, row_game_idx: np.ndarray) -> None:
+    """A ranker serves only with the model and the catalog rows it was exported for."""
+    if ranker.ranker_id != manifest.ranker_id:
+        raise ValueError(
+            f"ranker.npz holds {ranker.ranker_id}, the manifest names {manifest.ranker_id}"
+        )
+    if ranker.model_id != manifest.model_id:
+        raise ValueError(
+            f"ranker {ranker.ranker_id} serves with {ranker.model_id}, "
+            f"the catalog is {manifest.model_id}'s"
+        )
+    if not np.array_equal(ranker.game_idx, row_game_idx):
+        raise ValueError("ranker.npz rows differ from the catalog's")
 
 
 def _load_npz(payload: bytes, names: tuple[str, ...], what: str) -> dict[str, np.ndarray]:
@@ -413,10 +517,30 @@ class BundleLoader:
             else UserTower.from_bytes(self._get(manifest.user_tower_key))
         )
         catalog = self._get(manifest.catalog_key, manifest.catalog_version_id)
-        self._model = OnlineModel.from_bytes(manifest, catalog, user_tower)
+        model = OnlineModel.from_bytes(manifest, catalog, user_tower)
+        model.ranker = self._ranker(manifest, model)
+        self._model = model
         log.info(
-            "loaded the online model %s (%d games) in %.2fs",
+            "loaded the online model %s (%d games, ranker %s, %s) in %.2fs",
             manifest.model_id,
-            self._model.catalog_games,
+            model.catalog_games,
+            manifest.ranker_id,
+            model.ranker_mode,
             time.perf_counter() - started,
         )
+
+    def _ranker(self, manifest: BundleManifest, model: OnlineModel) -> OnlineRanker | None:
+        """The manifest's ranker, checked against the model; None (retrieval order) when there
+        is none or it can't be used: a ranker problem never takes the endpoint down."""
+        if manifest.ranker_key is None or manifest.ranker_mode == "off":
+            return None
+        try:
+            payload = self._get(manifest.ranker_key, manifest.ranker_version_id)
+            if hashlib.sha256(payload).hexdigest() != manifest.ranker_sha256:
+                raise ValueError("ranker sha256 does not match its manifest")
+            ranker = OnlineRanker.from_bytes(payload)
+            check_ranker(ranker, manifest, model._row_game_idx)
+            return ranker
+        except Exception:
+            log.exception("ranker %s not loaded: retrieval order", manifest.ranker_id)
+            return None

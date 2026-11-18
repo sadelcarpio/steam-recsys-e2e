@@ -29,7 +29,13 @@ steam_marts (Iceberg, pyiceberg)
    first (the model's length: 5, or 20 / 50 for A3; the same derivation as training). Games
    also get their Steam user tags (`game_tags` + `lkp_tags`) when those marts
    exist (required when the model was trained with tags, else only used by the prompt and the
-   adult filter). `interactions` supplies each user's reviewed games (excluded from the
+   adult filter). A model trained with item recency (A6, `ITEM_RECENCY`) gets each game's
+   recency as of the newest review: reviews in the 4 / 13 full ISO weeks before it
+   (`game_popularity_weekly`) and days since release (`game_details`), as training reads them;
+   the run fails when those marts are missing. The online catalog's item embeddings include it,
+   so serving needs nothing new. A model that reads the user's language (A7, `USER_LANGUAGE`)
+   gets the language of each user's newest review (any polarity) from `review_languages`
+   (unknown when that review has none); the run fails when the mart is missing. `interactions` supplies each user's reviewed games (excluded from the
    recommendations) and review counts. All reads are
    pinned to the snapshot current at the start of the run. Memory follows the `MAX_USERS`
    kept users, not the size of the marts: `interactions` is read twice (review counts of every
@@ -42,6 +48,28 @@ steam_marts (Iceberg, pyiceberg)
 2. **Retrieval.** Every game is embedded once. Users are scored against all games in chunks
    (exact brute force, no ANN), and the top `TOP_K` (30) are kept. Games newer than the model
    are ranked from their content features (their ids map to OOV).
+   **Ranker (spec 9).** When `evaluation/champion/pair.json` names a ranker for the retriever
+   this run serves (and `rankers/champion/` is that ranker), retrieval keeps
+   `RETRIEVAL_CANDIDATES` (100) per user and a LightGBM ranker re-orders them with the
+   features of `steam_training.ranker.features`: the user's last liked games, the catalog's
+   tags / developers / genres, `game_details` price and release date, and popularity from the
+   `game_popularity_weekly` mart as of the run (the weeks before its week). `RANKER_MODE`:
+   `shadow` (default) computes the ranker order and logs its overlap with retrieval order, but
+   writes retrieval order; `on` writes the ranker's top `RANKER_TOP_K` (20); `off` skips it.
+   A failing chunk of users keeps retrieval order. Anything else (no pair, a pair with another
+   retriever, a missing mart, an old feature schema) keeps retrieval order and the summary's
+   `ranker_reason` says why. Item scores stay the retrieval cosine (in list order).
+   The same ranker goes to the serving Lambda for `POST /recommendations`: with the online
+   catalog, the run writes `serving/online/ranker.npz` (the trees, flattened, and the game side
+   of the features for the catalog rows, popularity as of the run;
+   `steam_training.ranker.export`) and names it in the manifest with `RANKER_MODE` (`shadow`:
+   serving only logs; `on`: serving re-orders). A failed export publishes the catalog without
+   it (summary `online_ranker_id` null). Between runs (a ranker promoted after the last one, or
+   a mode change), `uv run python scripts/publish_online_ranker.py [--dry-run] [--mode on]`
+   publishes just the ranker next to the catalog already in S3: it reads only the game marts and
+   the popularity mart (no `interactions`), checks the file with serving's code, prints one
+   example list in both orders, then rewrites the manifest with the same catalog version. Run it
+   after any inference run in progress has finished (that run rewrites the manifest).
 3. **Reranking.** The users with at least `RERANK_MIN_REVIEWS` (6) reviews, most active first
    and at most `RERANK_MAX_USERS` (100), are sent to Bedrock (Converse API) with their last
    last 5 liked games (the start of the user tower's history) and their K
@@ -76,6 +104,13 @@ steam_marts (Iceberg, pyiceberg)
    champion changes
    `model_id`, so it rewrites every user. The run logs `written` / `unchanged` / `deleted`.
    Users with only negative reviews have no history and get no item.
+   **Delayed-label check (spec 9).** Each run saves the lists of `ONLINE_CHECK_USERS`
+   (20000) sampled users, the written order and the alternative one (shadow: the ranker's;
+   on: retrieval's), to `evaluation/online/lists/latest.npz`. The next run scores them
+   against what those users reviewed positively in between (games they had not reviewed
+   before): precision / recall / MAP@{10, 20}, in `evaluation/online/<run>.json` and the
+   summary's `online_check`. That is the live comparison of the two orders, with no A/B
+   infrastructure. Dry runs (`OUTPUT_PATH`) skip it.
 5. **Popularity fallback.** The reserved item `user_id = "__popular__"` holds the `TOP_K`
    catalog games with the most positive reviews in the last `POPULAR_WINDOW_DAYS` (90) before
    the newest review (`model_id` `popularity`, never reranked). Serving returns it to users
@@ -145,6 +180,7 @@ steam_marts (Iceberg, pyiceberg)
   "generated_at": "2026-09-24T12:40:00+00:00",
   "reranked": true,
   "rerank_model": "us.amazon.nova-2-lite-v1:0",
+  "ranker_id": "3692462786496a912d90a4fb79b66cdba04d6ea6",
   "liked": [{"game_id": 375180, "name": "Dungeons 2"}],
   "content_hash": "9f2c0e5d7a1b4c8e0f3a6b9d2c5e8f1a"
 }
@@ -224,7 +260,10 @@ Pydantic settings (`steam_inference.config.InferenceSettings`). Precedence: env 
 | `SEARCH_INDEX_KEY` | `serving/search/games.json` | Frontend search index, written with the online catalog (dry runs: `online/games.json.gz`) |
 | `USER_INDEX_PREFIX` | `serving/users` | Demo user index (spec 13), `index.bin` + `index.json` (dry runs: `online/index.*`) |
 | `OUTPUT_PATH` | – | Write JSON lines to this local file instead of DynamoDB (details go to `game-details.jsonl` next to it) |
-| `TOP_K` | 30 | Candidates kept and written per user |
+| `TOP_K` | 30 | Candidates kept and written per user (no ranker, or `RANKER_MODE=shadow`) |
+| `RANKER_MODE` | shadow | Spec 9 ranker: `off`, `shadow` (compared, not written) or `on` (Terraform `inference_ranker_mode`) |
+| `RETRIEVAL_CANDIDATES` / `RANKER_TOP_K` | 100 / 20 | Candidates the ranker re-orders / written with `RANKER_MODE=on` (`EXPLAIN_TOP_N` must be <= it) |
+| `ONLINE_CHECK_USERS` | 20000 | Users whose lists the next run scores (delayed-label check); `0` = off |
 | `MAX_USERS` | 0 (all) | Only the N most active users. Scheduled runs: 200000 (SSM, `inference_max_users`, spec 14) |
 | `PRUNE_UNSEEN` | false | Also delete the stored users a capped run did not write (one-off: the spec 13 rekey) |
 | `RERANK_ENABLED` | true | |

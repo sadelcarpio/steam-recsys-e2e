@@ -1,7 +1,7 @@
 # inference
 
 Specs: `specs/4-inference-pipeline.md`, `specs/7-rerank-two-stage.md` (two-stage rerank +
-evaluation), `specs/10-coming-soon-games.md` (unreleased games),
+evaluation), `specs/9-ranking-model.md` (the ranker, delayed-label check), `specs/10-coming-soon-games.md` (unreleased games),
 `specs/13-anonymize-user-ids.md` (pseudonymous user ids, demo user index).
 Human docs: `README.md`.
 
@@ -22,8 +22,20 @@ Human docs: `README.md`.
     `Reviews.histories` (each kept user's last `history_length` positives, most recent first:
     the model's history, A3; `until` = as-of reads), latest `game_features` per game (all current games,
     even beyond the model vocab), lookup names, `Games.info` / `describe` (prompt lines),
-    truncated short descriptions and the release status (`Games.coming_soon`)
+    truncated short descriptions and the release status (`Games.coming_soon`);
+    `with_recency_as_of` (A6 models, `ModelConfig.item_recency`): the catalog's recency as of
+    the newest review (`steam_training.data.load_recency`; `evaluate_rerank`: as of the cutoff);
+    `with_languages` (A7, `ModelConfig.user_language`): each user's newest review's language
+    (`collect_reviews(with_review_id=True)`, `steam_training.languages.load_review_languages`
+    for only those review ids), `Users.language`, passed to the user tower by `retrieve`
   - `retrieval.py`: stage 2. Exact top K (chunked matmul, reviewed games set to -inf)
+  - `ranking.py` (spec 9): stage 2b. `load_serving_ranker` (pair.json must name this run's
+    retriever and `rankers/champion/` that ranker; game table from the catalog +
+    `game_details`, popularity from `game_popularity_weekly` as of the run), `apply_ranker`
+    (per-chunk failure isolation, overlap with retrieval order), `cut`
+  - `online_check.py` (spec 9): the delayed-label check (`ListsSample` saved per run,
+    `check` scores the previous run's sample against the reviews since; uses
+    `Reviews.micros`)
   - `rerank.py`: stage 3, two calls per user. `llm_ranking` (shuffled prompt,
     `permutation_error` + one retry, else retrieval order), `blend`, then explanations of the
     final top N checked by `explanation_problem` (no candidate name, grounded, length), one
@@ -41,6 +53,10 @@ Human docs: `README.md`.
     `S3BundleStore` puts the catalog, then a manifest pinned to its version id that names the
     model's `user_tower.npz`; `LocalBundleStore` for dry runs; both also publish the search
     index)
+  - `ranking.py` (spec 9): `load_serving_ranker` (the serving pair's ranker, popularity from
+    the mart as of the run), `apply_ranker` (per-chunk fallback), `online_ranker` (the
+    `ranker.npz` for the serving Lambda, rows = the published catalog's, via
+    `steam_training.ranker.export`); `online_check.py`: the delayed-label check
   - `search.py`: the frontend's search index (`build_search_index` / `index_from_catalog`:
     catalog games as [appid, name, reviews], `encode_search_index`: gzipped JSON), published
     with the catalog
@@ -54,6 +70,9 @@ Human docs: `README.md`.
     items whose `content_hash` matches the stored one), `popular_recommendations` (the
     `__popular__` fallback item), `select_rerank_users`
   - `__main__.py`: SageMaker Processing entry point (`python -m steam_inference`)
+- `scripts/publish_online_ranker.py` (spec 9): `ranker.npz` for the catalog already in S3
+  (`S3BundleStore.publish_ranker`: the ranker, then the same manifest + ranker fields), without
+  an inference run; tested in `tests/test_online_ranker.py`
 - `scripts/publish_search_index.py`: publishes the search index from the catalog already in
   S3 (+ review counts from one Athena query), without an inference run; drops adult games
   from both (republishing the catalog when it had any)
@@ -104,6 +123,13 @@ Human docs: `README.md`.
   when the model has its `user_tower.npz`. `test_online_parity.py` runs training's export and
   this catalog through serving's numpy code, and compares the result with torch and with batch
   retrieval.
+- Online ranker (spec 9): `ranker.npz` is published only with the catalog, for the rows
+  `build_catalog` keeps (same order), before the catalog and pinned in the same manifest
+  (`ranker_*` fields, optional: older serving deploys ignore them). Its mode is this run's
+  `RANKER_MODE`. Stored items carry `ranker_id` (in `content_hash`, only when set, so lists
+  without a ranker keep their hash) for the users the ranker ordered (`RankerStats.ranked`:
+  not a failed chunk). Serving's port must match training's features and LightGBM:
+  `tests/test_online_ranker.py`.
 - The search index (`SearchIndex`, `SEARCH_INDEX_FORMAT`) is read by the frontend
   (`frontend/src/api.ts`): change both together. It is published only with the online catalog,
   so search offers exactly the games `POST /recommendations` can use.
@@ -121,6 +147,13 @@ Human docs: `README.md`.
   user of `interactions`), the kept users' reviewed game ids, users x K candidates, one score
   chunk (`USER_BATCH_SIZE` x games) and the stored hashes (a dict with one entry per item,
   about 150 MB at 1.4M users). Never load a whole mart when a per-batch filter will do.
+- Ranker (spec 9): it only runs as part of the serving pair (`evaluation/champion/pair.json`
+  names this run's retriever, `rankers/champion/` holds the named ranker with the current
+  `FEATURE_SCHEMA_VERSION`); otherwise retrieval order, with `ranker_reason` in the summary.
+  Features come from `steam_training.ranker.features` only (never re-implemented here) and are
+  as of the run time. `RANKER_MODE=shadow` must write exactly what `off` writes. The LLM rerank
+  and explanations run on the written list (the ranker's top `RANKER_TOP_K` when `on`). The
+  delayed-label sample is saved only by real runs (`save_online_lists`, off for dry runs).
 - The Bedrock model id lives in Terraform (`inference_bedrock_model_id`), because IAM grants
   exactly that model. Changing it only via env would get AccessDenied in AWS.
 

@@ -1,7 +1,15 @@
-"""Starts a SageMaker training job for `train` or `promote` and watches it (CD workflows).
+"""Starts a SageMaker training job for `train`, `promote`, `rank` or `pair` and watches it.
 
     python -m steam_training.launch train   --model-id <sha> [--env EPOCHS=10 ...]
     python -m steam_training.launch promote --model-id <sha>
+    python -m steam_training.launch rank    --model-id <ranker id> [--env RETRIEVER_ID=<id>]
+    python -m steam_training.launch pair    --model-id <label> --env RANKER_ID=<id> \
+        [RETRIEVER_ID=<id>]
+    python -m steam_training.launch pair    --model-id rollback --env ROLLBACK=true
+
+`rank` trains a ranker named after `--model-id` (spec 9: a CPU job, e.g. `--instance-type
+ml.m5.2xlarge`); `pair` promotes a (retriever, ranker) pair or rolls back, `--model-id` only names
+the job.
 
 Both run the image `<training_image_repository>:<model_id>` by default, so a model is trained
 and evaluated by the code of its own commit. `--image-tag` picks another image: the GPU build
@@ -58,7 +66,20 @@ METRIC_DEFINITIONS = {
         "champion:warm_recall": r"champion_warm_recall=" + _NUMBER,
         "popularity:warm_recall": r"popularity_warm_recall=" + _NUMBER,
     },
+    # `ranker.pipeline.metrics_line`, at RANKER_TOP_K
+    "rank": {
+        "ranker:recall": r"ranker_recall_at_k=" + _NUMBER,
+        "retrieval:recall": r"retrieval_recall_at_k=" + _NUMBER,
+        "ranker:ndcg": r"ranker_ndcg_at_k=" + _NUMBER,
+        "retrieval:ndcg": r"retrieval_ndcg_at_k=" + _NUMBER,
+        "candidates:recall": r"candidate_recall=" + _NUMBER,
+        "ranker:list_map": r"ranker_list_map_at_k=" + _NUMBER,
+        "retrieval:list_map": r"retrieval_list_map_at_k=" + _NUMBER,
+    },
+    # one log line per evaluated pair: the report holds the comparison
+    "pair": {},
 }
+MODES = tuple(METRIC_DEFINITIONS)
 
 
 def parse_env(pairs: list[str]) -> dict[str, str]:
@@ -126,17 +147,79 @@ def training_job_request(
     }
 
 
+LOG_GROUP = "/aws/sagemaker/TrainingJobs"
+NOT_FOUND = "ResourceNotFoundException"
+
+
+class LogTail:
+    """Prints the job's new CloudWatch log lines (its streams are `<job name>/algo-1-...`), so
+    the workflow shows the job's progress. Best effort: a read error is logged once and the
+    tail stops, the wait goes on."""
+
+    def __init__(self, logs, name: str, write=print):
+        self.logs, self.name, self.write = logs, name, write
+        self.start_ms = 0
+        self.seen: set[str] = set()  # event ids at `start_ms` (filter_log_events is inclusive)
+        self.broken = False
+
+    def poll(self) -> int:
+        if self.broken:
+            return 0
+        printed = 0
+        kwargs = {
+            "logGroupName": LOG_GROUP,
+            "logStreamNamePrefix": f"{self.name}/",
+            "startTime": self.start_ms,
+        }
+        try:
+            while True:
+                page = self.logs.filter_log_events(**kwargs)
+                for event in page.get("events", []):
+                    if event["eventId"] in self.seen:
+                        continue
+                    if event["timestamp"] > self.start_ms:
+                        self.start_ms, self.seen = event["timestamp"], set()
+                    self.seen.add(event["eventId"])
+                    self.write(event["message"].rstrip())
+                    printed += 1
+                token = page.get("nextToken")
+                if not token:
+                    return printed
+                kwargs["nextToken"] = token
+        except Exception as err:  # noqa: BLE001 - the tail must never fail the launch
+            if getattr(err, "response", {}).get("Error", {}).get("Code") == NOT_FOUND:
+                return printed  # no log stream yet (the job is still starting)
+            log.warning("stopped printing the job's logs: %s", err)
+            self.broken = True
+            return printed
+
+
 def wait_for_job(
-    sagemaker, name: str, timeout_seconds: float, poll_seconds: float = 60, clock=time.monotonic
+    sagemaker,
+    name: str,
+    timeout_seconds: float,
+    poll_seconds: float = 60,
+    clock=time.monotonic,
+    tail: LogTail | None = None,
 ) -> dict:
     """Poll until the job ends or `timeout_seconds` pass (then it is returned still running:
-    the job itself keeps going, only the workflow stops watching it)."""
+    the job itself keeps going, only the workflow stops watching it). With `tail`, the job's new
+    log lines are printed at every poll, and once more at the end."""
     deadline = clock() + timeout_seconds
+    status = None
     while True:
         job = sagemaker.describe_training_job(TrainingJobName=name)
+        if tail is not None:
+            tail.poll()
         if job["TrainingJobStatus"] in TERMINAL or clock() >= deadline:
+            if tail is not None and job["TrainingJobStatus"] in TERMINAL:
+                time.sleep(min(poll_seconds, 10))  # the last lines reach CloudWatch late
+                tail.poll()
             return job
-        log.info("%s: %s / %s", name, job["TrainingJobStatus"], job.get("SecondaryStatus"))
+        current = (job["TrainingJobStatus"], job.get("SecondaryStatus"))
+        if current != status:  # status lines only on a change: the job's logs say the rest
+            log.info("%s: %s / %s", name, *current)
+            status = current
         time.sleep(poll_seconds)
 
 
@@ -186,9 +269,31 @@ def promotion_summary(report: EvaluationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+def ranker_summary(report) -> str:
+    k = report.top_k
+    t = report.test
+    lines = [
+        f"### Ranker `{report.ranker_id}` on `{report.retriever_id}`: gate "
+        f"{'PASSED' if report.gate_passed else 'failed'}",
+        "",
+        report.reason,
+        "",
+        f"| order | recall@{k} | ndcg@{k} | mrr@{k} |",
+        "|---|---|---|---|",
+        f"| retrieval | {t.retrieval.recall[k]:.4f} | {t.retrieval.ndcg[k]:.4f} | "
+        f"{t.retrieval.mrr.get(k, 0):.4f} |",
+        f"| ranker | {t.ranker.recall[k]:.4f} | {t.ranker.ndcg[k]:.4f} | "
+        f"{t.ranker.mrr.get(k, 0):.4f} |",
+        "",
+        f"Candidates' recall (ceiling): {report.candidate_recall:.4f}; test groups "
+        f"{report.window.test_groups} from T2 {report.window.t2:%Y-%m-%d}.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="steam_training.launch")
-    parser.add_argument("mode", choices=["train", "promote"])
+    parser.add_argument("mode", choices=MODES)
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--env", nargs="*", default=[], help="NAME=value job env overrides")
     parser.add_argument("--summary", type=Path, help="append a Markdown summary to this file")
@@ -200,6 +305,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--instance-type", help="override INSTANCE_TYPE (e.g. ml.g4dn.xlarge)")
     # GitHub OIDC credentials of the deploy role last 1 h: stop watching before they expire.
     parser.add_argument("--wait-minutes", type=float, default=50)
+    parser.add_argument(
+        "--no-logs", action="store_true", help="don't print the job's CloudWatch logs while waiting"
+    )
     args = parser.parse_args(argv)
     configure_logging("INFO")
 
@@ -223,7 +331,10 @@ def main(argv: list[str] | None = None) -> int:
     sagemaker.create_training_job(**request)
     log.info("started %s (%s)", name, settings.instance_type)
 
-    job = wait_for_job(sagemaker, name, args.wait_minutes * 60)
+    tail = None
+    if not args.no_logs:
+        tail = LogTail(boto3.client("logs", region_name=settings.aws_region), name)
+    job = wait_for_job(sagemaker, name, args.wait_minutes * 60, tail=tail)
     status = job["TrainingJobStatus"]
     log.info("%s: %s %s", name, status, job.get("FailureReason", ""))
     if status == "InProgress":
@@ -240,6 +351,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "train":
         metadata = store.load_metadata(args.model_id)
         summary = training_summary(metadata) if metadata else "model metadata not found\n"
+    elif args.mode == "rank":
+        ranker = store.read_ranker_report(args.model_id)
+        summary = ranker_summary(ranker) if ranker else "ranker report not found\n"
+    elif args.mode == "pair":
+        pair = store.read_pair()
+        summary = (
+            f"### Serving pair\n`{pair.retriever_id}` + `{pair.ranker_id or 'no ranker'}`: "
+            f"{pair.reason}\n"
+            if pair
+            else "no pair.json (nothing promoted)\n"
+        )
     else:
         report = store.read_report(args.model_id)
         summary = promotion_summary(report) if report else "evaluation report not found\n"

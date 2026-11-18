@@ -89,6 +89,21 @@ describe("cards", () => {
     expect(responseSummary({ ...personalized, source: "online" })).toMatch(/juegos que elegiste/);
   });
 
+  it("names the retriever and, when one ordered the list, the ranker", () => {
+    const sha = "3692462786496a912d90a4fb79b66cdba04d6ea6";
+    const online = { ...personalized, source: "online" as const, model_id: "local-9cc8927-a3" };
+    expect(responseSummary(online)).toBe(
+      "Calculadas ahora a partir de los juegos que elegiste (modelo de dos torres: local-9cc8927-a3).",
+    );
+    expect(responseSummary({ ...online, ranker_id: sha })).toBe(
+      "Calculadas ahora a partir de los juegos que elegiste " +
+        "(recuperación: local-9cc8927-a3, ranking: 3692462).",
+    );
+    expect(responseSummary({ ...personalized, ranker_id: sha })).toMatch(
+      /^Personalizadas para este jugador \(recuperación: .*, ranking: 3692462\), reordenadas/,
+    );
+  });
+
   it("renders details with facts and a Steam link", () => {
     const view = detailsView(personalized.recommendations[0].details!, "why");
     // the stored image, not the legacy CDN fallback

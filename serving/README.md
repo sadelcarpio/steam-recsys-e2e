@@ -67,6 +67,9 @@ curl "$URL/users/12/recommendations?limit=3"
 }
 ```
 
+- `ranker_id` (spec 9): the ranker that ordered the list, also on stored lists (written by
+  inference with `RANKER_MODE=on`; such a list has the ranker's top 20). Omitted when the list
+  is in the retriever's order.
 - `liked` (personalized lists only): the user's last liked games, most recent first, with their
   `details` when requested (same BatchGetItem as the recommendations). Omitted for the popular
   list and for items written before the field existed.
@@ -105,7 +108,8 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
   "reranked": false,
   "recommendations": [{"rank": 1, "game_id": 241910, "name": "Goodbye Deponia", "score": 0.5755}],
   "used_game_ids": [620, 105600],
-  "ignored_game_ids": []
+  "ignored_game_ids": [],
+  "ranker_id": "3692462786496a912d90a4fb79b66cdba04d6ea6"
 }
 ```
 
@@ -114,6 +118,18 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
   history (`used_game_ids`), the same input as batch inference's history of the user's last
   positive reviews. Games outside the catalog are listed in
   `ignored_game_ids`. Every liked game is excluded from the results.
+- **Ranker (spec 9).** When the manifest names a ranker (the serving pair's, published by
+  inference with the catalog: `serving/online/ranker.npz`), the top `candidates` (100) retrieved
+  games are re-ordered by it and the first `limit` returned, at most `RANKER_TOP_K` (20); `ranker_id` says which ranker
+  ordered the list (absent: retrieval order). Its mode is inference's `RANKER_MODE`: `on`
+  re-orders, `shadow` only logs the overlap with retrieval order, `off` publishes no ranker.
+  The user side of its features comes from the first 20 known liked games, the game side
+  (popularity as of the inference run, price, release date, tags, developer / publisher,
+  genres / categories) from `ranker.npz`. `scores` stay the retrieval cosine. A ranker that
+  fails to load or to rank keeps retrieval order (logged); the endpoint never fails for it.
+  The trees run in numpy (`steam_serving.ranker`, LightGBM's numerical decision; ~6 ms for 300
+  trees × 100 candidates); `inference/tests/test_online_ranker.py` checks the scores against
+  LightGBM and the features against training's `compute_features`.
 - If none of the liked games is known, the response is the popular list minus the liked games
   (`source: "popular"`).
 - There are no LLM explanations online, and responses are never cached (`no-store`).
@@ -123,13 +139,16 @@ curl -X POST "$URL/recommendations" -H 'content-type: application/json' \
     2 adds the A4 tag profile (game -> tags lookup, tag table, per-position weights; ~67 MB).
     Format 3 adds the A3 self-attention encoder over the history (a few hundred KB of weights;
     the tag profile arrays when the model has it); one embedding takes ~0.7 ms for a 50-game
-    history. Serving reads formats 1, 2 and 3: deploy serving before promoting a model of a
-    newer format.
+    history. Format 4 (A7) adds the user's language: an 8-d embedding per Steam language,
+    appended last (attention and tag profile present iff their arrays are). Online requests
+    don't know the language, so serving uses the unknown row. Serving reads formats 1 to 4:
+    deploy serving before promoting a model of a newer format.
   - **Catalog:** `serving/online/catalog.npz`, written by the inference job every run (item
     embeddings, plus the `game_id`, `game_idx` and name of each catalog row; about 14 MB).
   
-  `serving/online/manifest.json` pins the catalog's S3 version and names the user tower.
-  Serving refuses a pair whose `model_id`s differ.
+  `serving/online/manifest.json` pins the catalog's S3 version and names the user tower (and
+  the ranker, pinned the same way). Serving refuses a pair whose `model_id`s differ, and a
+  ranker exported for another model or other catalog rows.
 - **Mapping.** `game_id` is mapped to `game_idx` (the `lkp_games` ids) through the catalog
   rows in the catalog. Ids beyond the model's vocabulary, or games unseen in training, become
   OOV, exactly as in torch.
@@ -181,6 +200,11 @@ Lambda).
 | `USER_INDEX_PREFIX` | `serving/users` | SSM. Demo user index (spec 13) |
 | `USER_INDEX_REFRESH_SECONDS` | 300 | Its manifest re-check interval |
 | `MAX_LIKED_GAMES` | 100 | |
+| `RANKER_TOP_K` | 20 | Spec 9: an online list ordered by the ranker returns at most this many games, whatever `limit` (batch writes the ranker's top 20); retrieval-order lists keep `limit` |
+
+Every request logs one JSON line (`steam_serving.app`): `method`, `path`, `status`, `ms`, and
+for recommendation responses `source`, `model_id`, `ranker_id` (null: retrieval order),
+`results` and, online, `liked_used` (liked games that formed the history).
 
 ## Development
 

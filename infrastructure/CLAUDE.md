@@ -42,6 +42,16 @@ Human docs: `README.md`. A single Terraform root with one file per component, pl
   `tags-scraping` task whose final failure is caught: tags are best effort). `CheckChampion` lists `models/champion/metadata.json` (written last by a
   promotion). New states need matching permissions on `aws_iam_role.pipeline` (RunTask on the
   task definition, PassRole on its roles).
+- The training state machine (`training_pipeline.tf`, spec 9 phase 7) is separate from the data
+  pipeline: `Defaults -> Configure (JsonMerge with the execution input) -> Ids -> BaseEnv ->
+  Env -> TrainRetriever -> TrainRanker -> EvaluatePairs -> ReadDecision -> WouldPromote? ->
+  AwaitApproval -> ApplyPromotion -> RunInference? -> RunInference`. The four SageMaker
+  training jobs come from `local.training_steps` (one map entry per step); their reserved env
+  (`BaseEnv`: ids, bucket, `USE_SSM`) wins over the input's env maps. Ids derive from the
+  execution name (`ct-<name>`, job names `steam-recsys-ct-<name>-<step>` ≤ 63 chars, so names ≤
+  40 chars, `[A-Za-z0-9-]`). The approval is an `aws-sdk:s3:putObject.waitForTaskToken` (the
+  token in `evaluation/pairs/runs/<name>.token`), answered by `training-approve.yml`. Never
+  promote without the dry run + `APPLY_REPORT` pair (the report is what was approved).
 - Raw Glue tables (`local.raw_tables` in `etl.tf`) mirror the scraper parquet schema; keep them in
   sync with `data_ingestion/src/steam_ingestion/schemas.py` and `etl/tests/integration/fixtures.py`.
 - PR-scoped CI roles (e.g. `steam-recsys-etl-ci`) live next to their component and only get

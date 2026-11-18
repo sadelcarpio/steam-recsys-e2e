@@ -3,7 +3,7 @@ user likes one cluster (positive reviews inside it, negative reviews outside).""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pyarrow as pa
@@ -32,6 +32,11 @@ def _no_ssm(monkeypatch) -> None:
 
 def game_cluster(game_idx: int) -> int:
     return (game_idx - FIRST_GAME) // GAMES_PER_CLUSTER
+
+
+def game_id(game_idx):
+    """Steam appid of a synthetic game_idx."""
+    return game_idx * 10 + 1000
 
 
 def _item_row(game_idx: int, ratio: float) -> dict:
@@ -105,18 +110,72 @@ def make_marts(n_users: int = 300, reviews_per_user: int = 8, seed: int = 0) -> 
             ]
         ),
     )
+    # spec 9: reviews per game and ISO week (Monday), as the dbt mart counts them
+    weekly: dict[tuple[int, date], list[int]] = {}
+    for row in rows:
+        monday = row["timestamp"].date() - timedelta(days=row["timestamp"].weekday())
+        counts = weekly.setdefault((row["game_idx"], monday), [0, 0])
+        counts[0] += int(row["is_positive"])
+        counts[1] += 1
+    popularity = pa.Table.from_pylist(
+        [
+            {
+                "game_id": game_id(g),
+                "game_idx": g,
+                "week_start": week,
+                "positives": pos,
+                "reviews": total,
+            }
+            for (g, week), (pos, total) in sorted(weekly.items())
+        ]
+    )
     lookup = lambda n: pa.table({"id": pa.array(range(FIRST_GAME, FIRST_GAME + n), pa.int64())})  # noqa: E731
     return {
         "interactions": pa.Table.from_pylist(rows),
         "game_features": pa.Table.from_pylist(game_features),
-        "lkp_games": pa.table({"game_idx": pa.array(games, pa.int64())}),
+        "lkp_games": pa.table(
+            {
+                "game_idx": pa.array(games, pa.int64()),
+                "game_id": pa.array(game_id(games), pa.int64()),
+            }
+        ),
+        # A6 release dates + spec 9 ranker prices
+        "game_details": game_details(games),
         "lkp_developers": lookup(7),
         "lkp_publishers": lookup(5),
         "lkp_genres": lookup(N_CLUSTERS),
         "lkp_categories": lookup(5),
         "lkp_tags": lookup(6),
         "game_tags": game_tags,
+        "game_popularity_weekly": popularity,
     }
+
+
+def release_date(game_idx: int) -> str | None:
+    """Steam's raw release date strings: mostly exact days, a few unparseable ones."""
+    if game_idx % 10 == 7:
+        return "Coming soon"
+    if game_idx % 10 == 8:
+        return "2027"
+    if game_idx % 10 == 9:
+        return None
+    day = START - timedelta(days=30 * (game_idx % 6))
+    return f"{day:%b} {day.day}, {day.year}"
+
+
+def game_details(games) -> pa.Table:
+    """A6: release dates (exact, "Coming soon", year only, missing); spec 9 ranker: prices (the
+    games without a release date have none either)."""
+    games = [int(g) for g in games]
+    return pa.table(
+        {
+            "game_id": pa.array([game_id(g) for g in games], pa.int64()),
+            "game_price": pa.array(
+                [None if g % 10 == 9 else float(g % 4) * 10 for g in games], pa.float64()
+            ),
+            "game_release_date": pa.array([release_date(g) for g in games], pa.string()),
+        }
+    )
 
 
 class FakeSource:

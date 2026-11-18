@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -6,9 +6,11 @@ from pydantic import ValidationError
 from steam_etl.contracts import (
     OOV_ID,
     PADDING_ID,
+    GamePopularityWeeklyRow,
     GameTagsRow,
     InteractionRow,
     LookupRow,
+    ReviewLanguageRow,
     UserIndexRow,
 )
 
@@ -118,3 +120,46 @@ def test_user_index_row():
 def test_user_index_rejects(overrides):
     with pytest.raises(ValidationError):
         user_index(**overrides)
+
+
+def popularity(**overrides):
+    row = {
+        "_batch_at": NOW,
+        "game_id": 10,
+        "game_idx": 2,
+        "week_start": date(2026, 11, 9),  # a Monday
+        "positives": 3,
+        "reviews": 4,
+    }
+    return GamePopularityWeeklyRow.model_validate(row | overrides)
+
+
+def test_popularity_row():
+    assert popularity().reviews == 4
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"week_start": date(2026, 11, 10)},  # weeks start on Monday
+        {"positives": 5},  # more positives than reviews
+        {"reviews": 0},  # a row only exists for a week with reviews
+        {"game_idx": 1},  # OOV is not a game
+    ],
+)
+def test_popularity_rejects(overrides):
+    with pytest.raises(ValidationError):
+        popularity(**overrides)
+
+
+def test_review_language_row():
+    row = {
+        "_batch_at": NOW,
+        "review_id": 7,
+        "language": "schinese",
+        "scrape_date": date(2026, 1, 2),
+    }
+    assert ReviewLanguageRow.model_validate(row).language == "schinese"
+    for bad in ("", "English", " english"):
+        with pytest.raises(ValidationError):
+            ReviewLanguageRow.model_validate(row | {"language": bad})

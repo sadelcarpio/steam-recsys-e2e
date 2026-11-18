@@ -329,14 +329,15 @@ until the next dbt run (new Iceberg snapshots start a fresh run).
 
 **No quota? Train locally.** `python -m steam_training train` runs the same pipeline on a
 workstation and uploads the model to the bucket (see `training/README.md`, *Development*). Then
-promote it with `model_id=local-…` and `image_tag=<a pushed commit sha>`: every merge to `main`
+promote it with `retriever_id=local-…` and `image_tag=<a pushed commit sha>`: every merge to `main`
 that changes the training code pushes `training:<merge sha>` (*training image CD*), so use the
 merge commit that contains the code the model was trained with (or a later compatible one).
 
 **GPU** (optional, once a GPU quota is granted, e.g. `ml.g4dn.xlarge`, quota code `L-3F53BF0F`):
 run *training CD* with `torch_variant=cu128` and `instance_type=ml.g4dn.xlarge`.
 
-**Promote.** Actions → *training promote* → Run workflow with `model_id` = the trained commit
+**Promote.** Actions → *training promote* → Run workflow with `mode=retriever` (the mode has
+no default: a run left on `choose` fails) and `retriever_id` = the trained commit
 sha (empty = the commit the workflow runs on). It evaluates the candidate and the current
 champion on the same validation rows and writes `evaluation/<sha>/metrics.json`. When the
 candidate wins, it copies the model to `models/champion/` and the report to
@@ -345,7 +346,53 @@ To swap in a model that loses (e.g. the first one trained on the full backfill),
 `FORCE_PROMOTION=true` to `env_overrides`: it is still evaluated, and the report says it was forced.
 
 **Roll back** the champion: the bucket is versioned, so restore the previous object versions of
-`models/champion/*` and `evaluation/champion/metrics.json`, or promote an older sha again.
+`models/champion/*` and `evaluation/champion/metrics.json`, or promote an older sha again. Once a
+ranker serves, use *training promote* with `mode=rollback` instead (below).
+
+**Ranker (spec 9).** The second stage re-orders the retriever's top 100. Its promotion is by
+pair: a ranker only serves with a retriever it was evaluated with.
+
+1. *training rank* → `retriever_id` (default `champion`), `ranker_id` (default the commit
+   sha). A CPU job (`ml.m5.2xlarge`, ~20 min; `RANKER_ABLATION=false` in `env_overrides`
+   halves it) writes `rankers/<id>/` and `evaluation/rankers/<id>/ranker.json` (its gate:
+   recall@20 vs retrieval order). Its popularity features read the `game_popularity_weekly`
+   mart: one dbt run after the ETL deploy that adds it (`RANKER_POPULARITY_SOURCE=interactions`
+   until then).
+2. *training promote* → `mode=pair`, `ranker_id` = that ranker (and `retriever_id` = a new
+   retriever, if it is one). It scores the serving pair and the challengers on the same groups
+   (after every compared model's training window), promotes the best one when it wins (final
+   recall@20 and NDCG@20; a new retriever must also win at retrieval and keep its recall@100),
+   copies it to `models/champion/` / `rankers/champion/`, and writes
+   `evaluation/champion/pair.json` + `history.jsonl`. The report: `evaluation/pairs/`.
+3. *training promote* → `mode=rollback` restores the previous pair. Run inference afterwards:
+   DynamoDB keeps the current lists until the next run.
+
+While a ranker serves, `mode=retriever` refuses: promote retrievers with `mode=pair` (with
+`retriever_id`), so the serving ranker is re-evaluated on the new retriever's candidates.
+
+**Training Step Function (spec 9, phase 7).** `steam-recsys-training` chains it all: train a
+retriever (the champion's recipe on time-based windows), train its ranker, evaluate the pairs as
+a dry run, wait for an approval, promote, run inference. After the *infrastructure CD* apply
+that creates it:
+
+```bash
+ARN=$(aws stepfunctions list-state-machines \
+  --query "stateMachines[?name=='steam-recsys-training'].stateMachineArn" --output text)
+aws stepfunctions start-execution --state-machine-arn "$ARN" --name ct-2026-11 --input '{}'
+# GPU retriever: '{"retriever_image_tag": "<sha>-cu128", "retriever_instance_type": "ml.g4dn.xlarge"}'
+```
+
+The name (letters, digits, hyphens, ≤ 40) names everything it makes: models `ct-<name>` /
+`ct-<name>-rank`, the report `evaluation/pairs/runs/<name>.json`. When a challenger pair wins,
+the execution waits at `AwaitApproval` (up to 7 days): run *training approve* with the
+execution name and `approve` (the summary shows the pairs' metrics) or `reject`. When nothing
+wins, it ends at `NothingToPromote`. `training_pipeline_schedule_enabled = true` starts it
+monthly (each run still waits for an approval). Training jobs need the SageMaker training
+quota of their instance types (step 9 above).
+
+**Time-based windows.** `HOLDOUT_WEEKS=6` (`env_overrides` of *training CD*) trains a retriever
+on everything up to 6 weeks before the newest review instead of the last 10% of rows; the last
+`TEST_WEEKS` (2) stay unread for the pair gates (spec 9, "Time windows").
 
 ## 10. Recommendations (batch inference)
 
@@ -412,6 +459,22 @@ aws s3 cp s3://model-artifacts-${ACCT}/serving/users/index.json -      # demo us
 
 The job's last log line (`inference done: {...}`) has the summary: users, written / unchanged /
 deleted, reranked, `game_details_written`, `online_bundle`.
+
+**Ranker (spec 9).** Once a pair promotion (step 9, *training promote* `mode=pair`) has put a
+ranker in `evaluation/champion/pair.json`, inference runs it in `RANKER_MODE` (Terraform
+`inference_ranker_mode`, default `shadow`). Rollout:
+
+1. Deploy (*infrastructure CD*: the role's reads of `rankers/*` / `pair.json` and
+   `evaluation/online/*`, and the SSM `RANKER_MODE`; then *inference CD*).
+2. A run in `shadow` writes retrieval order as before. Its summary has `ranker_id`,
+   `ranked_users`, `ranker_failures` and `ranker_overlap` (how much of the top 20 changes);
+   `ranker_reason` says why the ranker did not run, if it did not.
+3. The next run's `online_check` (and `evaluation/online/<run>.json`) scores the previous run's
+   lists against the reviews written since: `written` (retrieval order) vs `alternative` (the
+   ranker's lists), precision / recall / MAP@{10, 20}.
+4. Switch it on: `inference_ranker_mode = "on"` (infrastructure CD), or for the next run only
+   `aws ssm put-parameter --name /inference/RANKER_MODE --value on --overwrite` (the next
+   apply sets it back to the Terraform value). `off` is the kill switch, the same way.
 
 ## 11. Serving API
 
@@ -521,6 +584,20 @@ this order, because each one needs the previous one live:
    ```sql
    drop table steam_marts.user_features;  -- Iceberg: removes its data too
    ```
+
+**Release of A6 + A7 (spec 17, 2026-11):** item recency and the user's language, in this
+order:
+1. `feature/review-languages-mart` (ETL): the `review_languages` mart. Approve the etl deploy,
+   then let one `Transform` build it (or run step 8); its first build reads every review.
+2. `feature/retrieval-improvements` (training only): `ITEM_RECENCY` / `USER_LANGUAGE` can be
+   trained.
+3. `feature/a6-promotable`: serving reads user tower format 4 (language), inference computes
+   recency (`game_popularity_weekly`) and each user's language (`review_languages`), and
+   `promote` / `rank` / `pair` evaluate both. Approve the serving deploy, then inference, and
+   only then promote: a format-4 model promoted before serving is live breaks
+   `POST /recommendations`, and an inference image without it fails the run.
+4. Train the model (training CD or locally with `image_tag`), train a ranker on it (`rank`),
+   `pair` dry run, `APPLY_REPORT`, then inference `run_now`.
 
 **Release with ARM scrapers (spec 14, 2026-11):** the scraping tasks move to Fargate Graviton
 (ARM64, ~20% cheaper, also on Spot), in two PRs merged in this order. The task definitions run

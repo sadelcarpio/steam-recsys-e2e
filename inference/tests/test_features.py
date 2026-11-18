@@ -1,7 +1,17 @@
 import numpy as np
 import pyarrow as pa
 import pytest
-from conftest import FIRST_GAME, N_GAMES, REVIEWS, FakeSource, add_tags, review_time
+from conftest import (
+    FIRST_GAME,
+    N_GAMES,
+    REVIEWS,
+    FakeSource,
+    add_languages,
+    add_recency,
+    add_tags,
+    review_time,
+)
+from steam_training.data import DAY_SECONDS, week_of_day
 
 from steam_inference import features
 from steam_inference.features import load_inference_data, truncate
@@ -189,3 +199,55 @@ def test_member():
         False,
     ]
     assert not features.member(np.array([1]), np.array([], dtype=np.int64)).any()
+
+
+def test_recency_is_as_of_the_newest_review(marts):
+    """A6: the catalog's recency counts the full ISO weeks before the newest review's week."""
+    data = load_inference_data(FakeSource(add_recency(marts)), with_recency=True)
+    catalog = data.games.catalog
+    newest = max(t for user in REVIEWS for t in [review_time(user, len(REVIEWS[user]) - 1)])
+    day = int(np.datetime64(newest, "D").astype(np.int64))
+    assert catalog.as_of_day == day
+    assert data.snapshots.keys() >= {"game_popularity_weekly", "game_details"}
+    recency = catalog.items.recency
+    assert recency is not None and recency.shape == (len(catalog), 4)
+    # reviews in the 4 weeks before the newest review's week, per game, by hand
+    week = int(week_of_day(day))
+    expected = np.zeros(len(catalog))
+    for user, reviews in REVIEWS.items():
+        for i, (game, _) in enumerate(reviews):
+            seconds = int(np.datetime64(review_time(user, i), "s").astype(np.int64))
+            if week - 4 <= week_of_day(seconds // DAY_SECONDS) < week:
+                expected[catalog.rows(np.array([game]))[0]] += 1
+    np.testing.assert_allclose(recency[:, 0], 0.1 * np.log1p(expected), rtol=1e-6)
+    assert recency[:, 3].all()  # every game has an exact release date
+    plain = load_inference_data(FakeSource(marts))
+    assert plain.games.catalog.items.recency is None
+
+
+def test_recency_needs_its_marts(marts):
+    with pytest.raises(RuntimeError, match="game_popularity_weekly"):
+        load_inference_data(FakeSource(marts), with_recency=True)
+
+
+def test_users_get_their_newest_reviews_language(marts):
+    """A7: the language of each user's newest review (any polarity), unknown without one."""
+    from steam_training.contracts import FIRST_ID, OOV_ID, STEAM_LANGUAGES
+
+    def code(name):
+        return FIRST_ID + STEAM_LANGUAGES.index(name)
+
+    data = load_inference_data(FakeSource(add_languages(marts)), with_language=True)
+    language = dict(zip(data.users.user_id.tolist(), data.users.language.tolist(), strict=True))
+    # 101's newest review is negative (still counts); 102 has no language
+    assert language == {
+        101: code("russian"),
+        102: OOV_ID,
+        103: code("russian"),
+        104: code("schinese"),
+    }
+    assert "review_languages" in data.snapshots
+    assert data.users.take(np.array([1])).language.tolist() == [OOV_ID]
+    assert load_inference_data(FakeSource(marts)).users.language is None
+    with pytest.raises(RuntimeError, match="review_languages"):
+        load_inference_data(FakeSource(marts), with_language=True)

@@ -11,6 +11,8 @@ the users whose `content_hash` changed and deletes the users that are gone:
     generated_at     S   ISO-8601 UTC time of the run
     reranked         BOOL  true when the LLM reordered the list (and wrote the explanations)
     rerank_model     S   Bedrock model id (reranked items only)
+    ranker_id        S   spec 9: the ranker that ordered the candidates (RANKER_MODE=on; absent:
+                         retrieval order, including users whose ranker chunk failed)
     content_hash     S   hash of what the user sees (`UserRecommendations.content_hash`)
 
 `score` and `generated_at` are as of the last write: an unchanged list is not rewritten, even
@@ -47,9 +49,10 @@ import json
 import re
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from steam_training.contracts import ListMetrics
 
 POPULAR_USER_ID = "__popular__"
 POPULARITY_MODEL_ID = "popularity"
@@ -81,19 +84,24 @@ class UserRecommendations(_Frozen):
     generated_at: datetime
     reranked: bool
     rerank_model: str | None = None
+    # spec 9: the ranker that ordered the candidates (None: retrieval order)
+    ranker_id: str | None = None
     # The user's last positively reviewed games (the user tower's history, the rerank prompt's
     # liked games), most recent first, adult ones left out. Shown above the recommendations.
     liked: list[LikedGame] = Field(default_factory=list)
 
     def content_hash(self) -> str:
-        """Hash of the visible content: model, rerank flag / model, the ordered games with their
-        names and explanations, and the liked games. Scores and the generation time are left out."""
+        """Hash of the visible content: model, rerank flag / model, ranker, the ordered games with
+        their names and explanations, and the liked games. Scores and the generation time are
+        left out."""
         content = {
             "model_id": self.model_id,
             "reranked": self.reranked,
             "rerank_model": self.rerank_model,
             "recommendations": [[r.game_id, r.name, r.explanation] for r in self.recommendations],
         }
+        if self.ranker_id:  # absent without a ranker: older items keep their hash
+            content["ranker_id"] = self.ranker_id
         if self.liked:  # absent from older items and the popularity fallback: same hash there
             content["liked"] = [[g.game_id, g.name] for g in self.liked]
         payload = json.dumps(content, separators=(",", ":"), ensure_ascii=False)
@@ -119,6 +127,8 @@ class UserRecommendations(_Frozen):
         }
         if self.rerank_model:
             item["rerank_model"] = self.rerank_model
+        if self.ranker_id:
+            item["ranker_id"] = self.ranker_id
         if self.liked:
             item["liked"] = [{"game_id": g.game_id, "name": g.name} for g in self.liked]
         return item
@@ -184,6 +194,14 @@ class OnlineBundleManifest(_Frozen):
     catalog_sha256: str
     catalog_games: int = Field(ge=1)
     user_tower_key: str  # models/<model_id>/user_tower.npz, same bucket
+    # spec 9: the serving pair's ranker for POST /recommendations (`ranker.npz`: its trees + the
+    # game side of the features for the catalog rows, `steam_training.ranker.export`), pinned
+    # like the catalog. None: retrieval order. Older serving deploys ignore these fields.
+    ranker_id: str | None = None
+    ranker_mode: Literal["off", "shadow", "on"] = "off"
+    ranker_key: str | None = None
+    ranker_version_id: str | None = None
+    ranker_sha256: str | None = None
 
 
 USER_INDEX_FORMAT = 1
@@ -260,6 +278,21 @@ class RerankEvaluation(_Frozen):
     output_tokens: int = 0
 
 
+class OnlineCheck(_Frozen):
+    """evaluation/online/<run>.json (spec 9): the previous run's saved lists (a sample of
+    users) scored against what those users reviewed positively since then (games they had not
+    reviewed before it). `written` = the lists that run wrote, `alternative` = the other order
+    (shadow: the ranker's lists that were not written; on: retrieval order)."""
+
+    previous_run_at: datetime
+    run_at: datetime
+    previous_mode: str
+    previous_ranker_id: str | None
+    sampled_users: int
+    written: ListMetrics
+    alternative: ListMetrics
+
+
 class InferenceSummary(_Frozen):
     model_id: str | None
     skipped: bool
@@ -283,7 +316,17 @@ class InferenceSummary(_Frozen):
     game_details_written: int = 0
     game_details_deleted: int = 0  # unreleased games removed from game-details (spec 10)
     online_bundle: str | None = None
+    online_ranker_id: str | None = None  # spec 9: the ranker published for POST /recommendations
     search_index: str | None = None
     user_index: str | None = None  # the manifest of the demo user index (spec 13)
     snapshots: dict[str, int | None] = Field(default_factory=dict)
+    # spec 9: the serving ranker (None: retrieval order) and how it ran
+    ranker_id: str | None = None
+    ranker_mode: str = "off"
+    ranker_reason: str = ""
+    ranked_users: int = 0
+    ranker_failures: int = 0  # users left in retrieval order by a failed chunk
+    ranker_overlap: float | None = None  # mean overlap of retrieval and ranker top lists
+    ranker_seconds: float = 0.0
+    online_check: OnlineCheck | None = None
     seconds: float = 0.0

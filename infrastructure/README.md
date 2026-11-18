@@ -13,6 +13,7 @@ Terraform for the whole project (AWS, `us-east-1`).
 | `inference.tf`      | DynamoDB `game-explainable-recommendations` (PK `user_id`; only changed users are rewritten, plus the `__popular__` fallback item) and `game-details` (PK `game_id` N, insert-only), ECR `inference`, SageMaker execution role `steam-recsys-inference` (marts read, `models/*` read, `serving/online/*` + `serving/search/games.json` write (online catalog, frontend search index), scan + writes on both tables, `bedrock:InvokeModel` on `inference_bedrock_model_id` only), SSM `/inference/*`. The processing job itself is the `Infer` state (`inference_instance_type`, default `ml.t3.xlarge`). |
 | `serving.tf`        | Lambda `recsys-serving` (zip, placeholder until the serving CD) behind a Lambda Function URL, auth `serving_auth_type` (`AWS_IAM` default or `NONE`, an infrastructure CD input; `NONE` adds the two public permissions), CORS `serving_cors_allow_origins`, role `steam-recsys-serving` (GetItem / BatchGetItem, read of the online catalog `serving/online/*` and the numpy user towers `models/*/user_tower.npz`; 1 GB memory), client role `steam-recsys-serving-client` (may invoke the URL under `AWS_IAM`), SSM `/serving/*`. |
 | `frontend.tf`       | S3 `recsys-frontend-<acct>` (the built app), CloudFront distribution with three origins (`/*` the app, `/data/*` the search index in `model-artifacts-<acct>/serving/search/`, `/api/*` the serving Function URL), Origin Access Controls (S3, and Lambda when `serving_auth_type = AWS_IAM`), bucket policies for the distribution, CloudFront Functions (`cloudfront/spa.js`: app routes → `index.html`; `cloudfront/strip_prefix.js`: `/api` and `/data` prefixes dropped), Lambda permissions for CloudFront, optional custom domain (`frontend_domain_name` + `frontend_certificate_arn`). Cache keys: `/api/*` only `limit` and `details` (random query strings can't bypass the cache), `/data/*` none. AWS's managed `SecurityHeadersPolicy` (HSTS, nosniff, frame options) on every behavior. Outputs `frontend_url`, `frontend_cloudfront_domain`. |
+| `training_pipeline.tf` | State machine `steam-recsys-training` (spec 9, phase 7): `TrainRetriever` (SageMaker training job `train`, the champion's recipe on time-based windows by default) → `TrainRanker` (`rank` on that retriever) → `EvaluatePairs` (`pair` dry run: report `evaluation/pairs/runs/<execution>.json`) → `ReadDecision` → `AwaitApproval` (task token in `evaluation/pairs/runs/<execution>.token`, answered by the *training approve* workflow; 7 days at most) → `ApplyPromotion` (`pair` with `APPLY_REPORT`) → `RunInference` (the `Infer` job). Role `steam-recsys-training-pipeline`; optional monthly schedule `steam-recsys-training-monthly` (`training_pipeline_schedule_enabled`, default off). |
 | `budget.tf`         | Optional monthly cost budget (`budget_monthly_usd`, default 50) with email alerts, only when `budget_alert_email` is set (repository variable `BUDGET_ALERT_EMAIL`). |
 | `orchestration.tf`  | State machine `steam-recsys-pipeline` (Lambda, then parallel Distributed Maps of ECS tasks, then the `dbt` task, then `PublishKaggle` (starts `kaggle-export` without waiting), then `CheckChampion` → the SageMaker Processing job `Infer` or a skip) and the EventBridge schedule (Thursdays 17:00 America/Chicago).                                                               |
 
@@ -33,6 +34,22 @@ aws stepfunctions start-execution --state-machine-arn <arn> --input '{"run_id": 
 
 Set `schedule_enabled = false` to pause the weekly schedule. Tunables are in `variables.tf`
 (`num_review_workers`, `num_games_workers`, `games_per_task`, `max_reviews_per_game`, ...).
+
+## Running training (spec 9)
+
+```bash
+ARN=$(aws stepfunctions list-state-machines \
+  --query "stateMachines[?name=='steam-recsys-training'].stateMachineArn" --output text)
+# name: letters, digits and hyphens, at most 40 (SageMaker job names derive from it)
+aws stepfunctions start-execution --state-machine-arn "$ARN" --name ct-2026-11 --input '{}'
+# GPU retriever (a training CD run with torch_variant=cu128 pushed training:<sha>-cu128):
+#   --input '{"retriever_image_tag": "<sha>-cu128", "retriever_instance_type": "ml.g4dn.xlarge"}'
+```
+
+Input keys (all optional): `image_tag`, `retriever_image_tag`, `retriever_instance_type`,
+`cpu_instance_type`, `run_inference`, and `retriever_env` / `ranker_env` / `pair_env` (env maps
+of the jobs; `retriever_env` replaces the default recipe as a whole). When the challenger pair
+wins, the execution waits at `AwaitApproval`: run *training approve* with the execution name.
 
 ## CI/CD
 

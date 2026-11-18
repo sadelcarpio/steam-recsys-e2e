@@ -48,11 +48,15 @@ def features(config: ModelConfig) -> dict[str, list[str]]:
     if config.vocab.tags is not None:
         item.append("tags")
     item += ["is_free", "is_free_known", "reviews_ratio"]
+    if config.item_recency:
+        item.append("recency[reviews_30d,reviews_90d,days_since_release,release_known]")
     user = [f"games_reviewed_positive[{config.history_length}]", "history_length"]
     if config.history_encoder == "attention":
         user.append(f"history_attention[{config.attention_layers}x{config.attention_heads}]")
     if config.user_tag_profile:
         user.append("history_tag_profile")
+    if config.user_language:
+        user.append("previous_review_language")
     return {"user": user, "item": item}
 
 
@@ -158,6 +162,8 @@ def final_metrics(record: TrackingRecord) -> dict[str, float]:
     `embeddings/...`."""
     out = _diagnostic_metrics(f"{record.evaluation}/", record.model)
     out |= _diagnostic_metrics("popularity/", record.popularity)
+    if record.recent_popularity is not None:  # A6 runs
+        out |= _diagnostic_metrics("recent_popularity/", record.recent_popularity)
     for segment in ("warm", "all"):
         model = getattr(record.model.recall, segment).recall
         baseline = getattr(record.popularity.recall, segment).recall

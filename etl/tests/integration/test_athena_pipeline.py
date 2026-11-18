@@ -23,7 +23,7 @@ import json
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import boto3
@@ -72,6 +72,8 @@ KEYS = {
     "game_details": ("game_id",),
     "game_tags": ("game_id",),
     "interactions": ("review_id",),
+    "game_popularity_weekly": ("game_id", "week_start"),
+    "review_languages": ("review_id",),
     "user_index": ("user_idx",),
 }
 Snapshot = dict[str, list[dict[str, Any]]]
@@ -256,6 +258,8 @@ def test_incremental_matches_full_refresh(runs):
         "game_details",
         "game_tags",
         "interactions",
+        "game_popularity_weekly",
+        "review_languages",
         "user_index",
     ):
         assert without_batch(runs["full"][table]) == without_batch(runs["batch2"][table]), table
@@ -415,6 +419,41 @@ def test_interactions_use_features_strictly_before_the_review(runs):
     assert "games_reviewed_positive" not in rows[907]
     assert rows[3]["is_positive"] is False and rows[2]["is_positive"] is True
     assert set(rows) == {r["review_id"] for r in runs["batch2"]["int_review_events"]}
+
+
+@pytest.mark.parametrize("run", ["batch1", "batch2"])
+def test_game_popularity_weekly_counts_interactions_per_iso_week(runs, run):
+    """spec 9: one row per (game, Monday-based week), positives / reviews of interactions; the
+    batch2 run recounts the weeks its late reviews touched."""
+    expected: dict[tuple[int, date], list[int]] = {}
+    for r in runs[run]["interactions"]:
+        when = datetime.fromisoformat(str(r["timestamp"]))
+        monday = when.date() - timedelta(days=when.weekday())
+        counts = expected.setdefault((r["game_id"], monday), [0, 0])
+        counts[0] += bool(r["is_positive"])
+        counts[1] += 1
+    got = {
+        (r["game_id"], date.fromisoformat(str(r["week_start"])[:10])): [
+            r["positives"],
+            r["reviews"],
+        ]
+        for r in runs[run]["game_popularity_weekly"]
+    }
+    assert got == expected
+
+
+def test_review_languages_keep_the_first_seen_language(runs):
+    """spec 17 (A7): one row per review with a language, lower case and trimmed; reviews without
+    one are left out; a re-scrape in a later batch keeps the first language (review 2)."""
+    want = {1: "english", 13: "english", 2: "english", 3: "schinese", 4: "english",
+            5: "russian", 7: "english"}  # fmt: skip
+    want |= {900 + k: "english" for k in range(1, 8)}
+    got = {r["review_id"]: r["language"] for r in runs["batch1"]["review_languages"]}
+    assert got == want
+    want |= {8: "english", 10: "english", 12: "english", 14: "english"}  # 11: empty
+    for run in ("batch2", "full"):
+        got = {r["review_id"]: r["language"] for r in runs[run]["review_languages"]}
+        assert got == want, run
 
 
 def test_user_index_ranks_users_by_reviews_then_id(runs):

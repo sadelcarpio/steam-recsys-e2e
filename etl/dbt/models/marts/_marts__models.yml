@@ -85,6 +85,54 @@ models:
       - name: game_developers
         description: Names (not ids), cleaned. Same for publishers / genres / categories.
 
+  - name: game_popularity_weekly
+    description: >
+      Positive / total reviews per game and ISO week (spec 9), counted from interactions. The
+      one definition of popularity (ranker features, popularity lists, the online game table).
+      Point in time: a consumer at time t reads only the weeks before t's week. Late reviews
+      (backfill) recount their week.
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [game_id, week_start]
+      - expression_is_true:
+          arguments:
+            expression: positives >= 0 and positives <= reviews and reviews > 0
+      - expression_is_true:
+          arguments:
+            expression: day_of_week(week_start) = 1
+    columns:
+      - name: game_id
+        description: Steam appid.
+        data_tests: [not_null]
+      - name: game_idx
+        description: Dense id from lkp_games.
+        data_tests: [not_null]
+      - name: week_start
+        description: Monday (UTC) of the week the reviews were written in.
+        data_tests: [not_null]
+      - name: positives
+        description: Positive reviews of the game written that week.
+        data_tests: [not_null]
+      - name: reviews
+        description: All reviews of the game written that week.
+        data_tests: [not_null]
+
+  - name: review_languages
+    description: >
+      The language of each review (spec 17, A7), one row per review_id; join to interactions on
+      review_id. First seen copy with a language wins; reviews without one are left out.
+    columns:
+      - name: review_id
+        description: Steam recommendation id (= interactions.review_id).
+        data_tests: [not_null, unique]
+      - name: language
+        description: Steam API language name, lower case (english, schinese, brazilian, ...).
+        data_tests: [not_null]
+      - name: scrape_date
+        description: Scrape date of the copy kept (the incremental watermark).
+        data_tests: [not_null]
+
   - name: interactions
     description: >
       One row per review of a kept game with game features ASOF strictly before it. User

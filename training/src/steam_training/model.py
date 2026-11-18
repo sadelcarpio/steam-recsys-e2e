@@ -24,35 +24,60 @@ OOV, so new games are represented by the OOV row plus their content features.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
+from typing import Self
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from steam_training.contracts import OOV_ID, PADDING_ID, ModelConfig
+from steam_training.contracts import NUM_LANGUAGE_IDS, OOV_ID, PADDING_ID, ModelConfig
 
 NUM_NUMERIC_FEATURES = 3
+# A6: appended to the numeric features (`data.Recency.features`)
+NUM_RECENCY_FEATURES = 4
+LANGUAGE_EMBEDDING_DIM = 8
 ATTRIBUTES = ("developers", "publishers", "genres", "categories")
 
 
+def map_tensors(value, fn):
+    """`value` with `fn` applied to every tensor in it (dataclasses, lists, None kept)."""
+    if isinstance(value, torch.Tensor):
+        return fn(value)
+    if isinstance(value, list):
+        return [map_tensors(v, fn) for v in value]
+    if hasattr(value, "__dataclass_fields__"):
+        return replace(
+            value, **{f.name: map_tensors(getattr(value, f.name), fn) for f in fields(value)}
+        )
+    return value
+
+
+class TensorTree:
+    """Batch containers (dataclasses of tensors): one device move / pin for all of them.
+    The DataLoader pins a batch through `pin_memory()` (pin_memory=True), and a pinned batch
+    moves with `to(device, non_blocking=True)` without blocking the host."""
+
+    def to(self, device: torch.device, non_blocking: bool = False) -> Self:
+        return map_tensors(self, lambda t: t.to(device, non_blocking=non_blocking))
+
+    def pin_memory(self) -> Self:
+        return map_tensors(self, lambda t: t.pin_memory())
+
+
 @dataclass
-class Bag:
+class Bag(TensorTree):
     """EmbeddingBag input: flat ids + start offset of each row (+ per-value weights)."""
 
     values: torch.Tensor  # int64 [n_values]
     offsets: torch.Tensor  # int64 [rows]
     weights: torch.Tensor | None = None  # float32 [n_values]
 
-    def to(self, device: torch.device) -> Bag:
-        weights = self.weights.to(device) if self.weights is not None else None
-        return Bag(self.values.to(device), self.offsets.to(device), weights)
-
 
 @dataclass
-class ItemBatch:
+class ItemBatch(TensorTree):
     game_idx: torch.Tensor  # int64 [rows]
-    numeric: torch.Tensor  # float32 [rows, NUM_NUMERIC_FEATURES]
+    numeric: torch.Tensor  # float32 [rows, NUM_NUMERIC_FEATURES (+ NUM_RECENCY_FEATURES)]
     developers: Bag
     publishers: Bag
     genres: Bag
@@ -61,17 +86,6 @@ class ItemBatch:
 
     def __len__(self) -> int:
         return len(self.game_idx)
-
-    def to(self, device: torch.device) -> ItemBatch:
-        return ItemBatch(
-            game_idx=self.game_idx.to(device),
-            numeric=self.numeric.to(device),
-            developers=self.developers.to(device),
-            publishers=self.publishers.to(device),
-            genres=self.genres.to(device),
-            categories=self.categories.to(device),
-            tags=self.tags.to(device),
-        )
 
 
 def _clip_to_vocab(ids: torch.Tensor, size: int) -> torch.Tensor:
@@ -123,10 +137,13 @@ class ItemTower(nn.Module):
             if vocab.tags is not None
             else None
         )
+        # A6 models read the recency columns too; others read the first 3 (so a catalog with
+        # recency features scores every model)
+        self.numeric_dim = NUM_NUMERIC_FEATURES + NUM_RECENCY_FEATURES * config.item_recency
         in_dim = (
             config.game_embedding_dim
             + (len(ATTRIBUTES) + (self.tags is not None)) * config.attribute_embedding_dim
-            + NUM_NUMERIC_FEATURES
+            + self.numeric_dim
         )
         self.mlp = _mlp(in_dim, config.hidden_dim, config.output_dim)
 
@@ -140,7 +157,9 @@ class ItemTower(nn.Module):
             bag = items.tags
             values = _clip_to_vocab(bag.values, self.tag_size)
             parts.append(self.tags(values, bag.offsets, per_sample_weights=bag.weights))
-        parts.append(items.numeric)
+        if items.numeric.shape[1] < self.numeric_dim:
+            raise ValueError("the model reads recency features (A6) the items don't have")
+        parts.append(items.numeric[:, : self.numeric_dim])
         return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 
 
@@ -238,6 +257,13 @@ class UserTower(nn.Module):
                 vocab.tags, config.attribute_embedding_dim, mode="sum", padding_idx=PADDING_ID
             )
             in_dim += config.attribute_embedding_dim
+        # A7: the language of the user's previous review (OOV = unknown)
+        self.language: nn.Embedding | None = None
+        if config.user_language:
+            self.language = nn.Embedding(
+                NUM_LANGUAGE_IDS, LANGUAGE_EMBEDDING_DIM, padding_idx=PADDING_ID
+            )
+            in_dim += LANGUAGE_EMBEDDING_DIM
         self.mlp = _mlp(in_dim, config.hidden_dim, config.output_dim)
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs) -> None:
@@ -281,8 +307,9 @@ class UserTower(nn.Module):
         values = _clip_to_vocab(self.game_tag_values[source], self.tag_size)
         return self.tag_profile(values, offsets, per_sample_weights=weights)
 
-    def forward(self, history: torch.Tensor) -> torch.Tensor:
-        """history: int64 [rows, history_length], most recent first, 0 = padding."""
+    def forward(self, history: torch.Tensor, language: torch.Tensor | None = None) -> torch.Tensor:
+        """history: int64 [rows, history_length], most recent first, 0 = padding. `language`
+        (A7): int64 [rows] language ids, None = unknown for every row."""
         if history.shape[1] != self.history_length:
             raise ValueError(
                 f"history has {history.shape[1]} games, the model reads {self.history_length}"
@@ -298,6 +325,10 @@ class UserTower(nn.Module):
             parts.append(self.attention(games * weights, present))
         if self.tag_profile is not None:
             parts.append(self._tag_profile(history))
+        if self.language is not None:
+            if language is None:
+                language = torch.full_like(history[:, 0], OOV_ID)
+            parts.append(self.language(language.clamp(0, NUM_LANGUAGE_IDS - 1)))
         return F.normalize(self.mlp(torch.cat(parts, dim=1)), dim=-1)
 
 
