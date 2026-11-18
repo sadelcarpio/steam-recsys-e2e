@@ -118,17 +118,19 @@ class InferenceSettings(BaseSettings):
     # Short description appended to each game of the prompt, cut to this many characters
     # (~50 tokens each at 200; 0 = none). Gives the LLM what the game is, not only its genres.
     rerank_description_chars: int = Field(200, ge=0)
-    # Recommendations that get an explanation (the top of the reranked list).
-    explain_top_n: int = Field(5, ge=0)
+    # Recommendations that get an explanation (the top of each explained list; 3 since
+    # 2026-11-18: the cards a demo shows first, and fewer Bedrock output tokens).
+    explain_top_n: int = Field(3, ge=0)
     # Parallel Bedrock calls (IO-bound threads). ~1.9 s per call: 32 threads ~ 1000 requests/min,
     # half the Nova 2 Lite cross-region quota (2000 RPM, 8M tokens/min); throttling is retried.
     rerank_concurrency: int = Field(32, ge=1, le=256)
     rerank_max_tokens: int = Field(2000, ge=100)
     # Temperature of the explanations (the ranking call always uses 0).
     rerank_temperature: float = Field(0.2, ge=0, le=1)
-    # Two-stage rerank (spec 7): `rank+explain` (LLM order, then explanations) or `explain`
-    # (the retrieval order is kept; only the explanations come from the LLM).
-    rerank_enabled_stages: Literal["rank+explain", "explain"] = "rank+explain"
+    # Two-stage rerank (spec 7): `explain` (the default since 2026-11-18: the order stays the
+    # retriever's / ranker's, the LLM only explains the top N) or `rank+explain` (LLM order,
+    # then explanations; its ranking was never shown to beat the ranker, spec 9).
+    rerank_enabled_stages: Literal["rank+explain", "explain"] = "explain"
     # Final order = ascending w * llm_rank + (1 - w) * retrieval_rank (1 = LLM order).
     rerank_blend_weight: float = Field(1.0, ge=0, le=1)
     # Shuffle the candidates of the ranking prompt (seeded by the user id) against position bias.

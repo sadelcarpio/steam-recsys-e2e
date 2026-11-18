@@ -148,8 +148,10 @@ export function responseSummary(response: RecommendationsResponse): string {
   );
   switch (response.source) {
     case "personalized":
-      return response.reranked
-        ? t.summaryReranked(when, models)
+      if (response.reranked) return t.summaryReranked(when, models);
+      // explained by the LLM without reordering (RERANK_ENABLED_STAGES=explain)
+      return response.rerank_model
+        ? t.summaryExplained(when, models)
         : t.summaryPersonalized(when, models);
     case "online":
       return t.summaryOnline(models);

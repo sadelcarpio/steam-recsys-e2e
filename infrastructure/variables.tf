@@ -243,9 +243,9 @@ variable "inference_rerank_max_users" {
 }
 
 variable "inference_rerank_stages" {
-  description = "Two-stage rerank (spec 7): rank+explain (LLM order, then explanations of the top N) or explain (retrieval order kept, explanations only). Pick it with python -m steam_inference.evaluate_rerank."
+  description = "Two-stage rerank (spec 7): explain (the retriever's / ranker's order kept, LLM explanations of the top N only) or rank+explain (LLM order first). Pick it with python -m steam_inference.evaluate_rerank."
   type        = string
-  default     = "rank+explain"
+  default     = "explain"
   validation {
     condition     = contains(["rank+explain", "explain"], var.inference_rerank_stages)
     error_message = "inference_rerank_stages must be rank+explain or explain."

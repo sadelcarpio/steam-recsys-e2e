@@ -137,7 +137,9 @@ Human docs: `README.md`.
   (a ranking is used only when it is an exact permutation). Every top-`EXPLAIN_TOP_N` entry of
   a reranked user has an explanation (checked LLM text or the template), and no other entry
   has one. An explanation never names the recommended game itself. One user's failure never
-  fails the run.
+  fails the run. Defaults (2026-11-18): `RERANK_ENABLED_STAGES=explain` (the LLM never
+  reorders; the item's `reranked` is true only when it did, `rerank_model` names the model of
+  the explanations) and `EXPLAIN_TOP_N=3` for the `RERANK_MAX_USERS` (100) most active users.
 - User histories come from `interactions` (the model's `ModelConfig.history_length`, same
   derivation as training's `HistoryIndex`; the marts store no history). The rerank prompt and the stored `liked` list keep the
   last `LIKED_GAMES` (5) whatever the model's length, so a longer-history model doesn't change

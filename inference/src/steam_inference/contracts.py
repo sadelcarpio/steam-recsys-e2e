@@ -9,8 +9,9 @@ the users whose `content_hash` changed and deletes the users that are gone:
     recommendations  L   of M, best first: {game_id N, name S, score N, explanation S (top N only)}
     model_id         S   model that retrieved the candidates
     generated_at     S   ISO-8601 UTC time of the run
-    reranked         BOOL  true when the LLM reordered the list (and wrote the explanations)
-    rerank_model     S   Bedrock model id (reranked items only)
+    reranked         BOOL  true when the LLM reordered the list (RERANK_ENABLED_STAGES=rank+explain)
+    rerank_model     S   Bedrock model id that wrote the explanations (explained items only,
+                         reordered or not)
     ranker_id        S   spec 9: the ranker that ordered the candidates (RANKER_MODE=on; absent:
                          retrieval order, including users whose ranker chunk failed)
     content_hash     S   hash of what the user sees (`UserRecommendations.content_hash`)
